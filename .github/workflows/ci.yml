@@ -34,6 +34,7 @@ jobs:
   windows:
     name: Windows (build, test, artifact)
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,9 +53,12 @@ jobs:
       - run: cargo test --workspace
       - name: Smoke test (ezd-host diag)
         shell: pwsh
+        # diag starts the adb server; if that server inherited our stdout, the pipe below would
+        # never reach EOF.
+        timeout-minutes: 5
         run: |
           # A runner has no physical GPU or VDD: the point is that the binary starts with the
-          # FFmpeg DLLs, enumerates DXGI and prints valid JSON.
+          # FFmpeg DLLs, enumerates DXGI, prints valid JSON and the pipeline ends.
           .\target\release\ezd-host.exe diag | Tee-Object -FilePath diag.json
           if ($LASTEXITCODE -ne 0) { throw "ezd-host diag failed ($LASTEXITCODE)" }
           Get-Content -Raw diag.json | ConvertFrom-Json | Out-Null

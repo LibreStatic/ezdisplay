@@ -51,6 +51,13 @@ pub fn diag_section() -> serde_json::Value {
     }
 }
 
+/// Keeps child processes (and the `adb` server they start) from inheriting our stdio, which
+/// would hold a pipe reading our output open after we exit. Call once at startup.
+#[cfg(windows)]
+pub fn isolate_std_handles() {
+    win::util::isolate_std_handles()
+}
+
 /// `ezd-host vdd status`: report on the VDD installation (Windows only).
 #[cfg(windows)]
 pub fn vdd_status() -> serde_json::Value {

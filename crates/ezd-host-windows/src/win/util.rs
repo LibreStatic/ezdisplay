@@ -1,7 +1,12 @@
 //! Small helpers shared by the Windows modules.
 
 use serde_json::{Value, json};
-use windows::Win32::Foundation::{ERROR_SUCCESS, LUID};
+use windows::Win32::Foundation::{
+    ERROR_SUCCESS, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, LUID, SetHandleInformation,
+};
+use windows::Win32::System::Console::{
+    GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+};
 use windows::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
     RRF_SUBKEY_WOW6464KEY, RegGetValueW,
@@ -21,6 +26,28 @@ pub fn wide(s: &str) -> Vec<u16> {
 pub fn from_wide(b: &[u16]) -> String {
     let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
     String::from_utf16_lossy(&b[..end])
+}
+
+/// Makes this process's standard handles non-inheritable.
+///
+/// Rust creates child processes with handle inheritance on, so a child receives every
+/// inheritable handle we hold, not only the stdio it was given. `adb` then starts a server that
+/// outlives it; holding our stdout pipe, it keeps whoever reads our output (a PowerShell
+/// pipeline or redirection, CI) waiting for EOF forever. A child that inherits stdio on purpose
+/// still gets it: Rust duplicates the handle for that child.
+pub fn isolate_std_handles() {
+    for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: no preconditions; a null handle (no console, no redirection) is skipped and
+        // any other failure leaves the handle as it was.
+        unsafe {
+            match GetStdHandle(id) {
+                Ok(h) if !h.0.is_null() => {
+                    let _ = SetHandleInformation(h, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0));
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// LUID as `(high << 32) | low`.
