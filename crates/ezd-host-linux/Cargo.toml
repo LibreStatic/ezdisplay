@@ -1,6 +1,6 @@
 [package]
 name = "ezd-host-linux"
-description = "ezdisplay linux host backend: virtual display, capture and encode (skeleton)"
+description = "ezdisplay Linux host backend: KDE virtual output, PipeWire capture, VAAPI/NVENC encode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,9 @@ authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+# The crate is empty on other targets (`#![cfg(target_os = "linux")]`), so `cargo build --workspace`
+# on Windows must not build PipeWire or the portal client.
+[target.'cfg(target_os = "linux")'.dependencies]
 ezd-host-core.workspace = true
 ezd-ffmpeg.workspace = true
 ezd-proto.workspace = true
