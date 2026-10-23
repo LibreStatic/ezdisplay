@@ -1,0 +1,114 @@
+package io.github.facum.ezdisplay
+
+import android.app.Activity
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
+import android.os.Build
+import android.view.Display
+import android.view.InputDevice
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+
+/** Gathers what the host needs for negotiation and serializes it for native (`ClientCaps`). */
+object Capabilities {
+    private val CODECS = listOf(
+        "h264" to "video/avc",
+        "hevc" to "video/hevc",
+        "av1" to "video/av01",
+    )
+
+    /** Display modes at the panel's native resolution. */
+    data class NativeModes(val width: Int, val height: Int, val modes: List<Display.Mode>) {
+        /** The mode with the highest refresh rate. */
+        val best: Display.Mode get() = modes.maxBy { it.refreshRate }
+    }
+
+    @Suppress("DEPRECATION")
+    fun display(activity: Activity): Display =
+        if (Build.VERSION.SDK_INT >= 30) activity.display!! else activity.windowManager.defaultDisplay
+
+    fun nativeModes(display: Display): NativeModes {
+        val all = display.supportedModes.toList().ifEmpty { listOf(display.mode) }
+        // Landscape-normalized physical size; the largest one is the native resolution.
+        fun Display.Mode.size() = max(physicalWidth, physicalHeight) to min(physicalWidth, physicalHeight)
+        val native = all.maxBy { it.size().first.toLong() * it.size().second }.size()
+        val modes = all.filter { it.size() == native }
+        return NativeModes(native.first, native.second, modes)
+    }
+
+    fun toJson(activity: Activity, chosen: Display.Mode?): String {
+        val display = display(activity)
+        val native = nativeModes(display)
+        val rates = native.modes.map { (it.refreshRate * 1000).roundToInt() }.distinct().sorted()
+        val current = ((chosen ?: native.best).refreshRate * 1000).roundToInt()
+        val json = JSONObject()
+            .put("device_name", "${Build.MANUFACTURER} ${Build.MODEL}".trim())
+            .put(
+                "display",
+                JSONObject()
+                    .put("width_px", native.width)
+                    .put("height_px", native.height)
+                    .put("density_dpi", activity.resources.displayMetrics.densityDpi)
+                    .put("refresh_rates_mhz", JSONArray(rates))
+                    .put("current_refresh_mhz", current),
+            )
+            .put("decoders", decoders(native.width, native.height))
+            .put("stylus", hasStylus())
+            .put("max_touch_points", 10)
+        return json.toString()
+    }
+
+    private fun isHardware(info: MediaCodecInfo): Boolean {
+        if (Build.VERSION.SDK_INT >= 29) return info.isHardwareAccelerated
+        val n = info.name.lowercase()
+        return !(n.startsWith("omx.google.") || n.startsWith("c2.android.") || n.contains(".sw."))
+    }
+
+    private fun decoders(width: Int, height: Int): JSONArray {
+        val out = JSONArray()
+        val infos = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+        for (info in infos) {
+            if (info.isEncoder) continue
+            if (Build.VERSION.SDK_INT >= 29 && info.isAlias) continue
+            if (info.name.endsWith(".secure")) continue
+            for ((codec, mime) in CODECS) {
+                if (info.supportedTypes.none { it.equals(mime, ignoreCase = true) }) continue
+                val caps = try {
+                    info.getCapabilitiesForType(mime)
+                } catch (_: IllegalArgumentException) {
+                    continue
+                }
+                val video = caps.videoCapabilities ?: continue
+                val lowLatency = Build.VERSION.SDK_INT >= 30 &&
+                    caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+                val maxW = video.supportedWidths.upper
+                val maxH = video.supportedHeights.upper
+                val fps = try {
+                    video.getSupportedFrameRatesFor(min(width, maxW), min(height, maxH)).upper.toInt()
+                } catch (_: IllegalArgumentException) {
+                    video.supportedFrameRates.upper.toInt()
+                }
+                out.put(
+                    JSONObject()
+                        .put("codec", codec)
+                        .put("name", info.name)
+                        .put("hardware", isHardware(info))
+                        .put("low_latency", lowLatency)
+                        .put("max_width", maxW)
+                        .put("max_height", maxH)
+                        .put("max_fps", fps),
+                )
+            }
+        }
+        return out
+    }
+
+    private fun hasStylus(): Boolean =
+        InputDevice.getDeviceIds().any { id ->
+            val d = InputDevice.getDevice(id) ?: return@any false
+            d.supportsSource(InputDevice.SOURCE_STYLUS)
+        }
+}

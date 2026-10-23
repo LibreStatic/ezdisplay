@@ -1,0 +1,19 @@
+[package]
+name = "ezd-client-core"
+description = "ezdisplay client core: handshake, receive loop, frame acks, clock sync and cursor cache (decoder-agnostic)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ezd-link.workspace = true
+ezd-proto.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

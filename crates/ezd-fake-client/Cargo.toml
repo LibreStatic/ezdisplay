@@ -1,0 +1,36 @@
+[package]
+name = "ezd-fake-client"
+description = "Desktop stand-in for the Android client: decodes the stream with FFmpeg and measures latency"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "ezd_fake_client"
+
+[[bin]]
+name = "ezd-fake-client"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ezd-client-core = { path = "../ezd-client-core" }
+ezd-ffmpeg.workspace = true
+ezd-host-core.workspace = true
+ezd-link.workspace = true
+ezd-proto.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+ezd-ffmpeg.workspace = true
+ezd-host-core.workspace = true
+
+[lints]
+workspace = true

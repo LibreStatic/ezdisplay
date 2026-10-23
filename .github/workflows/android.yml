@@ -1,0 +1,64 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - "crates/ezd-android/**"
+      - "crates/ezd-client-core/**"
+      - "crates/ezd-proto/**"
+      - "crates/ezd-link/**"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "android/**"
+      - "crates/ezd-android/**"
+      - "crates/ezd-client-core/**"
+      - "crates/ezd-proto/**"
+      - "crates/ezd-link/**"
+      - ".github/workflows/android.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  NDK_VERSION: 28.2.13676358
+
+jobs:
+  android:
+    name: Android (check, APKs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install Android platform and NDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;${NDK_VERSION}"
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Native library (aarch64)
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          cargo check --target aarch64-linux-android -p ezd-android -p ezd-client-core
+          cargo ndk -t arm64-v8a clippy -p ezd-android -p ezd-client-core -- -D warnings
+      - name: Host tests of the portable parts
+        run: cargo test -p ezd-android -p ezd-client-core
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build APKs
+        working-directory: android
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          ./gradlew assembleFullDebug assemblePlayDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ezdisplay-android-apks
+          path: android/app/build/outputs/apk/*/debug/*.apk
+          if-no-files-found: error

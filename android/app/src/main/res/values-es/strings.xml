@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ezdisplay</string>
+    <string name="status_waiting">Esperando al host en %1$s…</string>
+    <string name="status_handshake">Conectado a %1$s, negociando…</string>
+    <string name="status_connected">Conectado: %1$d×%2$d@%3$s %4$s %5$s</string>
+    <string name="status_error">%1$s. Reintentando…</string>
+    <string name="status_ended">Desconectado (%1$s). Esperando al host en %2$s…</string>
+    <string name="status_bad_caps">No se puede iniciar: %1$s</string>
+    <string name="telemetry">%1$s fps · %2$s Mbit/s\ndecodificación %3$s / %4$s ms (p50 / p95)\nextremo a extremo %5$s / %6$s ms (p50 / p95)\nRTT %7$s ms · descartados %8$d\n%9$s</string>
+</resources>
