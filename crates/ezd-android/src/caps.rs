@@ -130,11 +130,24 @@ pub fn parse_caps(json: &str) -> Result<ParsedCaps, String> {
 }
 
 /// Picks the decoder to use for `codec`: hardware and low-latency first, like the host's negotiation.
+/// Some vendors list a dedicated low-latency instance next to the regular one, both reporting
+/// the low-latency feature (Qualcomm: `c2.qti.avc.decoder.low_latency`); that one wins the tie.
+/// Among equals the first listed is kept, so the result does not depend on later entries.
 pub fn choose_decoder(caps: &ClientCaps, codec: Codec) -> Option<&DecoderCaps> {
+    let rank = |d: &DecoderCaps| {
+        (
+            d.hardware,
+            d.low_latency,
+            d.name.to_ascii_lowercase().contains("low_latency"),
+        )
+    };
     caps.decoders
         .iter()
         .filter(|d| d.codec == codec)
-        .max_by_key(|d| (d.hardware as u8) * 2 + d.low_latency as u8)
+        .fold(None, |best: Option<&DecoderCaps>, d| match best {
+            Some(b) if rank(b) >= rank(d) => Some(b),
+            _ => Some(d),
+        })
 }
 
 #[cfg(test)]
@@ -164,6 +177,41 @@ mod tests {
         let d = choose_decoder(&p.caps, Codec::H264).unwrap();
         assert_eq!(d.name, "c2.qti.avc.decoder");
         assert!(choose_decoder(&p.caps, Codec::Av1).is_none());
+    }
+
+    #[test]
+    fn prefers_the_dedicated_low_latency_instance() {
+        let caps = |names: &[&str]| {
+            let decoders: Vec<String> = names
+                .iter()
+                .map(|n| {
+                    format!(r#"{{"codec": "h264", "name": "{n}", "hardware": true, "low_latency": true}}"#)
+                })
+                .collect();
+            let json = format!(
+                r#"{{"display": {{"width_px": 2960, "height_px": 1848, "refresh_rates_mhz": [120000]}},
+                    "decoders": [{}]}}"#,
+                decoders.join(",")
+            );
+            parse_caps(&json).unwrap().caps
+        };
+        // Real order on a Galaxy Tab S9 Ultra, and the reverse.
+        for names in [
+            ["c2.qti.avc.decoder", "c2.qti.avc.decoder.low_latency"],
+            ["c2.qti.avc.decoder.low_latency", "c2.qti.avc.decoder"],
+        ] {
+            let c = caps(&names);
+            assert_eq!(
+                choose_decoder(&c, Codec::H264).unwrap().name,
+                "c2.qti.avc.decoder.low_latency"
+            );
+        }
+        // Equal rank: the first listed stays.
+        let c = caps(&["c2.a.avc.decoder", "c2.b.avc.decoder"]);
+        assert_eq!(
+            choose_decoder(&c, Codec::H264).unwrap().name,
+            "c2.a.avc.decoder"
+        );
     }
 
     #[test]
