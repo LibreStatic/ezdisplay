@@ -16,14 +16,13 @@ jobs:
   linux:
     name: Linux (fmt, clippy, test)
     runs-on: ubuntu-24.04
+    # Arch ships FFmpeg 8.x, PipeWire and libva recent enough for the KDE host backend.
+    container: archlinux:latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install FFmpeg development libraries
+      - name: Install system packages
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
-            libavfilter-dev libavdevice-dev libx264-dev clang pkg-config
+          pacman -Syu --noconfirm --needed base-devel clang pkgconf ffmpeg pipewire libva git curl
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -51,6 +50,14 @@ jobs:
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - run: cargo build --workspace --release
       - run: cargo test --workspace
+      - name: Smoke test (ezd-host diag)
+        shell: pwsh
+        run: |
+          # A runner has no physical GPU or VDD: the point is that the binary starts with the
+          # FFmpeg DLLs, enumerates DXGI and prints valid JSON.
+          .\target\release\ezd-host.exe diag | Tee-Object -FilePath diag.json
+          if ($LASTEXITCODE -ne 0) { throw "ezd-host diag failed ($LASTEXITCODE)" }
+          Get-Content -Raw diag.json | ConvertFrom-Json | Out-Null
       - name: Collect artifact
         shell: pwsh
         run: |
@@ -76,4 +83,4 @@ jobs:
       - name: Protocol and link crates build for Android
         run: cargo check --target aarch64-linux-android -p ezd-proto -p ezd-link
       - name: Platform-independent crates build for Windows
-        run: cargo check --target x86_64-pc-windows-msvc -p ezd-proto -p ezd-link -p ezd-host-core
+        run: cargo check --target x86_64-pc-windows-msvc -p ezd-proto -p ezd-link -p ezd-host-core -p ezd-host-windows --no-default-features

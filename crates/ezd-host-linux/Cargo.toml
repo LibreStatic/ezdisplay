@@ -10,9 +10,18 @@ rust-version.workspace = true
 
 [dependencies]
 ezd-host-core.workspace = true
+ezd-ffmpeg.workspace = true
 ezd-proto.workspace = true
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast"] }
+pipewire = "0.10"
+libc = "0.2"
+tokio = { workspace = true }
 serde_json.workspace = true
 tracing.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+# FFI to FFmpeg (DRM frame descriptors, filter graphs), PipeWire raw buffers and libc fd handling.
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

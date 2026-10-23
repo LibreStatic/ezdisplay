@@ -1,0 +1,1299 @@
+//! Encode paths: VAAPI (DMA-BUF zero-copy or shared-memory upload), NVENC (system-memory BGR0) and
+//! libx264, built on raw FFmpeg (`ezd_ffmpeg::sys`) so that DRM-PRIME frames and filter graphs can
+//! be used. Option presets come from `ezd_ffmpeg::option_sets`.
+
+use crate::adapter::RenderNode;
+use crate::frame::{DmaBuf, Frame, Pixels, ShmBuf, av_pix_fmt_name, drm_fourcc};
+use ezd_ffmpeg::HwDevice;
+use ezd_ffmpeg::HwKind;
+use ezd_ffmpeg::sys as ff;
+use ezd_host_core::now_us;
+use std::ffi::{CStr, CString, c_void};
+use std::os::fd::IntoRawFd;
+use std::ptr;
+
+/// The family of an encode path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Kind {
+    /// h264_vaapi on a render node.
+    Vaapi,
+    /// h264_nvenc, system-memory input.
+    Nvenc,
+    /// libx264.
+    X264,
+}
+
+/// One candidate encode path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    /// FFmpeg encoder name.
+    pub name: &'static str,
+    /// Path family.
+    pub kind: Kind,
+    /// Render node used (VAAPI, NVENC for description).
+    pub node: Option<String>,
+}
+
+impl Plan {
+    /// Hardware encoder?
+    pub fn hardware(&self) -> bool {
+        self.kind != Kind::X264
+    }
+}
+
+/// Chooses the encoders to offer for `node`, best first. `works` tells whether a plan was
+/// verified on this machine. libx264 is always the last resort.
+pub fn plan_encoders(node: Option<&RenderNode>, works: &dyn Fn(&Plan) -> bool) -> Vec<Plan> {
+    let mut out = Vec::new();
+    if let Some(n) = node {
+        let primary = if n.is_nvidia() {
+            Plan {
+                name: "h264_nvenc",
+                kind: Kind::Nvenc,
+                node: Some(n.path.clone()),
+            }
+        } else {
+            Plan {
+                name: "h264_vaapi",
+                kind: Kind::Vaapi,
+                node: Some(n.path.clone()),
+            }
+        };
+        if works(&primary) {
+            out.push(primary);
+        }
+    }
+    let x264 = Plan {
+        name: "libx264",
+        kind: Kind::X264,
+        node: None,
+    };
+    if works(&x264) {
+        out.push(x264);
+    }
+    out
+}
+
+fn averr(what: &str, code: i32) -> String {
+    let mut buf = [0 as std::os::raw::c_char; 128];
+    // SAFETY: valid buffer of the stated size, NUL-terminated by av_strerror.
+    let text = unsafe {
+        ff::av_strerror(code, buf.as_mut_ptr(), buf.len());
+        CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
+    };
+    format!("{what}: {text} ({code})")
+}
+
+const EAGAIN: i32 = -11;
+
+/// Owned `AVBufferRef`.
+struct BufRef(*mut ff::AVBufferRef);
+
+// SAFETY: AVBufferRef refcounting is atomic; users only touch it from the encoder thread.
+unsafe impl Send for BufRef {}
+
+impl BufRef {
+    fn new_ref(&self) -> *mut ff::AVBufferRef {
+        // SAFETY: self.0 is a valid buffer ref.
+        unsafe { ff::av_buffer_ref(self.0) }
+    }
+}
+
+impl Drop for BufRef {
+    fn drop(&mut self) {
+        // SAFETY: we own one reference.
+        unsafe { ff::av_buffer_unref(&mut self.0) };
+    }
+}
+
+/// An `AVFrame` freed on drop.
+struct OwnedFrame(*mut ff::AVFrame);
+
+impl OwnedFrame {
+    fn alloc() -> Result<Self, String> {
+        // SAFETY: plain allocation.
+        let p = unsafe { ff::av_frame_alloc() };
+        if p.is_null() {
+            Err("av_frame_alloc failed".into())
+        } else {
+            Ok(OwnedFrame(p))
+        }
+    }
+}
+
+impl Drop for OwnedFrame {
+    fn drop(&mut self) {
+        // SAFETY: owned frame, free resets the pointer.
+        unsafe { ff::av_frame_free(&mut self.0) };
+    }
+}
+
+/// Filter graph with one buffer source and one sink.
+struct Graph {
+    g: *mut ff::AVFilterGraph,
+    src: *mut ff::AVFilterContext,
+    sink: *mut ff::AVFilterContext,
+}
+
+// SAFETY: only used from the encoder thread.
+unsafe impl Send for Graph {}
+
+impl Drop for Graph {
+    fn drop(&mut self) {
+        // SAFETY: owned graph; frees all filters.
+        unsafe { ff::avfilter_graph_free(&mut self.g) };
+    }
+}
+
+struct GraphInput {
+    pix_fmt: ff::AVPixelFormat,
+    width: u32,
+    height: u32,
+    fps_mhz: u32,
+    hw_frames: Option<*mut ff::AVBufferRef>,
+}
+
+impl Graph {
+    fn build(
+        input: &GraphInput,
+        desc: &str,
+        hw_device: Option<*mut ff::AVBufferRef>,
+    ) -> Result<Graph, String> {
+        // SAFETY: standard libavfilter construction sequence; every pointer is checked and the
+        // Graph's Drop frees the graph on any early return.
+        unsafe {
+            let g = ff::avfilter_graph_alloc();
+            if g.is_null() {
+                return Err("avfilter_graph_alloc failed".into());
+            }
+            let mut graph = Graph {
+                g,
+                src: ptr::null_mut(),
+                sink: ptr::null_mut(),
+            };
+            let buffer = ff::avfilter_get_by_name(c"buffer".as_ptr());
+            let buffersink = ff::avfilter_get_by_name(c"buffersink".as_ptr());
+            if buffer.is_null() || buffersink.is_null() {
+                return Err("libavfilter lacks buffer/buffersink".into());
+            }
+            graph.src = ff::avfilter_graph_alloc_filter(g, buffer, c"in".as_ptr());
+            if graph.src.is_null() {
+                return Err("cannot allocate buffer source".into());
+            }
+            let par = ff::av_buffersrc_parameters_alloc();
+            if par.is_null() {
+                return Err("av_buffersrc_parameters_alloc failed".into());
+            }
+            (*par).format = input.pix_fmt as i32;
+            (*par).width = input.width as i32;
+            (*par).height = input.height as i32;
+            (*par).time_base = ff::AVRational {
+                num: 1000,
+                den: input.fps_mhz as i32,
+            };
+            if let Some(h) = input.hw_frames {
+                (*par).hw_frames_ctx = h;
+            }
+            let r = ff::av_buffersrc_parameters_set(graph.src, par);
+            ff::av_free(par as *mut c_void);
+            if r < 0 {
+                return Err(averr("av_buffersrc_parameters_set", r));
+            }
+            let r = ff::avfilter_init_str(graph.src, ptr::null());
+            if r < 0 {
+                return Err(averr("init buffer source", r));
+            }
+            let r = ff::avfilter_graph_create_filter(
+                &mut graph.sink,
+                buffersink,
+                c"out".as_ptr(),
+                ptr::null(),
+                ptr::null_mut(),
+                g,
+            );
+            if r < 0 {
+                return Err(averr("create buffersink", r));
+            }
+            // Build the chain by hand (comma separated `name=args`): hardware device references
+            // must be attached before a filter is initialised, which the text parser cannot do.
+            let mut prev = graph.src;
+            for (i, part) in desc.split(',').enumerate() {
+                let (name, args) = part.split_once('=').unwrap_or((part, ""));
+                let cname = CString::new(name).map_err(|_| "bad filter name")?;
+                let def = ff::avfilter_get_by_name(cname.as_ptr());
+                if def.is_null() {
+                    return Err(format!("filter {name:?} not available in this FFmpeg"));
+                }
+                let inst = CString::new(format!("f{i}")).unwrap();
+                let f = ff::avfilter_graph_alloc_filter(g, def, inst.as_ptr());
+                if f.is_null() {
+                    return Err(format!("cannot allocate filter {name}"));
+                }
+                if let Some(dev) = hw_device {
+                    (*f).hw_device_ctx = ff::av_buffer_ref(dev);
+                }
+                let cargs = CString::new(args).map_err(|_| "bad filter args")?;
+                let r = ff::avfilter_init_str(
+                    f,
+                    if args.is_empty() {
+                        ptr::null()
+                    } else {
+                        cargs.as_ptr()
+                    },
+                );
+                if r < 0 {
+                    return Err(averr(&format!("init filter {part:?}"), r));
+                }
+                let r = ff::avfilter_link(prev, 0, f, 0);
+                if r < 0 {
+                    return Err(averr(&format!("link filter {name}"), r));
+                }
+                prev = f;
+            }
+            let r = ff::avfilter_link(prev, 0, graph.sink, 0);
+            if r < 0 {
+                return Err(averr("link buffersink", r));
+            }
+            let r = ff::avfilter_graph_config(g, ptr::null_mut());
+            if r < 0 {
+                return Err(averr(&format!("configure filter graph {desc:?}"), r));
+            }
+            Ok(graph)
+        }
+    }
+
+    fn sink_hw_frames(&self) -> *mut ff::AVBufferRef {
+        // SAFETY: valid, configured sink.
+        unsafe { ff::av_buffersink_get_hw_frames_ctx(self.sink) }
+    }
+
+    fn sink_size(&self) -> (u32, u32) {
+        // SAFETY: valid, configured sink.
+        unsafe {
+            (
+                ff::av_buffersink_get_w(self.sink) as u32,
+                ff::av_buffersink_get_h(self.sink) as u32,
+            )
+        }
+    }
+
+    /// Pushes `frame` (ownership of its references moves into the graph) and pulls one result.
+    fn run(&mut self, frame: *mut ff::AVFrame) -> Result<Option<OwnedFrame>, String> {
+        // SAFETY: src/sink are configured; `frame` is a valid frame whose refs the graph takes.
+        unsafe {
+            let r = ff::av_buffersrc_add_frame_flags(self.src, frame, 0);
+            if r < 0 {
+                return Err(averr("av_buffersrc_add_frame", r));
+            }
+            let out = OwnedFrame::alloc()?;
+            let r = ff::av_buffersink_get_frame(self.sink, out.0);
+            if r == EAGAIN {
+                return Ok(None);
+            }
+            if r < 0 {
+                return Err(averr("av_buffersink_get_frame", r));
+            }
+            Ok(Some(out))
+        }
+    }
+}
+
+/// Opened encoder context.
+struct Enc {
+    ctx: *mut ff::AVCodecContext,
+    pkt: *mut ff::AVPacket,
+    extradata: Vec<u8>,
+}
+
+// SAFETY: exclusively owned FFmpeg objects, moved between threads only as a whole.
+unsafe impl Send for Enc {}
+
+impl Drop for Enc {
+    fn drop(&mut self) {
+        // SAFETY: owned; the free functions reset the pointers.
+        unsafe {
+            ff::av_packet_free(&mut self.pkt);
+            ff::avcodec_free_context(&mut self.ctx);
+        }
+    }
+}
+
+struct EncParams<'a> {
+    name: &'a str,
+    width: u32,
+    height: u32,
+    fps_mhz: u32,
+    kbps: u32,
+    pix_fmt: ff::AVPixelFormat,
+    hw_frames: Option<*mut ff::AVBufferRef>,
+}
+
+impl Enc {
+    fn open(p: &EncParams<'_>) -> Result<Enc, String> {
+        let cname = CString::new(p.name).map_err(|_| "bad encoder name")?;
+        // SAFETY: valid NUL-terminated name.
+        let codec = unsafe { ff::avcodec_find_encoder_by_name(cname.as_ptr()) };
+        if codec.is_null() {
+            return Err(format!("encoder {} not available in this FFmpeg", p.name));
+        }
+        let mut last = String::from("no option set");
+        for set in ezd_ffmpeg::option_sets(p.name) {
+            match Self::try_open(codec, p, &set) {
+                Ok(e) => return Ok(e),
+                Err(e) => {
+                    tracing::debug!("opening {} with {set:?} failed: {e}", p.name);
+                    last = e;
+                }
+            }
+        }
+        Err(last)
+    }
+
+    fn try_open(
+        codec: *const ff::AVCodec,
+        p: &EncParams<'_>,
+        preset: &[(&'static str, String)],
+    ) -> Result<Enc, String> {
+        // SAFETY: standard codec context setup, mirrored from `ezd_ffmpeg::Encoder`; the Enc's Drop
+        // releases everything on early return.
+        unsafe {
+            let ctx = ff::avcodec_alloc_context3(codec);
+            if ctx.is_null() {
+                return Err("avcodec_alloc_context3 failed".into());
+            }
+            let mut enc = Enc {
+                ctx,
+                pkt: ptr::null_mut(),
+                extradata: Vec::new(),
+            };
+            let bitrate = p.kbps as i64 * 1000;
+            let fps = p.fps_mhz as f64 / 1000.0;
+            let c = &mut *ctx;
+            c.width = p.width as i32;
+            c.height = p.height as i32;
+            c.time_base = ff::AVRational {
+                num: 1000,
+                den: p.fps_mhz as i32,
+            };
+            c.framerate = ff::AVRational {
+                num: p.fps_mhz as i32,
+                den: 1000,
+            };
+            c.pix_fmt = p.pix_fmt;
+            c.bit_rate = bitrate;
+            c.rc_max_rate = bitrate;
+            c.rc_buffer_size = ((bitrate as f64 * 2.0 / fps) as i32).max(1000);
+            c.gop_size = i32::MAX;
+            c.max_b_frames = 0;
+            c.thread_count = 1;
+            c.colorspace = ff::AVColorSpace::AVCOL_SPC_BT709;
+            c.color_primaries = ff::AVColorPrimaries::AVCOL_PRI_BT709;
+            c.color_trc = ff::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
+            c.color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
+            c.flags |= (ff::AV_CODEC_FLAG_GLOBAL_HEADER | ff::AV_CODEC_FLAG_LOW_DELAY) as i32;
+            if let Some(h) = p.hw_frames {
+                c.hw_frames_ctx = ff::av_buffer_ref(h);
+            }
+            let mut dict: *mut ff::AVDictionary = ptr::null_mut();
+            for (k, v) in preset {
+                let (ck, cv) = (CString::new(*k).unwrap(), CString::new(v.as_str()).unwrap());
+                ff::av_dict_set(&mut dict, ck.as_ptr(), cv.as_ptr(), 0);
+            }
+            let r = ff::avcodec_open2(ctx, codec, &mut dict);
+            ff::av_dict_free(&mut dict);
+            if r < 0 {
+                return Err(averr(&format!("avcodec_open2({})", p.name), r));
+            }
+            let c = &*ctx;
+            if !c.extradata.is_null() && c.extradata_size > 0 {
+                enc.extradata =
+                    std::slice::from_raw_parts(c.extradata, c.extradata_size as usize).to_vec();
+            }
+            enc.pkt = ff::av_packet_alloc();
+            if enc.pkt.is_null() {
+                return Err("av_packet_alloc failed".into());
+            }
+            Ok(enc)
+        }
+    }
+
+    fn send(&mut self, frame: *const ff::AVFrame) -> Result<(), String> {
+        // SAFETY: opened context, valid frame.
+        let r = unsafe { ff::avcodec_send_frame(self.ctx, frame) };
+        if r < 0 {
+            return Err(averr("avcodec_send_frame", r));
+        }
+        Ok(())
+    }
+
+    fn receive(&mut self) -> Result<Option<(Vec<u8>, bool)>, String> {
+        // SAFETY: opened context; after success the packet buffer is readable until unref.
+        unsafe {
+            let r = ff::avcodec_receive_packet(self.ctx, self.pkt);
+            if r == EAGAIN || r == -(i32::from_le_bytes(*b"EOF ")) {
+                return Ok(None);
+            }
+            if r < 0 {
+                return Err(averr("avcodec_receive_packet", r));
+            }
+            let p = &*self.pkt;
+            let data = std::slice::from_raw_parts(p.data, p.size as usize).to_vec();
+            let key = p.flags & ff::AV_PKT_FLAG_KEY != 0;
+            ff::av_packet_unref(self.pkt);
+            Ok(Some((data, key)))
+        }
+    }
+}
+
+unsafe extern "C" fn free_boxed_vec(opaque: *mut c_void, _data: *mut u8) {
+    // SAFETY: `opaque` is the Box<Vec<u8>> leaked in `shm_frame`.
+    drop(unsafe { Box::from_raw(opaque as *mut Vec<u8>) });
+}
+
+unsafe extern "C" fn free_drm_descriptor(opaque: *mut c_void, _data: *mut u8) {
+    // SAFETY: `opaque` is the Box<ff::AVDRMFrameDescriptor> leaked in `drm_frame`; objects hold the
+    // fds we own.
+    let d = unsafe { Box::from_raw(opaque as *mut ff::AVDRMFrameDescriptor) };
+    for o in &d.objects[..d.nb_objects.max(0) as usize] {
+        if o.fd >= 0 {
+            // SAFETY: fd was detached from an OwnedFd with into_raw_fd.
+            unsafe { libc::close(o.fd) };
+        }
+    }
+}
+
+fn pix_fmt_of(spa: u32) -> Result<ff::AVPixelFormat, String> {
+    use ff::AVPixelFormat::*;
+    Ok(match av_pix_fmt_name(spa) {
+        Some("bgr0") => AV_PIX_FMT_BGR0,
+        Some("bgra") => AV_PIX_FMT_BGRA,
+        Some("rgb0") => AV_PIX_FMT_RGB0,
+        Some("rgba") => AV_PIX_FMT_RGBA,
+        Some("0rgb") => AV_PIX_FMT_0RGB,
+        Some("0bgr") => AV_PIX_FMT_0BGR,
+        Some("argb") => AV_PIX_FMT_ARGB,
+        Some("abgr") => AV_PIX_FMT_ABGR,
+        _ => return Err(format!("unsupported pixel format {spa}")),
+    })
+}
+
+/// Wraps shared-memory pixels in an `AVFrame` without copying.
+fn shm_frame(w: u32, h: u32, shm: ShmBuf) -> Result<OwnedFrame, String> {
+    let fmt = pix_fmt_of(shm.spa_format)?;
+    let mut boxed = Box::new(shm.data);
+    let (data, len) = (boxed.as_mut_ptr(), boxed.len());
+    let opaque = Box::into_raw(boxed) as *mut c_void;
+    let f = OwnedFrame::alloc()?;
+    // SAFETY: `data`/`len` describe the Vec kept alive by the buffer ref created here; on failure the
+    // Box is reclaimed.
+    unsafe {
+        let buf = ff::av_buffer_create(data, len, Some(free_boxed_vec), opaque, 0);
+        if buf.is_null() {
+            drop(Box::from_raw(opaque as *mut Vec<u8>));
+            return Err("av_buffer_create failed".into());
+        }
+        let fr = &mut *f.0;
+        fr.buf[0] = buf;
+        fr.data[0] = data;
+        fr.linesize[0] = shm.stride as i32;
+        fr.format = fmt as i32;
+        fr.width = w as i32;
+        fr.height = h as i32;
+    }
+    Ok(f)
+}
+
+/// Wraps a DMA-BUF in a `DRM_PRIME` `AVFrame`. Plane fds are moved into the frame.
+fn drm_frame(
+    w: u32,
+    h: u32,
+    dma: DmaBuf,
+    frames: &BufRef,
+) -> Result<(OwnedFrame, crate::frame::Release), String> {
+    let DmaBuf {
+        spa_format,
+        modifier,
+        planes,
+        release,
+    } = dma;
+    let fourcc = drm_fourcc(spa_format).ok_or("unsupported DRM format")?;
+    if planes.is_empty() || planes.len() > 4 {
+        return Err(format!("unsupported plane count {}", planes.len()));
+    }
+    // SAFETY: AVDRMFrameDescriptor is plain data; zero is a valid initial value.
+    let mut d: Box<ff::AVDRMFrameDescriptor> = Box::new(unsafe { std::mem::zeroed() });
+    d.nb_objects = planes.len() as i32;
+    d.nb_layers = 1;
+    d.layers[0].format = fourcc;
+    d.layers[0].nb_planes = planes.len() as i32;
+    for (i, p) in planes.into_iter().enumerate() {
+        d.objects[i].size = p.size as usize;
+        d.objects[i].format_modifier = modifier;
+        d.layers[0].planes[i].object_index = i as i32;
+        d.layers[0].planes[i].offset = p.offset as isize;
+        d.layers[0].planes[i].pitch = p.pitch as isize;
+        d.objects[i].fd = p.fd.into_raw_fd();
+    }
+    let data = &mut *d as *mut ff::AVDRMFrameDescriptor as *mut u8;
+    let opaque = Box::into_raw(d) as *mut c_void;
+    let f = OwnedFrame::alloc()?;
+    // SAFETY: the descriptor lives until the buffer ref is released (free_drm_descriptor closes
+    // the fds); on failure we reclaim it.
+    unsafe {
+        let buf = ff::av_buffer_create(
+            data,
+            std::mem::size_of::<ff::AVDRMFrameDescriptor>(),
+            Some(free_drm_descriptor),
+            opaque,
+            0,
+        );
+        if buf.is_null() {
+            free_drm_descriptor(opaque, data);
+            return Err("av_buffer_create failed".into());
+        }
+        let fr = &mut *f.0;
+        fr.buf[0] = buf;
+        fr.data[0] = data;
+        fr.format = ff::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as i32;
+        fr.width = w as i32;
+        fr.height = h as i32;
+        fr.hw_frames_ctx = frames.new_ref();
+    }
+    Ok((f, release))
+}
+
+/// Result of encoding one frame.
+#[derive(Debug)]
+pub struct Output {
+    /// Annex-B access unit.
+    pub data: Vec<u8>,
+    /// IDR?
+    pub keyframe: bool,
+    /// SPS/PPS to send with this frame (first frame and forced keyframes).
+    pub codec_config: Option<Vec<u8>>,
+    /// `now_us` when encoding finished.
+    pub encoded_us: u64,
+    /// Which input path produced it.
+    pub path: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputKey {
+    dma: bool,
+    spa_format: u32,
+    width: u32,
+    height: u32,
+}
+
+struct Active {
+    key: InputKey,
+    graph: Option<Graph>,
+    enc: Enc,
+    drm_frames: Option<BufRef>,
+    /// Keeps the VAAPI/DRM devices alive as long as the encoder.
+    _devices: Vec<BufRef>,
+    _vaapi: Option<HwDevice>,
+    sent_config: bool,
+    path: &'static str,
+}
+
+/// Capture-to-bitstream pipeline for one plan.
+pub struct Pipeline {
+    plan: Plan,
+    fps_mhz: u32,
+    kbps: u32,
+    active: Option<Active>,
+    pts: i64,
+}
+
+/// `scale_vaapi` conversion to NV12 with BT.709 limited range.
+fn scale_vaapi(w: u32, h: u32, color: bool) -> String {
+    let base = format!("scale_vaapi=w={w}:h={h}:format=nv12");
+    if color {
+        format!("{base}:out_color_matrix=bt709:out_range=tv")
+    } else {
+        base
+    }
+}
+
+fn even(v: u32) -> u32 {
+    v & !1
+}
+
+impl Pipeline {
+    /// New pipeline; nothing is opened until the first frame arrives.
+    pub fn new(plan: Plan, fps_mhz: u32, kbps: u32) -> Pipeline {
+        Pipeline {
+            plan,
+            fps_mhz,
+            kbps,
+            active: None,
+            pts: 0,
+        }
+    }
+
+    /// Input path currently in use (`dmabuf`/`shm`), if started.
+    pub fn path(&self) -> Option<&'static str> {
+        self.active.as_ref().map(|a| a.path)
+    }
+
+    fn open(&self, frame: &Frame) -> Result<Active, String> {
+        let (w, h) = (even(frame.width), even(frame.height));
+        let (dma, spa_format) = match &frame.pixels {
+            Pixels::Dma(d) => (true, d.spa_format),
+            Pixels::Shm(s) => (false, s.spa_format),
+        };
+        let key = InputKey {
+            dma,
+            spa_format,
+            width: frame.width,
+            height: frame.height,
+        };
+        let in_fmt = pix_fmt_of(spa_format)?;
+        let node = self.plan.node.clone().unwrap_or_default();
+        match self.plan.kind {
+            Kind::Vaapi => {
+                let vaapi =
+                    HwDevice::open(HwKind::Vaapi, Some(&node)).map_err(|e| e.to_string())?;
+                let mut devices = Vec::new();
+                let mut drm_frames = None;
+                let (graph, path) = if dma {
+                    // DRM device + frames context describing the imported buffers.
+                    let (dev, frames) = drm_context(&node, in_fmt, frame.width, frame.height)?;
+                    let input = GraphInput {
+                        pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_DRM_PRIME,
+                        width: frame.width,
+                        height: frame.height,
+                        fps_mhz: self.fps_mhz,
+                        hw_frames: Some(frames.0),
+                    };
+                    let mut last = String::new();
+                    let mut g = None;
+                    for color in [true, false] {
+                        let desc =
+                            format!("hwmap=derive_device=vaapi,{}", scale_vaapi(w, h, color));
+                        match Graph::build(&input, &desc, None) {
+                            Ok(x) => {
+                                g = Some(x);
+                                break;
+                            }
+                            Err(e) => last = e,
+                        }
+                    }
+                    devices.push(dev);
+                    drm_frames = Some(frames);
+                    (g.ok_or(last)?, "vaapi-dmabuf")
+                } else {
+                    let input = GraphInput {
+                        pix_fmt: in_fmt,
+                        width: frame.width,
+                        height: frame.height,
+                        fps_mhz: self.fps_mhz,
+                        hw_frames: None,
+                    };
+                    let mut last = String::new();
+                    let mut g = None;
+                    for desc in [
+                        format!("hwupload,{}", scale_vaapi(w, h, true)),
+                        format!("hwupload,{}", scale_vaapi(w, h, false)),
+                        format!(
+                            "scale=w={w}:h={h}:out_color_matrix=bt709:out_range=tv,format=nv12,hwupload"
+                        ),
+                    ] {
+                        match Graph::build(&input, &desc, Some(vaapi.as_ptr())) {
+                            Ok(x) => {
+                                g = Some(x);
+                                break;
+                            }
+                            Err(e) => last = e,
+                        }
+                    }
+                    (g.ok_or(last)?, "vaapi-shm")
+                };
+                let enc = Enc::open(&EncParams {
+                    name: self.plan.name,
+                    width: w,
+                    height: h,
+                    fps_mhz: self.fps_mhz,
+                    kbps: self.kbps,
+                    pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_VAAPI,
+                    hw_frames: Some(graph.sink_hw_frames()),
+                })?;
+                let (gw, gh) = graph.sink_size();
+                if (gw, gh) != (w, h) {
+                    return Err(format!("filter output is {gw}x{gh}, expected {w}x{h}"));
+                }
+                Ok(Active {
+                    key,
+                    graph: Some(graph),
+                    enc,
+                    drm_frames,
+                    _devices: devices,
+                    _vaapi: Some(vaapi),
+                    sent_config: false,
+                    path,
+                })
+            }
+            Kind::Nvenc => {
+                if dma {
+                    return Err("NVENC path takes shared-memory frames".into());
+                }
+                let enc = Enc::open(&EncParams {
+                    name: self.plan.name,
+                    width: w,
+                    height: h,
+                    fps_mhz: self.fps_mhz,
+                    kbps: self.kbps,
+                    pix_fmt: in_fmt,
+                    hw_frames: None,
+                })?;
+                Ok(Active {
+                    key,
+                    graph: None,
+                    enc,
+                    drm_frames: None,
+                    _devices: Vec::new(),
+                    _vaapi: None,
+                    sent_config: false,
+                    path: "nvenc-sysmem",
+                })
+            }
+            Kind::X264 => {
+                if dma {
+                    return Err("libx264 path takes shared-memory frames".into());
+                }
+                let input = GraphInput {
+                    pix_fmt: in_fmt,
+                    width: frame.width,
+                    height: frame.height,
+                    fps_mhz: self.fps_mhz,
+                    hw_frames: None,
+                };
+                let desc = format!(
+                    "scale=w={w}:h={h}:flags=fast_bilinear:out_color_matrix=bt709:out_range=tv,format=yuv420p"
+                );
+                let graph = Graph::build(&input, &desc, None)?;
+                let enc = Enc::open(&EncParams {
+                    name: self.plan.name,
+                    width: w,
+                    height: h,
+                    fps_mhz: self.fps_mhz,
+                    kbps: self.kbps,
+                    pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_YUV420P,
+                    hw_frames: None,
+                })?;
+                Ok(Active {
+                    key,
+                    graph: Some(graph),
+                    enc,
+                    drm_frames: None,
+                    _devices: Vec::new(),
+                    _vaapi: None,
+                    sent_config: false,
+                    path: "x264-swscale",
+                })
+            }
+        }
+    }
+
+    /// Encodes `frame`. A new encoder is opened when the input format or size changes (the
+    /// result then starts with an IDR and codec config). The PipeWire buffer behind a DMA-BUF
+    /// frame is released after the encoder produced its packet.
+    pub fn encode(&mut self, frame: Frame, force_key: bool) -> Result<Option<Output>, String> {
+        let key = InputKey {
+            dma: frame.is_dma(),
+            spa_format: match &frame.pixels {
+                Pixels::Dma(d) => d.spa_format,
+                Pixels::Shm(s) => s.spa_format,
+            },
+            width: frame.width,
+            height: frame.height,
+        };
+        if self.active.as_ref().is_none_or(|a| a.key != key) {
+            self.active = None;
+            self.active = Some(self.open(&frame)?);
+            tracing::info!(path = self.path(), plan = ?self.plan, "encode pipeline opened");
+        }
+        let a = self.active.as_mut().expect("opened above");
+        let want_key = force_key || !a.sent_config;
+        let (w, h) = (frame.width, frame.height);
+
+        let (av, _release) = match frame.pixels {
+            Pixels::Dma(d) => {
+                let frames = a.drm_frames.as_ref().ok_or("no DRM frames context")?;
+                let (f, rel) = drm_frame(w, h, d, frames)?;
+                (f, Some(rel))
+            }
+            Pixels::Shm(s) => (shm_frame(w, h, s)?, None),
+        };
+        // SAFETY: the frame is exclusively ours.
+        unsafe {
+            (*av.0).pts = self.pts;
+        }
+        self.pts += 1;
+        let out = match a.graph.as_mut() {
+            Some(g) => match g.run(av.0)? {
+                Some(o) => o,
+                None => return Ok(None),
+            },
+            None => av,
+        };
+        // SAFETY: `out` is a valid frame we own.
+        unsafe {
+            let f = &mut *out.0;
+            if want_key {
+                f.pict_type = ff::AVPictureType::AV_PICTURE_TYPE_I;
+                f.flags |= ff::AV_FRAME_FLAG_KEY;
+            } else {
+                f.pict_type = ff::AVPictureType::AV_PICTURE_TYPE_NONE;
+                f.flags &= !(ff::AV_FRAME_FLAG_KEY);
+            }
+        }
+        a.enc.send(out.0)?;
+        drop(out);
+        let packet = a.enc.receive()?;
+        let encoded_us = now_us();
+        // The GPU/CPU is done with the capture buffer once the packet is out.
+        drop(_release);
+        let Some((data, keyframe)) = packet else {
+            return Ok(None);
+        };
+        let codec_config = if (want_key || !a.sent_config) && !a.enc.extradata.is_empty() {
+            Some(a.enc.extradata.clone())
+        } else {
+            None
+        };
+        a.sent_config = true;
+        Ok(Some(Output {
+            data,
+            keyframe,
+            codec_config,
+            encoded_us,
+            path: a.path,
+        }))
+    }
+}
+
+/// DRM device and a `DRM_PRIME` frames context for imported buffers.
+fn drm_context(
+    node: &str,
+    pix_fmt: ff::AVPixelFormat,
+    w: u32,
+    h: u32,
+) -> Result<(BufRef, BufRef), String> {
+    let cnode = CString::new(node).map_err(|_| "bad device path")?;
+    // SAFETY: standard hwdevice/hwframes construction; refs are wrapped in BufRef immediately.
+    unsafe {
+        let mut dev = ptr::null_mut();
+        let r = ff::av_hwdevice_ctx_create(
+            &mut dev,
+            ff::AVHWDeviceType::AV_HWDEVICE_TYPE_DRM,
+            cnode.as_ptr(),
+            ptr::null_mut(),
+            0,
+        );
+        if r < 0 {
+            return Err(averr(&format!("create DRM device {node}"), r));
+        }
+        let dev = BufRef(dev);
+        let frames = ff::av_hwframe_ctx_alloc(dev.0);
+        if frames.is_null() {
+            return Err("av_hwframe_ctx_alloc failed".into());
+        }
+        let mut frames = BufRef(frames);
+        let fc = &mut *((*frames.0).data as *mut ff::AVHWFramesContext);
+        fc.format = ff::AVPixelFormat::AV_PIX_FMT_DRM_PRIME;
+        fc.sw_format = pix_fmt;
+        fc.width = w as i32;
+        fc.height = h as i32;
+        let r = ff::av_hwframe_ctx_init(frames.0);
+        if r < 0 {
+            ff::av_buffer_unref(&mut frames.0);
+            frames.0 = ptr::null_mut();
+            return Err(averr("av_hwframe_ctx_init(DRM)", r));
+        }
+        Ok((dev, frames))
+    }
+}
+
+/// Exports a VAAPI surface filled with `rgba_pattern` as a DMA-BUF `Frame`, for self-tests and
+/// diagnostics of the zero-copy path. The pattern is `(r, g, b)` per quadrant of a BGRx image.
+#[cfg(test)]
+pub fn export_test_dmabuf(
+    node: &str,
+    w: u32,
+    h: u32,
+    quadrants: [(u8, u8, u8); 4],
+) -> Result<Frame, String> {
+    let dev = HwDevice::open(HwKind::Vaapi, Some(node)).map_err(|e| e.to_string())?;
+    // SAFETY: construction of a VAAPI frames context, upload of a software frame and export through
+    // av_hwframe_map; all objects are freed on every path by the wrappers.
+    unsafe {
+        let frames = ff::av_hwframe_ctx_alloc(dev.as_ptr());
+        if frames.is_null() {
+            return Err("av_hwframe_ctx_alloc failed".into());
+        }
+        let mut frames = BufRef(frames);
+        let fc = &mut *((*frames.0).data as *mut ff::AVHWFramesContext);
+        fc.format = ff::AVPixelFormat::AV_PIX_FMT_VAAPI;
+        fc.sw_format = ff::AVPixelFormat::AV_PIX_FMT_BGR0;
+        fc.width = w as i32;
+        fc.height = h as i32;
+        fc.initial_pool_size = 2;
+        let r = ff::av_hwframe_ctx_init(frames.0);
+        if r < 0 {
+            ff::av_buffer_unref(&mut frames.0);
+            frames.0 = ptr::null_mut();
+            return Err(averr("av_hwframe_ctx_init(VAAPI BGR0)", r));
+        }
+        // Software source.
+        let sw = OwnedFrame::alloc()?;
+        (*sw.0).format = ff::AVPixelFormat::AV_PIX_FMT_BGR0 as i32;
+        (*sw.0).width = w as i32;
+        (*sw.0).height = h as i32;
+        let r = ff::av_frame_get_buffer(sw.0, 0);
+        if r < 0 {
+            return Err(averr("av_frame_get_buffer", r));
+        }
+        for y in 0..h as usize {
+            let row = (*sw.0).data[0].add(y * (*sw.0).linesize[0] as usize);
+            for x in 0..w as usize {
+                let q = (y >= h as usize / 2) as usize * 2 + (x >= w as usize / 2) as usize;
+                let (r, g, b) = quadrants[q];
+                let px = row.add(x * 4);
+                *px = b;
+                *px.add(1) = g;
+                *px.add(2) = r;
+                *px.add(3) = 0;
+            }
+        }
+        let hw = OwnedFrame::alloc()?;
+        let r = ff::av_hwframe_get_buffer(frames.0, hw.0, 0);
+        if r < 0 {
+            return Err(averr("av_hwframe_get_buffer", r));
+        }
+        let r = ff::av_hwframe_transfer_data(hw.0, sw.0, 0);
+        if r < 0 {
+            return Err(averr("upload to VAAPI surface", r));
+        }
+        // Export as DRM PRIME.
+        let drm = OwnedFrame::alloc()?;
+        (*drm.0).format = ff::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as i32;
+        let r = ff::av_hwframe_map(drm.0, hw.0, ff::AV_HWFRAME_MAP_READ as i32);
+        if r < 0 {
+            return Err(averr("map VAAPI surface to DRM PRIME", r));
+        }
+        let d = &*((*drm.0).data[0] as *const ff::AVDRMFrameDescriptor);
+        if d.nb_layers < 1 {
+            return Err("exported frame has no layers".into());
+        }
+        let layer = &d.layers[0];
+        let mut planes = Vec::new();
+        for i in 0..layer.nb_planes as usize {
+            let p = &layer.planes[i];
+            let o = &d.objects[p.object_index as usize];
+            let fd = libc::fcntl(o.fd, libc::F_DUPFD_CLOEXEC, 0);
+            if fd < 0 {
+                return Err("dup of exported dma-buf failed".into());
+            }
+            planes.push(crate::frame::Plane {
+                fd: std::os::fd::FromRawFd::from_raw_fd(fd),
+                size: o.size as u64,
+                offset: p.offset as u32,
+                pitch: p.pitch as u32,
+            });
+        }
+        let modifier = d.objects[0].format_modifier;
+        let fourcc = layer.format;
+        let spa_format = [
+            crate::frame::spa_fmt::BGRX,
+            crate::frame::spa_fmt::BGRA,
+            crate::frame::spa_fmt::RGBX,
+            crate::frame::spa_fmt::RGBA,
+        ]
+        .into_iter()
+        .find(|f| drm_fourcc(*f) == Some(fourcc))
+        .ok_or_else(|| format!("exported fourcc {fourcc:#x} not supported"))?;
+        tracing::debug!(
+            modifier = format_args!("{modifier:#x}"),
+            fourcc = format_args!("{fourcc:#x}"),
+            "exported test dma-buf"
+        );
+        Ok(Frame {
+            width: w,
+            height: h,
+            capture_us: now_us(),
+            seq: 0,
+            pixels: Pixels::Dma(DmaBuf {
+                spa_format,
+                modifier,
+                planes,
+                release: crate::frame::Release(None),
+            }),
+        })
+    }
+}
+
+/// A BGRx test image with four colored quadrants, as a shared-memory frame.
+pub fn test_shm_frame(w: u32, h: u32, quadrants: [(u8, u8, u8); 4]) -> Frame {
+    let mut data = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let q = (y >= h as usize / 2) as usize * 2 + (x >= w as usize / 2) as usize;
+            let (r, g, b) = quadrants[q];
+            let i = (y * w as usize + x) * 4;
+            data[i..i + 4].copy_from_slice(&[b, g, r, 0]);
+        }
+    }
+    Frame {
+        width: w,
+        height: h,
+        capture_us: now_us(),
+        seq: 0,
+        pixels: Pixels::Shm(ShmBuf {
+            spa_format: crate::frame::spa_fmt::BGRX,
+            stride: w as usize * 4,
+            data,
+        }),
+    }
+}
+
+/// Probes whether `plan` can encode a shared-memory frame through the real pipeline.
+pub fn probe_plan(plan: &Plan) -> Result<(), String> {
+    let mut p = Pipeline::new(plan.clone(), 60_000, 8_000);
+    let f = test_shm_frame(
+        1280,
+        720,
+        [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)],
+    );
+    match p.encode(f, true)? {
+        Some(o) if o.keyframe && !o.data.is_empty() => Ok(()),
+        Some(_) => Err("first packet was not a keyframe".into()),
+        None => Err("no packet produced".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::RenderNode;
+    use ezd_ffmpeg::Decoder;
+    use ezd_proto::Codec;
+
+    fn node(path: &str, vendor: u16) -> RenderNode {
+        RenderNode {
+            path: path.into(),
+            vendor,
+            driver: "x".into(),
+            pci: String::new(),
+            compositor: false,
+        }
+    }
+
+    #[test]
+    fn plan_selection() {
+        let all = |_: &Plan| true;
+        let intel = plan_encoders(Some(&node("/dev/dri/renderD129", 0x8086)), &all);
+        assert_eq!(
+            intel.iter().map(|p| p.name).collect::<Vec<_>>(),
+            ["h264_vaapi", "libx264"]
+        );
+        assert_eq!(intel[0].node.as_deref(), Some("/dev/dri/renderD129"));
+        assert!(intel[0].hardware() && !intel[1].hardware());
+        let nv = plan_encoders(Some(&node("/dev/dri/renderD128", 0x10de)), &all);
+        assert_eq!(nv[0].name, "h264_nvenc");
+        // A broken hardware path leaves only x264; nothing works -> empty.
+        let sw = plan_encoders(Some(&node("/dev/dri/renderD129", 0x8086)), &|p| {
+            p.kind == Kind::X264
+        });
+        assert_eq!(sw.len(), 1);
+        assert!(plan_encoders(None, &|_| false).is_empty());
+        assert_eq!(plan_encoders(None, &all)[0].name, "libx264");
+    }
+
+    fn decode_first(out: &Output) -> ezd_ffmpeg::DecodedFrame {
+        let mut d = Decoder::new(Codec::H264).unwrap();
+        if let Some(c) = &out.codec_config {
+            d.push_config(c).unwrap();
+        }
+        let mut frames = d.decode(&out.data, 0).unwrap();
+        frames.extend(d.flush().unwrap());
+        frames.into_iter().next().expect("decoded a picture")
+    }
+
+    fn rgb_at(f: &ezd_ffmpeg::DecodedFrame, x: u32, y: u32) -> [u8; 3] {
+        let rgb = f.to_rgb24();
+        let i = ((y * f.width + x) * 3) as usize;
+        [rgb[i], rgb[i + 1], rgb[i + 2]]
+    }
+
+    fn near(a: [u8; 3], b: [u8; 3]) -> bool {
+        a.iter()
+            .zip(b)
+            .all(|(x, y)| (*x as i32 - y as i32).abs() < 40)
+    }
+
+    const Q: [(u8, u8, u8); 4] = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (240, 240, 240)];
+
+    fn check_colors(f: &ezd_ffmpeg::DecodedFrame) {
+        let (w, h) = (f.width, f.height);
+        assert!(
+            near(rgb_at(f, w / 4, h / 4), [255, 0, 0]),
+            "{:?}",
+            rgb_at(f, w / 4, h / 4)
+        );
+        assert!(near(rgb_at(f, 3 * w / 4, h / 4), [0, 255, 0]));
+        assert!(near(rgb_at(f, w / 4, 3 * h / 4), [0, 0, 255]));
+        assert!(near(rgb_at(f, 3 * w / 4, 3 * h / 4), [240, 240, 240]));
+    }
+
+    #[test]
+    fn x264_path_encodes_and_decodes_with_colors() {
+        let plan = Plan {
+            name: "libx264",
+            kind: Kind::X264,
+            node: None,
+        };
+        let mut p = Pipeline::new(plan, 60_000, 8_000);
+        let out = p
+            .encode(test_shm_frame(320, 240, Q), false)
+            .unwrap()
+            .unwrap();
+        assert!(out.keyframe, "first frame must be an IDR");
+        assert!(out.codec_config.is_some());
+        assert_eq!(p.path(), Some("x264-swscale"));
+        check_colors(&decode_first(&out));
+        // Next frame: delta, no config; forced keyframe again IDR with config.
+        let out = p
+            .encode(test_shm_frame(320, 240, Q), false)
+            .unwrap()
+            .unwrap();
+        assert!(!out.keyframe && out.codec_config.is_none());
+        let out = p
+            .encode(test_shm_frame(320, 240, Q), true)
+            .unwrap()
+            .unwrap();
+        assert!(out.keyframe && out.codec_config.is_some());
+    }
+
+    #[test]
+    fn size_change_reopens_with_new_idr() {
+        let plan = Plan {
+            name: "libx264",
+            kind: Kind::X264,
+            node: None,
+        };
+        let mut p = Pipeline::new(plan, 60_000, 8_000);
+        p.encode(test_shm_frame(320, 240, Q), false)
+            .unwrap()
+            .unwrap();
+        let out = p
+            .encode(test_shm_frame(640, 360, Q), false)
+            .unwrap()
+            .unwrap();
+        assert!(out.keyframe && out.codec_config.is_some());
+        assert_eq!(decode_first(&out).width, 640);
+    }
+
+    fn intel_node() -> Option<String> {
+        crate::adapter::list_render_nodes()
+            .into_iter()
+            .find(|n| n.driver == "i915" || n.driver == "xe" || n.driver == "amdgpu")
+            .map(|n| n.path)
+    }
+
+    #[test]
+    fn vaapi_shm_path_if_available() {
+        let Some(node) = intel_node() else {
+            eprintln!("skip: no VAAPI-capable render node");
+            return;
+        };
+        let plan = Plan {
+            name: "h264_vaapi",
+            kind: Kind::Vaapi,
+            node: Some(node),
+        };
+        let mut p = Pipeline::new(plan, 60_000, 8_000);
+        match p.encode(test_shm_frame(640, 360, Q), false) {
+            Ok(Some(out)) => {
+                assert!(out.keyframe && out.codec_config.is_some());
+                assert_eq!(p.path(), Some("vaapi-shm"));
+                check_colors(&decode_first(&out));
+            }
+            Ok(None) => panic!("no packet"),
+            Err(e) => eprintln!("skip: VAAPI unusable here: {e}"),
+        }
+    }
+
+    #[test]
+    fn vaapi_dmabuf_zero_copy_if_available() {
+        let Some(node) = intel_node() else {
+            eprintln!("skip: no VAAPI-capable render node");
+            return;
+        };
+        let frame = match export_test_dmabuf(&node, 640, 360, Q) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("skip: cannot export a dma-buf: {e}");
+                return;
+            }
+        };
+        let plan = Plan {
+            name: "h264_vaapi",
+            kind: Kind::Vaapi,
+            node: Some(node),
+        };
+        let mut p = Pipeline::new(plan, 60_000, 8_000);
+        let out = p
+            .encode(frame, false)
+            .expect("dma-buf import + encode")
+            .expect("packet");
+        assert_eq!(p.path(), Some("vaapi-dmabuf"));
+        assert!(out.keyframe && out.codec_config.is_some());
+        check_colors(&decode_first(&out));
+    }
+
+    /// `cargo test -p ezd-host-linux --release -- --ignored --nocapture latency`
+    #[test]
+    #[ignore = "benchmark"]
+    fn latency_per_path() {
+        fn bench(label: &str, plan: Plan, mk: &dyn Fn() -> Frame) {
+            let mut p = Pipeline::new(plan, 60_000, 20_000);
+            let mut times = Vec::new();
+            for i in 0..120 {
+                let f = mk();
+                let t = std::time::Instant::now();
+                if p.encode(f, i == 0).is_err() {
+                    eprintln!("{label}: failed");
+                    return;
+                }
+                if i > 5 {
+                    times.push(t.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!(
+                "{label}: median {:.2} ms, p95 {:.2} ms (1920x1080, submit to packet)",
+                times[times.len() / 2],
+                times[times.len() * 95 / 100]
+            );
+        }
+        if let Some(node) = intel_node() {
+            let plan = Plan {
+                name: "h264_vaapi",
+                kind: Kind::Vaapi,
+                node: Some(node.clone()),
+            };
+            bench("vaapi-shm", plan.clone(), &|| test_shm_frame(1920, 1080, Q));
+            bench("vaapi-dmabuf", plan, &|| {
+                export_test_dmabuf(&node, 1920, 1080, Q).unwrap()
+            });
+        }
+        let x = Plan {
+            name: "libx264",
+            kind: Kind::X264,
+            node: None,
+        };
+        bench("x264", x, &|| test_shm_frame(1920, 1080, Q));
+    }
+}

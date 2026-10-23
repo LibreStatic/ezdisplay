@@ -1,36 +1,40 @@
-//! linux host backend (skeleton). Everything is behind `cfg(target_os = "linux")`, so this
-//! crate is empty on other platforms.
+//! Linux (KDE Plasma / Wayland) host backend: a KWin virtual output via the ScreenCast portal,
+//! PipeWire capture (DMA-BUF preferred) and VAAPI / NVENC / x264 encoding.
 //!
-//! Contract (see `ezd_host_core::platform`): `create_virtual_source` builds
-//! the capture + encode pipeline for a virtual display and `diag_section`
-//! feeds the `platform` part of `ezd-host diag`.
+//! Exposes the platform contract used by `ezd-host`:
+//! `create_virtual_source(&PlatformOptions)` and `diag_section()`.
+
 #![cfg(target_os = "linux")]
+
+mod adapter;
+mod cursor;
+mod cursor_meta;
+mod diag;
+mod encode;
+mod frame;
+mod kscreen;
+mod pod;
+mod portal;
+mod pw;
+mod source;
 
 pub use ezd_host_core::PlatformOptions;
 use ezd_host_core::{PlatformError, VideoSource};
 
-/// Creates the virtual display + capture + encode pipeline.
+/// Creates the capture + encode source for one client connection.
 pub fn create_virtual_source(
-    _opts: &PlatformOptions,
+    opts: &PlatformOptions,
 ) -> Result<Box<dyn VideoSource>, PlatformError> {
-    Err(PlatformError::Unimplemented("linux"))
-}
-
-/// Platform-specific diagnostics for `ezd-host diag`.
-pub fn diag_section() -> serde_json::Value {
-    serde_json::json!({ "status": "not implemented" })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn skeleton_reports_unimplemented() {
-        assert!(matches!(
-            create_virtual_source(&PlatformOptions::default()),
-            Err(PlatformError::Unimplemented(_))
+    let src = source::KdeVirtualSource::new(opts);
+    if src.encoders().is_empty() {
+        return Err(PlatformError::Other(
+            "no working H.264 encoder (VAAPI, NVENC or libx264) was found".into(),
         ));
-        assert_eq!(diag_section()["status"], "not implemented");
     }
+    Ok(Box::new(src))
+}
+
+/// Platform section of `ezd-host diag`.
+pub fn diag_section() -> serde_json::Value {
+    diag::section()
 }
