@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["FacuM"]
+repository = "https://github.com/FacuM/ezdisplay"
+rust-version = "1.85"
+
+[workspace.dependencies]
+ezd-proto = { path = "crates/ezd-proto" }
+ezd-link = { path = "crates/ezd-link" }
+ezd-host-core = { path = "crates/ezd-host-core" }
+ezd-ffmpeg = { path = "crates/ezd-ffmpeg" }
+ezd-host-linux = { path = "crates/ezd-host-linux" }
+ezd-host-windows = { path = "crates/ezd-host-windows" }
+ezd-fake-client = { path = "crates/ezd-fake-client" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ffmpeg-sys-next = { version = "9.0.1", default-features = false, features = ["avcodec", "avfilter", "swscale"] }
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_bytes = "0.11"
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+debug = 1

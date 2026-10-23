@@ -1,0 +1,168 @@
+//! The `run` subcommand.
+
+use anyhow::{Context, Result, bail};
+use clap::{Args, ValueEnum};
+use ezd_host_core::{VideoSource, run_host_session};
+use ezd_link::Link;
+use ezd_link::adb::{Adb, DeviceState};
+use ezd_proto::{DEFAULT_PORT, LinkKind, Prefs};
+use tokio::net::TcpListener;
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum Source {
+    /// Software-generated test pattern with a moving cursor.
+    Synthetic,
+    /// A real virtual display captured and encoded by the platform backend.
+    Virtual,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum LinkArg {
+    Usb,
+    Network,
+}
+
+#[derive(Args, Debug)]
+pub struct RunArgs {
+    /// Video source.
+    #[arg(long, value_enum)]
+    source: Source,
+    /// Address to listen on.
+    #[arg(long, default_value = "127.0.0.1:27183")]
+    listen: String,
+    /// Run `adb reverse tcp:27183 tcp:<listen port>` for SERIAL, or for every
+    /// ready device when no serial is given; removed again on exit.
+    #[arg(long, num_args = 0..=1, value_name = "SERIAL")]
+    adb: Option<Option<String>>,
+    /// Link kind: selects the default bitrate ceiling (usb 80 Mbps, network 30 Mbps).
+    #[arg(long, value_enum, default_value = "usb")]
+    link: LinkArg,
+    /// Highest refresh rate to use, in millihertz.
+    #[arg(long, default_value_t = 120_000)]
+    max_refresh_mhz: u32,
+    /// Fixed bitrate in kbit/s (clamped to the link ceiling).
+    #[arg(long)]
+    bitrate_kbps: Option<u32>,
+    /// Force a specific encoder by name.
+    #[arg(long)]
+    encoder: Option<String>,
+    /// GPU/adapter to use (`--source virtual`).
+    #[arg(long)]
+    adapter: Option<String>,
+    /// Prefer the discrete GPU (`--source virtual`).
+    #[arg(long)]
+    prefer_dgpu: bool,
+    /// Capture this existing output instead of creating one (`--source virtual`).
+    #[arg(long)]
+    output: Option<String>,
+}
+
+/// Removes the adb reverse forwards when dropped.
+struct ReverseGuard {
+    adb: Adb,
+    serials: Vec<String>,
+}
+
+impl Drop for ReverseGuard {
+    fn drop(&mut self) {
+        for s in &self.serials {
+            match self.adb.remove_reverse(s, DEFAULT_PORT) {
+                Ok(()) => tracing::info!(serial = %s, "removed adb reverse"),
+                Err(e) => tracing::warn!(serial = %s, "could not remove adb reverse: {e}"),
+            }
+        }
+    }
+}
+
+fn setup_adb(serial: Option<&str>, host_port: u16) -> Result<ReverseGuard> {
+    let adb = Adb::locate()?;
+    let serials: Vec<String> = match serial {
+        Some(s) => vec![s.to_string()],
+        None => adb
+            .devices()?
+            .into_iter()
+            .filter(|d| d.state == DeviceState::Device)
+            .map(|d| d.serial)
+            .collect(),
+    };
+    if serials.is_empty() {
+        bail!("no ready adb device found (run `ezd-host diag` to inspect)");
+    }
+    let mut guard = ReverseGuard {
+        adb,
+        serials: Vec::new(),
+    };
+    for s in serials {
+        guard
+            .adb
+            .reverse(&s, DEFAULT_PORT, host_port)
+            .with_context(|| format!("adb reverse for {s}"))?;
+        tracing::info!(serial = %s, "adb reverse tcp:{DEFAULT_PORT} -> tcp:{host_port}");
+        guard.serials.push(s);
+    }
+    Ok(guard)
+}
+
+pub async fn run(args: RunArgs) -> Result<()> {
+    let listener = TcpListener::bind(&args.listen)
+        .await
+        .with_context(|| format!("binding {}", args.listen))?;
+    let local = listener.local_addr()?;
+    tracing::info!("listening on {local}");
+    let _reverse = match &args.adb {
+        Some(serial) => Some(setup_adb(serial.as_deref(), local.port())?),
+        None => None,
+    };
+    let prefs = Prefs {
+        max_refresh_mhz: args.max_refresh_mhz,
+        link: match args.link {
+            LinkArg::Usb => LinkKind::Usb,
+            LinkArg::Network => LinkKind::Network,
+        },
+        bitrate_kbps: args.bitrate_kbps,
+        encoder: args.encoder.clone(),
+        ..Prefs::default()
+    };
+
+    let platform_opts = ezd_host_core::PlatformOptions {
+        adapter: args.adapter.clone(),
+        prefer_dgpu: args.prefer_dgpu,
+        output_name: args.output.clone(),
+    };
+
+    loop {
+        let (sock, peer) = tokio::select! {
+            r = listener.accept() => r?,
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("interrupted, shutting down");
+                return Ok(());
+            }
+        };
+        tracing::info!(%peer, "client connected");
+        let link = Link::from_tcp(sock)?;
+        let source: Box<dyn VideoSource> = match args.source {
+            Source::Synthetic => Box::new(ezd_ffmpeg::SwVideoSource::new()),
+            Source::Virtual => match crate::platform::create_virtual_source(&platform_opts) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("cannot create virtual source: {e}");
+                    continue;
+                }
+            },
+        };
+        let session = run_host_session(link, source, prefs.clone());
+        tokio::select! {
+            r = session => match r {
+                Ok(s) => tracing::info!(
+                    end = ?s.end, frames = s.frames_sent, keyframes = s.keyframes_sent,
+                    seconds = s.duration.as_secs_f32(), "session finished"
+                ),
+                Err(e) => tracing::warn!("session failed: {e}"),
+            },
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("interrupted, shutting down");
+                return Ok(());
+            }
+        }
+    }
+}

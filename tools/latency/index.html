@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ezdisplay latency probe</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; overflow: hidden; user-select: none; }
+  #flash { position: fixed; inset: 0; background: #fff; visibility: hidden; }
+  #clock { position: fixed; left: 50%; top: 42%; transform: translate(-50%, -50%); font-size: 18vmin; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
+  #clock .ms { color: #4cf; }
+  #bars { position: fixed; left: 0; right: 0; bottom: 22%; height: 6vmin; }
+  .bar { position: absolute; top: 0; width: 2vmin; height: 100%; background: #f44; }
+  #info { position: fixed; left: 1em; top: 1em; font-size: 14px; line-height: 1.5; color: #aaa; }
+  #help { position: fixed; left: 1em; bottom: 1em; font-size: 13px; color: #777; }
+  #cross { position: fixed; width: 0; height: 0; pointer-events: none; }
+  #cross::before, #cross::after { content: ""; position: absolute; background: #0f0; }
+  #cross::before { left: -20px; top: -1px; width: 40px; height: 2px; }
+  #cross::after { left: -1px; top: -20px; width: 2px; height: 40px; }
+</style>
+</head>
+<body>
+<div id="flash"></div>
+<div id="clock"></div>
+<div id="bars"><div class="bar" id="bar"></div></div>
+<div id="cross"></div>
+<div id="info"></div>
+<div id="help">F: flash on/off · C: crosshair on/off · B: moving bar on/off · Space: freeze</div>
+<script>
+"use strict";
+// Every window of this page shows the same wall clock (Date.now() on the same PC).
+// Put one window on the main monitor and one on the tablet, then film both with a
+// 240 fps slow-motion camera: the difference between the two readings in the same
+// video frame is the extra latency added by the tablet path.
+const params = new URLSearchParams(location.search);
+let flashOn = params.get("flash") !== "0";
+let crossOn = params.get("cross") !== "0";
+let barOn = params.get("bar") !== "0";
+let frozen = false;
+
+const clockEl = document.getElementById("clock");
+const flashEl = document.getElementById("flash");
+const barEl = document.getElementById("bar");
+const crossEl = document.getElementById("cross");
+const infoEl = document.getElementById("info");
+
+const pad = (n, w) => String(n).padStart(w, "0");
+const deltas = [];
+let last = 0;
+
+function frame(t) {
+  if (last) {
+    deltas.push(t - last);
+    if (deltas.length > 240) deltas.shift();
+  }
+  last = t;
+  if (!frozen) {
+    const now = Date.now();
+    const d = new Date(now);
+    clockEl.innerHTML = `${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}.<span class="ms">${pad(d.getMilliseconds(), 3)}</span>`;
+    // White flash during the first 50 ms of every second: every window flashes at the same instant.
+    flashEl.style.visibility = flashOn && d.getMilliseconds() < 50 ? "visible" : "hidden";
+    // Bar sweeps the width once per second, also tied to the wall clock.
+    barEl.style.display = barOn ? "block" : "none";
+    barEl.style.left = `${(now % 1000) / 10}%`;
+  }
+  const sorted = [...deltas].sort((a, b) => a - b);
+  const median = sorted.length ? sorted[sorted.length >> 1] : 0;
+  infoEl.textContent =
+    `refresh ≈ ${median ? (1000 / median).toFixed(1) : "?"} Hz (median frame ${median.toFixed(2)} ms)` +
+    ` · screen ${screen.width}×${screen.height} @${devicePixelRatio}x` +
+    ` · window ${innerWidth}×${innerHeight}`;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// The green crosshair is drawn by the page at the pointer position. Compared with
+// the system cursor it shows how far the video lags behind a locally drawn cursor.
+addEventListener("pointermove", (e) => {
+  crossEl.style.display = crossOn ? "block" : "none";
+  crossEl.style.left = `${e.clientX}px`;
+  crossEl.style.top = `${e.clientY}px`;
+});
+
+addEventListener("keydown", (e) => {
+  if (e.key === "f" || e.key === "F") flashOn = !flashOn;
+  else if (e.key === "c" || e.key === "C") { crossOn = !crossOn; crossEl.style.display = crossOn ? "block" : "none"; }
+  else if (e.key === "b" || e.key === "B") barOn = !barOn;
+  else if (e.key === " ") frozen = !frozen;
+});
+</script>
+</body>
+</html>

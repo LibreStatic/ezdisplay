@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  # Rolling FFmpeg 8.1 shared build (stable asset name, always the newest 8.1.x patch release).
+  FFMPEG_ASSET: ffmpeg-n8.1-latest-win64-gpl-shared-8.1
+  FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip
+
+jobs:
+  linux:
+    name: Linux (fmt, clippy, test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FFmpeg development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libavfilter-dev libavdevice-dev libx264-dev clang pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  windows:
+    name: Windows (build, test, artifact)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Download FFmpeg (shared, headers + import libs)
+        shell: pwsh
+        run: |
+          curl.exe -L --fail --retry 3 -o ffmpeg.zip $env:FFMPEG_URL
+          Expand-Archive ffmpeg.zip -DestinationPath "$env:RUNNER_TEMP\ffmpeg"
+          $dir = Join-Path $env:RUNNER_TEMP "ffmpeg\$env:FFMPEG_ASSET"
+          if (-not (Test-Path "$dir\include\libavcodec\avcodec.h")) { throw "unexpected FFmpeg archive layout" }
+          "FFMPEG_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "$dir\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - run: cargo build --workspace --release
+      - run: cargo test --workspace
+      - name: Collect artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\ezd-host.exe, target\release\ezd-fake-client.exe dist\
+          Copy-Item "$env:FFMPEG_DIR\bin\*.dll" dist\
+          Copy-Item LICENSE-MIT, LICENSE-APACHE dist\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ezdisplay-windows-x86_64
+          path: dist/
+          if-no-files-found: error
+
+  cross-check:
+    name: Cross-check (Android, Windows)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: Protocol and link crates build for Android
+        run: cargo check --target aarch64-linux-android -p ezd-proto -p ezd-link
+      - name: Platform-independent crates build for Windows
+        run: cargo check --target x86_64-pc-windows-msvc -p ezd-proto -p ezd-link -p ezd-host-core

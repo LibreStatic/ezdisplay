@@ -1,0 +1,19 @@
+[package]
+name = "ezd-host-core"
+description = "ezdisplay host core: VideoSource/VirtualDisplay traits, host session, synthetic frames (no FFmpeg)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ezd-link.workspace = true
+ezd-proto.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

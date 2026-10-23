@@ -1,0 +1,18 @@
+[package]
+name = "ezd-proto"
+description = "ezdisplay wire protocol: framing, messages, capability negotiation, clock sync (no IO)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+postcard.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

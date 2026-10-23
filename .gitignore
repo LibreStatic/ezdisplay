@@ -1,0 +1,6 @@
+/target
+*.ppm
+*.h264
+.idea/
+.vscode/
+*.log

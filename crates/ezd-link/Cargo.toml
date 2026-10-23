@@ -1,0 +1,18 @@
+[package]
+name = "ezd-link"
+description = "ezdisplay transport: byte-stream links (TCP, in-memory), ADB helper and the prioritized message mux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ezd-proto.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
