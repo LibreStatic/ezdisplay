@@ -50,6 +50,7 @@ impl Section for HostInfo {
         "os"
     }
     fn collect(&self) -> Value {
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
         let mut v = json!({ "family": std::env::consts::OS, "arch": std::env::consts::ARCH });
         #[cfg(target_os = "linux")]
         {
