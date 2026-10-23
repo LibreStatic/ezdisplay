@@ -4,7 +4,7 @@ Measured facts that shape the design. Each section says where and how it was mea
 
 ## Tablet: Samsung Galaxy Tab S9 Ultra (SM-X910)
 
-Probed over ADB on 2026-10-23 (wireless debugging; USB not yet measured).
+Probed over ADB on 2026-10-23 (wireless debugging, then USB).
 
 - Android 16 (API 36), Snapdragon 8 Gen 2 (SM8550, `kalama`).
 - Panel 1848x2960 portrait, 280 dpi. The app runs landscape, so the stream is **2960x1848**.
@@ -20,33 +20,53 @@ Probed over ADB on 2026-10-23 (wireless debugging; USB not yet measured).
   Air Command) is still to be recorded.
 - Other input: `sec_touchscreen` (multitouch, 0-1847 on X) and the Book Cover Keyboard
   (EF-DX915) with its touchpad.
+- USB: the tablet enumerated at **480 Mbit/s (USB 2.0 high speed)** on the dev machine,
+  although the machine has a 10 Gbit/s controller and the tablet supports USB 3.2 Gen 1, so
+  the cable (or the port) in use is USB 2 only. It is still far above the stream bitrate.
 
-## First end-to-end run (synthetic source, Linux host, Wi-Fi ADB)
+## End-to-end runs (synthetic source, Linux host)
 
-`ezd-host run --source synthetic --adb <serial>` on the dev machine, app on the tablet,
-`adb reverse` over wireless debugging. Negotiated 2960x1848 at 120 Hz, H.264 at 46 Mbit/s,
-software `libx264` (the synthetic source has no GPU encoder).
+`ezd-host run --source synthetic --adb <serial>` on the dev machine and the app on the tablet,
+through `adb reverse`. Negotiated 2960x1848 at 120 Hz, H.264 at 46 Mbit/s, software `libx264`
+(`ultrafast`, `zerolatency`; the synthetic source has no GPU encoder). Medians of 1 s windows
+over about 27 s of steady state; no frame was dropped in any run and no ack timed out.
+"E2E" is host capture to decoded on the tablet, so it leaves out the display latch.
 
-| Metric (1 s windows, steady state) | Value |
-|---|---|
-| Frames per second reaching the tablet | about 25 |
-| Dropped frames | 0 |
-| Link transfer (encoded -> received) p50 | 5-9 ms |
-| Decode on the tablet p50 / p95 | about 11 ms / 14 ms |
-| Host capture -> decoded p50 / p95 | about 31 ms / 40 ms |
+| Link | Video window | Frames/s | Link transfer p50 / p95 | Decode p50 / p95 | E2E p50 / p95 |
+|---|---|---|---|---|---|
+| USB 2.0 | 1 | 52 | 1.6 / 4.0 ms | 9.4 / 12.7 ms | 26.0 / 32.7 ms |
+| USB 2.0 | 2 | 65 | 1.5 / 19.2 ms | 9.8 / 13.3 ms | 26.1 / 44.4 ms |
+| Wi-Fi | 1 | 29 | 7.8 / 12.9 ms | 10.7 / 12.9 ms | 31.0 / 41.2 ms |
+| Wi-Fi | 2 | 54 | 9.3 / 25.1 ms | 9.7 / 13.3 ms | 36.0 / 53.0 ms |
+| Wi-Fi | 3 | 63 | 11.9 / 28.3 ms | 9.7 / 13.5 ms | 35.9 / 55.1 ms |
 
-The frame rate is bound by software x264 at 5.5 megapixels: the same stream to the fake
-client over local loopback, with no network, gives 27 ms p50 from capture to decoded
-(it is 7 ms at 1080p). The real backends encode on the GPU (VAAPI on the Intel iGPU here:
-7.4 ms p50 from submit to packet at 1080p), so this run validates the client and the
-protocol, not the latency target.
+The video window is the number of frames that may be sent but not yet acknowledged
+(`ezd-host run --video-window N`, default 1). The client acks on reception, before decoding.
+
+What sets the frame rate: the host only captures and encodes a frame once the link has a free
+slot, so that each frame carries the newest content. With a window of 1 a frame therefore
+costs capture + encode + transfer + the ack's way back, one after the other. libx264 alone
+takes about 9.5 ms per frame at this size on the dev machine, so over USB the loop is about
+19 ms (52 frames/s); on Wi-Fi the round trip adds about 15 ms more (29 frames/s). A larger
+window overlaps the next encode with the frame in flight: it nearly doubles the rate on Wi-Fi
+for about 5 ms more at p50 and 12 ms more at p95, and over USB it mostly adds queueing at p95.
+
+Consequences:
+
+- At 120 Hz with a window of 1, encode + transfer + ack must fit in 8.3 ms. That is plausible
+  over USB with a GPU encoder; on Wi-Fi it is not, so the network mode will probably want a
+  window of 2. The default is decided once the GPU encoders are measured on the tablet.
+- Over local loopback, with no network, the same stream to the fake client gives 27 ms p50
+  from capture to decoded (7 ms at 1080p). The real backends encode on the GPU (VAAPI on the
+  Intel iGPU here: 7.4 ms p50 from submit to packet at 1080p), so these runs validate the
+  client, the protocol and the links, not the latency target.
 
 The rendered output was checked on a screenshot: full screen, landscape, synthetic pattern
 intact, cursor drawn by the client.
 
 ## Still to measure
 
-- USB: link speed and the same run over a cable instead of Wi-Fi.
+- The same runs with a USB 3 cable.
 - S Pen button events in hover and in contact, and whether Air Command interferes.
 - The real Linux path (KDE portal, VAAPI) on the tablet, and the Windows path on the Nitro
   (see `phase0-nitro-checklist.md` and `windows-testing.md`).

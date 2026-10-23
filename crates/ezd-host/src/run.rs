@@ -2,9 +2,9 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use ezd_host_core::{VideoSource, run_host_session};
-use ezd_link::Link;
+use ezd_host_core::{SessionOptions, VideoSource, run_host_session_with};
 use ezd_link::adb::{Adb, DeviceState};
+use ezd_link::{Link, VideoCredit};
 use ezd_proto::{DEFAULT_PORT, LinkKind, Prefs};
 use tokio::net::TcpListener;
 
@@ -55,6 +55,10 @@ pub struct RunArgs {
     /// Capture this existing output instead of creating one (`--source virtual`).
     #[arg(long)]
     output: Option<String>,
+    /// Video frames that may be sent but not yet acknowledged by the tablet. 1 gives the
+    /// lowest latency; more raises the frame rate when the round trip is long (Wi-Fi).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=8))]
+    video_window: u32,
 }
 
 /// Removes the adb reverse forwards when dropped.
@@ -130,6 +134,14 @@ pub async fn run(args: RunArgs) -> Result<()> {
         output_name: args.output.clone(),
     };
 
+    let session_opts = SessionOptions {
+        video_credit: VideoCredit::OnAck {
+            window: args.video_window,
+            timeout: std::time::Duration::from_millis(500),
+        },
+        ..SessionOptions::default()
+    };
+
     loop {
         let (sock, peer) = tokio::select! {
             r = listener.accept() => r?,
@@ -150,7 +162,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
                 }
             },
         };
-        let session = run_host_session(link, source, prefs.clone());
+        let session = run_host_session_with(link, source, prefs.clone(), session_opts.clone());
         tokio::select! {
             r = session => match r {
                 Ok(s) => tracing::info!(
