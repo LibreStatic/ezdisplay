@@ -135,8 +135,16 @@ impl VideoSource for KdeVirtualSource {
         } else {
             None
         };
-        let mut portal =
-            PortalCapture::open(self.kind, portal_timeout()).map_err(SourceError::msg)?;
+        let mut portal = PortalCapture::open(self.kind, portal_timeout()).map_err(|e| {
+            let hint = virtual_kind
+                .then(|| kscreen::list_outputs().ok())
+                .flatten()
+                .and_then(|outs| kscreen::disabled_virtual_hint(&outs));
+            SourceError::msg(match hint {
+                Some(h) => format!("{e}. {h}"),
+                None => e,
+            })
+        })?;
         tracing::info!(
             node = portal.node_id,
             restored = portal.restored,
@@ -205,12 +213,15 @@ impl VideoSource for KdeVirtualSource {
         let capture_us = frame.capture_us;
         let seq = frame.seq;
         let was_dma = frame.is_dma();
+        let dequeued_us = ezd_host_core::now_us();
         match r.pipeline.encode(frame, force) {
             Ok(Some(o)) => {
                 tracing::trace!(
                     path = o.path,
                     bytes = o.data.len(),
                     key = o.keyframe,
+                    age_us = dequeued_us.saturating_sub(capture_us),
+                    encode_us = o.encoded_us.saturating_sub(dequeued_us),
                     "encoded"
                 );
                 Ok(Some(EncodedFrame {

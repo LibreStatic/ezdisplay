@@ -15,6 +15,9 @@ const T_FRAC: u32 = 11;
 const T_OBJECT: u32 = 15;
 const T_CHOICE: u32 = 19;
 
+/// `SPA_CHOICE_None`: the choice is fixed to its first value.
+const CHOICE_NONE: u32 = 0;
+
 /// Object type of format params.
 pub const OBJ_FORMAT: u32 = 0x40003;
 /// Object type of buffers params.
@@ -139,7 +142,6 @@ fn choice(out: &mut Vec<u8>, kind: u32, child_ty: u32, child_size: u32, values: 
 
 impl Val {
     fn write(&self, out: &mut Vec<u8>) {
-        const NONE: u32 = 0;
         let b = |v: u32| v.to_ne_bytes();
         let pair = |a: (u32, u32)| -> Vec<u8> { [b(a.0), b(a.1)].concat() };
         match self {
@@ -154,16 +156,34 @@ impl Val {
                 put(o, *n);
                 put(o, *d)
             }),
+            // Enum choices list the default first and then every alternative, default included.
             Val::EnumId(v) => {
-                let vals: Vec<[u8; 4]> = v.iter().map(|x| b(*x)).collect();
+                let vals: Vec<[u8; 4]> = v.first().into_iter().chain(v).map(|x| b(*x)).collect();
                 let refs: Vec<&[u8]> = vals.iter().map(|x| x.as_slice()).collect();
-                choice(out, if v.len() > 1 { 3 } else { NONE }, T_ID, 4, &refs);
+                choice(
+                    out,
+                    if v.len() > 1 { 3 } else { CHOICE_NONE },
+                    T_ID,
+                    4,
+                    &refs,
+                );
             }
             Val::EnumLong(v) if v.len() == 1 => Val::Long(v[0]).write(out),
             Val::EnumLong(v) => {
-                let vals: Vec<[u8; 8]> = v.iter().map(|x| x.to_ne_bytes()).collect();
+                let vals: Vec<[u8; 8]> = v
+                    .first()
+                    .into_iter()
+                    .chain(v)
+                    .map(|x| x.to_ne_bytes())
+                    .collect();
                 let refs: Vec<&[u8]> = vals.iter().map(|x| x.as_slice()).collect();
-                choice(out, if v.len() > 1 { 3 } else { NONE }, T_LONG, 8, &refs);
+                choice(
+                    out,
+                    if v.len() > 1 { 3 } else { CHOICE_NONE },
+                    T_LONG,
+                    8,
+                    &refs,
+                );
             }
             Val::RangeInt(d, lo, hi) => {
                 let vals = [d.to_ne_bytes(), lo.to_ne_bytes(), hi.to_ne_bytes()];
@@ -317,7 +337,8 @@ fn scalar(b: &[u8], ty: u32, off: usize) -> Option<Scalar> {
     })
 }
 
-/// Values of a pod at `off` (header position): one for plain pods, all for choices.
+/// Values of a pod at `off` (header position): one for plain pods and fixed (`None`) choices,
+/// the distinct values in order for other choices.
 fn values(b: &[u8], off: usize) -> Option<Vec<Scalar>> {
     let size = rd(b, off)? as usize;
     let ty = rd(b, off + 4)?;
@@ -325,6 +346,7 @@ fn values(b: &[u8], off: usize) -> Option<Vec<Scalar>> {
     if ty != T_CHOICE {
         return Some(vec![scalar(b, ty, body)?]);
     }
+    let kind = rd(b, body)?;
     let child_size = rd(b, body + 8)? as usize;
     let child_ty = rd(b, body + 12)?;
     if child_size == 0 {
@@ -333,7 +355,14 @@ fn values(b: &[u8], off: usize) -> Option<Vec<Scalar>> {
     let mut v = Vec::new();
     let mut p = body + 16;
     while p + child_size <= body + size {
-        v.push(scalar(b, child_ty, p)?);
+        let x = scalar(b, child_ty, p)?;
+        // A fixated choice keeps its old alternatives after the value; only the first counts.
+        if kind == CHOICE_NONE {
+            return Some(vec![x]);
+        }
+        if !v.contains(&x) {
+            v.push(x);
+        }
         p += child_size;
     }
     Some(v)
@@ -523,6 +552,57 @@ mod tests {
         assert!(!back.modifier_dont_fixate);
         assert_eq!(back.size, Some((2560, 1600)));
         assert!(fixated_format(&ParsedFormat::default(), 0).is_none());
+    }
+
+    /// A `Format` object whose modifier is a choice of `kind` with exactly these children.
+    fn format_with_modifier_choice(kind: u32, children: &[i64]) -> Vec<u8> {
+        let mut out = Vec::new();
+        pod(&mut out, T_OBJECT, |o| {
+            put(o, OBJ_FORMAT);
+            put(o, PARAM_FORMAT);
+            put(o, FORMAT_VIDEO_FORMAT);
+            put(o, 0);
+            Val::Id(8).write(o);
+            put(o, FORMAT_VIDEO_MODIFIER);
+            put(o, PROP_MANDATORY);
+            let vals: Vec<[u8; 8]> = children.iter().map(|m| m.to_ne_bytes()).collect();
+            let refs: Vec<&[u8]> = vals.iter().map(|x| x.as_slice()).collect();
+            choice(o, kind, T_LONG, 8, &refs);
+        });
+        out
+    }
+
+    #[test]
+    fn fixed_choice_yields_only_its_value() {
+        // What KWin sends back after the consumer fixates the modifier: a `None` choice that
+        // still carries the old alternatives.
+        let bytes = format_with_modifier_choice(CHOICE_NONE, &[0, 0, 0]);
+        assert!(pipewire::spa::pod::Pod::from_bytes(&bytes).is_some());
+        let f = parse_format(&bytes).unwrap();
+        assert_eq!(f.modifiers, Some(vec![0]));
+        assert!(!f.modifier_dont_fixate);
+
+        let f = parse_format(&format_with_modifier_choice(CHOICE_NONE, &[7, 0, 9])).unwrap();
+        assert_eq!(f.modifiers, Some(vec![7]));
+    }
+
+    #[test]
+    fn enum_choice_lists_each_modifier_once() {
+        let f = parse_format(&format_with_modifier_choice(3, &[0, 0, 0, 7, 8])).unwrap();
+        assert_eq!(f.modifiers, Some(vec![0, 7, 8]));
+    }
+
+    #[test]
+    fn enum_choice_repeats_the_default_as_an_alternative() {
+        let bytes = enum_format(PARAM_ENUM_FORMAT, &sample(Some(vec![0, 7])));
+        let pod = pipewire::spa::pod::Pod::from_bytes(&bytes).unwrap();
+        let prop = pod
+            .as_object()
+            .unwrap()
+            .find_prop(pipewire::spa::utils::Id(FORMAT_VIDEO_MODIFIER))
+            .unwrap();
+        // Choice header (16 bytes) + default + both alternatives.
+        assert_eq!(prop.value().size() as usize, 16 + 3 * 8);
     }
 
     #[test]

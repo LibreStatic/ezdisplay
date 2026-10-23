@@ -345,7 +345,12 @@ fn on_format(stream: &pw::stream::Stream, local: &Rc<RefCell<Local>>, param: Opt
                     "fixating DMA-BUF modifier"
                 );
                 if let Some(f) = pod::fixated_format(&pf, m) {
-                    update_params(stream, &[f]);
+                    // The fixated format first, then the full offer again: the producer
+                    // renegotiates when the size changes (KWin does when the virtual output
+                    // is resized) and must still find a match.
+                    let mut blobs = vec![f];
+                    blobs.extend(enum_formats(&local.borrow().params, true));
+                    update_params(stream, &blobs);
                 }
             }
             None => {

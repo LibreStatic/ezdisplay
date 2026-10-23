@@ -121,6 +121,24 @@ pub fn find_virtual_output(outputs: &[KOutput]) -> Option<&KOutput> {
     outputs.iter().rev().find(|o| o.name.starts_with("Virtual"))
 }
 
+/// Explains a failed virtual screencast when KWin keeps the portal's virtual output disabled.
+///
+/// KWin restores a saved layout for the output name the KDE portal reuses
+/// (`Virtual-virtual-xdp-kde-<app id>`). If that layout has the output disabled, the portal's
+/// stream fails with "Could not find output", and the disabled output stays behind until the
+/// portal restarts.
+pub fn disabled_virtual_hint(outputs: &[KOutput]) -> Option<String> {
+    let o = outputs
+        .iter()
+        .find(|o| o.name.starts_with("Virtual-virtual-xdp-kde") && o.connected && !o.enabled)?;
+    Some(format!(
+        "KDE has the virtual screen {name} saved as disabled. Enable it once with \
+         `kscreen-doctor output.{name}.enable`, then run \
+         `systemctl --user restart plasma-xdg-desktop-portal-kde` to drop the stale output",
+        name = o.name
+    ))
+}
+
 /// A mode of `out` with this size and a refresh rate within 0.5 Hz of `refresh_mhz`.
 pub fn find_mode(out: &KOutput, width: u32, height: u32, refresh_mhz: u32) -> Option<&KMode> {
     let want = refresh_mhz as f64 / 1000.0;
@@ -233,6 +251,28 @@ mod tests {
     use super::*;
 
     const EDP: &str = include_str!("../testdata/kscreen-eDP.json");
+
+    #[test]
+    fn hint_only_for_a_disabled_portal_output() {
+        let out = |name: &str, enabled: bool| KOutput {
+            name: name.into(),
+            id: 2,
+            enabled,
+            connected: true,
+            size: (1920, 1080),
+            pos: (1746, 0),
+            current_mode_id: "15".into(),
+            modes: Vec::new(),
+        };
+        let stale = [out("eDP-1", true), out("Virtual-virtual-xdp-kde-", false)];
+        let hint = disabled_virtual_hint(&stale).unwrap();
+        assert!(hint.contains("kscreen-doctor output.Virtual-virtual-xdp-kde-.enable"));
+        assert!(
+            disabled_virtual_hint(&[out("eDP-1", true), out("Virtual-virtual-xdp-kde-", true)])
+                .is_none()
+        );
+        assert!(disabled_virtual_hint(&[out("eDP-1", false)]).is_none());
+    }
 
     #[test]
     fn parses_real_sample() {

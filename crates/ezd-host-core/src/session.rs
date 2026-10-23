@@ -150,8 +150,8 @@ struct VideoShared {
     keyframes: AtomicU64,
     configs: AtomicU64,
     bytes: AtomicU64,
-    /// `(frame_id, encoded_us)` of sent frames awaiting their ack (bounded).
-    sent: std::sync::Mutex<std::collections::VecDeque<(u64, u64)>>,
+    /// `(frame_id, capture_us, encoded_us)` of sent frames awaiting their ack (bounded).
+    sent: std::sync::Mutex<std::collections::VecDeque<(u64, u64, u64)>>,
 }
 
 struct StopOnDrop(Arc<VideoShared>);
@@ -234,6 +234,8 @@ pub async fn run_host_session_with(
     let mut last_stats = None;
     let mut transfer_all: Vec<u32> = Vec::new();
     let mut transfer_win: Vec<u32> = Vec::new();
+    // Capture to encoded on the host, for the acked frames of the current window.
+    let mut host_win: Vec<u32> = Vec::new();
     let mut video_done = false;
     let mut ping = tokio::time::interval(opts.ping_interval);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -262,18 +264,21 @@ pub async fn run_host_session_with(
                     let encoded = {
                         let mut q = shared.sent.lock().unwrap_or_else(|e| e.into_inner());
                         let mut found = None;
-                        while let Some(&(id, enc)) = q.front() {
+                        while let Some(&(id, cap, enc)) = q.front() {
                             if id > a.frame_id {
                                 break;
                             }
                             q.pop_front();
                             if id == a.frame_id {
-                                found = Some(enc);
+                                found = Some((cap, enc));
                             }
                         }
                         found
                     };
-                    if let (Some(enc), Some(off)) = (encoded, clock.offset_us()) {
+                    if let Some((cap, enc)) = encoded {
+                        host_win.push(enc.saturating_sub(cap).min(u32::MAX as u64) as u32);
+                    }
+                    if let (Some((_, enc)), Some(off)) = (encoded, clock.offset_us()) {
                         // offset = client - host, so client time maps to host time as t - offset.
                         let t = (a.received_us as i64 - off) - enc as i64;
                         let t = t.max(0) as u32;
@@ -288,9 +293,12 @@ pub async fn run_host_session_with(
                         transfer_p50_us = percentile(&transfer_win, 50),
                         transfer_p95_us = percentile(&transfer_win, 95),
                         acks = transfer_win.len(),
+                        capture_encoded_p50_us = percentile(&host_win, 50),
+                        capture_encoded_p95_us = percentile(&host_win, 95),
                         "link transfer"
                     );
                     transfer_win.clear();
+                    host_win.clear();
                     tracing::info!(
                         recv = s.frames_received, decoded = s.frames_decoded, dropped = s.frames_dropped,
                         decode_p50_us = s.decode_us_p50, decode_p95_us = s.decode_us_p95,
@@ -512,7 +520,7 @@ fn video_loop(
             if q.len() >= 256 {
                 q.pop_front();
             }
-            q.push_back((id, f.encoded_us));
+            q.push_back((id, f.capture_us, f.encoded_us));
         }
         if f.keyframe {
             sh.keyframes.fetch_add(1, Ordering::Relaxed);

@@ -112,10 +112,80 @@ Consequences:
 The rendered output was checked on a screenshot: full screen, landscape, synthetic pattern
 intact, cursor drawn by the client.
 
+## End-to-end runs (KDE virtual output, Linux host)
+
+`ezd-host run --source virtual --adb <serial>` on the dev machine (Plasma 6.6 on Wayland,
+Intel UHD 630 and GTX 1650 Mobile, KWin composing on the Intel GPU) and the app on the tablet,
+over the same USB 2.0 link. The host resizes the KDE portal's virtual screen to 2960x1848 at
+120 Hz. PipeWire delivers linear DMA-BUFs (modifier 0) and `h264_vaapi` encodes them on the
+Intel GPU without a copy through the CPU. KWin only sends a frame when the output has damage,
+so mpv played an animated pattern (`testsrc2` at 120 frames/s) full screen on the virtual
+output. The figures are medians of 1 s windows over about 25 s. No frame was dropped in any
+run. "Capture to encoded" starts at KWin's frame timestamp. "E2E" runs from that timestamp
+to decoded on the tablet.
+
+| Encoder | Video window | Frames/s | Capture to encoded p50 / p95 | Link transfer p50 / p95 | Decode p50 / p95 | E2E p50 / p95 |
+|---|---|---|---|---|---|---|
+| VAAPI regular mode, CBR (3 runs) | 1 | 22-29 | 43-50 ms (p50) | 3.1 / 7.8 ms | 10.8 / 12.4 ms | 56-66 / 65-75 ms |
+| VAAPI regular mode, CBR | 2 | 35 | | 3.1 / 5.0 ms | 11.7 / 13.9 ms | 56.4 / 68.1 ms |
+| NVENC (`--prefer-dgpu`, system memory) | 1 | 36 | | 3.3 / 9.6 ms | 13.0 / 15.0 ms | 69.0 / 92.8 ms |
+| **VAAPI low-power, fixed QP 24** | 1 | 54 | 21.6 / 25.4 ms | 3.6 / 5.6 ms | 11.1 / 13.6 ms | **37.0 / 42.5 ms** |
+| VAAPI low-power, fixed QP 24 | 2 | 73 | 23.2 / 29.7 ms | 3.2 / 4.8 ms | 11.0 / 14.2 ms | 37.7 / 45.7 ms |
+
+In the low-power run with a window of 1, a frame waited 9.2 ms (p50) in the PipeWire queue
+before the host took it. The encode then took 13.0 / 15.8 ms. Frames were about 70 KB, so
+about 30 Mbit/s at 54 frames/s.
+
+The encoder on the Intel GPU sets the pace. Raw throughput at 2960x1848, measured with
+`ffmpeg` (600 frames uploaded from system memory, idle desktop):
+
+| Encoder | Frames/s |
+|---|---|
+| VAAPI regular mode, CBR 46 Mbit/s | 48.7 |
+| VAAPI low-power, fixed QP 24 | 95.4 |
+| NVENC, `p1`, `ull`, CBR | 107.4 |
+
+The regular mode runs on the GPU's shader cores. KWin and the apps on screen use the same
+cores, so under load a frame took 34 ms to encode there, against 13 ms in low-power mode,
+which uses the fixed-function encoder. NVENC on the GTX 1650 was slower end to end, because
+KWin composes on the Intel GPU and every frame crosses to the NVIDIA GPU through system
+memory.
+
+What came up on this machine:
+
+- **Saved virtual output disabled.** KWin restores the saved layout for the output name that
+  the KDE portal reuses (`Virtual-virtual-xdp-kde-<app id>`). The layout here had that output
+  disabled, so every stream failed with "Could not find output". The failed output also
+  stayed behind until the portal restarted. The fix:
+  1. Run `kscreen-doctor output.Virtual-virtual-xdp-kde-.enable`, or enable the output in
+     Display settings, while it exists.
+  2. Run `systemctl --user restart plasma-xdg-desktop-portal-kde`.
+
+  The host now prints these steps when the portal fails this way.
+- **Empty app id.** The host has no app id yet, so its output name is the one every other
+  unregistered app gets from the portal, and they share the saved layout. A registered app
+  id (portal registry or a `.desktop` file) will give it its own name.
+- **Damage-driven frames.** A still desktop sends no frames, and the client keeps showing the
+  last one. Latency figures need moving content.
+- **PipeWire renegotiation.** KWin renegotiates the format when the host resizes the virtual
+  output. After fixating a DMA-BUF format, the host must offer the fixated format followed by
+  the full list again (as PipeWire's `video-play-fixate` example does). Otherwise the resize
+  fails with "no more input formats". The parser for format choices also had to handle fixed
+  (`None`) choices and repeated defaults, or the negotiation looped.
+- **VAAPI on the UHD 630 (Gen 9.5, iHD driver).**
+  - At 2960x1848 and 120 Hz, FFmpeg picks H.264 level 6.x, and every CBR frame then fails
+    with "internal encoding error". Level 5.2 works, and the tablet decodes it.
+  - Low-power mode only supports fixed QP. The host tries low-power CBR first, then
+    low-power fixed QP (what this GPU uses), then the regular mode.
+  - Fixed QP has no bitrate cap, so the network mode needs a rate limit of its own.
+
+Screenshots of the tablet showed the KDE desktop full screen, in landscape.
+
 ## Still to measure
 
 - The same runs with a USB 3 cable.
 - The stylus `MotionEvent`s the app receives (button state, hover, tool type) with Air
   actions on and off, and whether an app can read `spen_air_action`.
-- The real Linux path (KDE portal, VAAPI) on the tablet, and the Windows path on the Nitro
-  (see `phase0-nitro-checklist.md` and `windows-testing.md`).
+- The Windows path on the Nitro (see `phase0-nitro-checklist.md` and `windows-testing.md`).
+- The KDE path with real use (cursor crossing, dragging windows onto the tablet), over Wi-Fi,
+  and glass to glass with `tools/latency`.
