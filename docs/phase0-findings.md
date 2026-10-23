@@ -47,19 +47,30 @@ Digitizer (what Android turns into stylus `MotionEvent`s):
 Samsung's Air Command service (logcat):
 
 - The S Pen also sends its button over Bluetooth LE to the Air Command service, about 60 ms
-  after the digitizer reports it. While the pen is in hover the service ignores that click
-  ("Hover is entered. ignores the click event"), and pressing the button in hover did not open
-  the Air Command menu over the full-screen app.
-- With the pen **out of hover range**, holding the button starts an Air action. The default
-  one opens the **camera**, which took the focus away from the app twice during the test. The
-  app defines no Air actions (`isValidAction is false` for its package).
+  after the digitizer reports it. The service sorts those presses into single click, double
+  click and long click (Air actions).
+- A press that **starts while the pen hovers** is ignored ("Hover is entered. ignores the
+  click event"), and so is its release, even if the tip touches the screen in between.
+- Every other press is an Air action, **with the tip on the screen too**:
+  - Single and double clicks look up the foreground app's Air actions. The app defines none
+    (`isValidAction is false`, "invokeAction : no action present"). After a few such clicks
+    Samsung shows a panel over the app saying it does not support Air actions; here it
+    appeared on the second double click, once with the tip touching.
+  - Holding the button away from the screen starts the long-click action, by default the
+    **camera**, which took the focus away from the app twice during the test.
+- The system still sees the digitizer press: `SpenGestureManagerService` logs
+  `ACTION_BUTTON_PRESS` with `sideButtonPressed=true` for the presses in contact, before the
+  Air action runs.
 
-Consequences for input (phase 2): pen button gestures should come from the digitizer
-(`MotionEvent` button state while hovering or touching), where Samsung does not act on them.
-Holding the button away from the screen cannot be intercepted by the app; the user guide must
-say how to turn off the pen-button Air actions, or the app could define its own Air actions
-with Samsung's S Pen Remote SDK (proprietary, so only behind a flag). What the app actually
-receives in `onGenericMotionEvent` while Air Command is enabled is still to be checked.
+Consequences for input (phase 2): pen button gestures come from the digitizer (`MotionEvent`
+button state while hovering or touching), but outside hover Samsung also turns the same
+presses into Air actions, so a double click would map a gesture on the PC and raise the panel
+on the tablet. The app cannot intercept the Bluetooth click. The user guide must say how to
+turn off Air actions (Settings, Advanced features, S Pen, Air actions). On this tablet the
+switch is `spen_air_action=1` in `Settings.System`; if a normal app may read it, the app should
+warn while it is on. The app could instead define its own Air actions with
+Samsung's S Pen Remote SDK (proprietary, so only behind a flag). Whether the app still
+receives every digitizer button event while Air actions are on is still to be checked.
 
 ## End-to-end runs (synthetic source, Linux host)
 
@@ -105,6 +116,6 @@ intact, cursor drawn by the client.
 
 - The same runs with a USB 3 cable.
 - The stylus `MotionEvent`s the app receives (button state, hover, tool type) with Air
-  Command enabled.
+  actions on and off, and whether an app can read `spen_air_action`.
 - The real Linux path (KDE portal, VAAPI) on the tablet, and the Windows path on the Nitro
   (see `phase0-nitro-checklist.md` and `windows-testing.md`).
