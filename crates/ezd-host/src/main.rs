@@ -6,6 +6,8 @@
 mod diag;
 mod platform;
 mod run;
+#[cfg(windows)]
+mod vdd;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -23,6 +25,10 @@ enum Command {
     Run(run::RunArgs),
     /// Print a JSON diagnostics report (failures are reported as data).
     Diag,
+    /// Manage the Virtual Display Driver (Windows).
+    #[cfg(windows)]
+    #[command(subcommand)]
+    Vdd(vdd::VddCommand),
 }
 
 fn main() -> Result<()> {
@@ -43,5 +49,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&diag::report())?);
             Ok(())
         }
+        #[cfg(windows)]
+        Command::Vdd(cmd) => vdd::run(cmd),
     }
 }

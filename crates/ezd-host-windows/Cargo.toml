@@ -1,6 +1,6 @@
 [package]
 name = "ezd-host-windows"
-description = "ezdisplay windows host backend: virtual display, capture and encode (skeleton)"
+description = "ezdisplay Windows host backend: GPU policy, virtual display (VDD), DXGI capture, D3D11 hardware encode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,11 +8,40 @@ authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["ffmpeg"]
+# Hardware encode through FFmpeg (D3D11 frames). Needs FFmpeg headers/libs at build time,
+# so it is only built in CI / on Windows. `--no-default-features` gives a crate that still
+# builds the capture side and `diag`, and reports "built without ffmpeg" from `create_virtual_source`.
+ffmpeg = ["dep:ezd-ffmpeg"]
+
 [dependencies]
 ezd-host-core.workspace = true
 ezd-proto.workspace = true
+roxmltree = "0.21"
 serde_json.workspace = true
 tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+ezd-ffmpeg = { workspace = true, optional = true }
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Devices_Display",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [lints]
 workspace = true
