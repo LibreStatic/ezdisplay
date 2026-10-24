@@ -37,6 +37,10 @@ android {
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
+    androidResources {
+        generateLocaleConfig = true
+    }
+
     flavorDimensions += "distribution"
     productFlavors {
         // GitHub builds: may self-update (REQUEST_INSTALL_PACKAGES lives in src/full).

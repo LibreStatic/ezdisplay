@@ -87,6 +87,9 @@ class SettingsScreenshotTest {
     @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-notnight")
     fun phone_main_light() { show(tabletState); capture("phone_main_light") }
 
+    @Test @Config(sdk = [36], qualifiers = "de-w412dp-h915dp-notnight")
+    fun phone_main_german_light() { show(tabletState); capture("phone_main_german_light") }
+
     @Test @Config(sdk = [36], qualifiers = "w841dp-h701dp-night")
     fun foldable_dark() { show(tabletState); capture("foldable_dark") }
 
