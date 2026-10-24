@@ -12,7 +12,7 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 2. **The cursor is drawn locally.** The cursor shape and position travel on their own channel and are drawn by the tablet on top of the video.
 3. **Never queue video.** The link has a credit of one video frame. The host captures and encodes only when the previous frame has left. When the link is busy, frames are coalesced before encoding, never dropped after it.
 4. **Low-latency codec settings at both ends.** No B-frames, CBR with a VBV of about one frame, an infinite GOP with keyframes on request, and decoder low-latency keys on Android (`KEY_LOW_LATENCY` plus vendor keys).
-5. **Native mode.** The tablet's native resolution at its highest refresh rate, up to 120 Hz by default.
+5. **Native mode.** The tablet's native resolution at its highest refresh rate, up to 120 Hz by default. `--scale` lowers the stream size to a fraction of it.
 
 ## Components
 
@@ -33,7 +33,7 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 
 ### Windows
 
-- Virtual display: [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) (MIT, signed, IddCx). The `<gpu><friendlyname>` setting makes it call `IddCxAdapterSetRenderAdapter`. Configuration lives in `HKLM\SOFTWARE\MikeTheTech\VirtualDisplayDriver` (read first) or `C:\VirtualDisplayDriver\vdd_settings.xml`. Writing it needs elevation.
+- Virtual display: [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) (MIT, signed, IddCx). The `<gpu><friendlyname>` setting makes it call `IddCxAdapterSetRenderAdapter`. Configuration lives in `HKLM\SOFTWARE\MikeTheTech\VirtualDisplayDriver` (read first) or `C:\VirtualDisplayDriver\vdd_settings.xml`. Writing it needs elevation. The VDD path adds the `--scale`d mode the first time, which needs a writable `vdd_settings.xml`.
 - Capture: DXGI Desktop Duplication on the virtual output, using a D3D11 device on the same adapter. With the hardware cursor enabled, the pointer arrives separately.
 - Encode: FFmpeg with d3d11va hardware frames (`h264_nvenc` / `h264_qsv` / `h264_amf`). A direct NVENC SDK backend is an option if FFmpeg buffers frames.
 - Input (Phase 2): `InjectSyntheticPointerInput` with PT_PEN and PT_TOUCH devices.
@@ -41,7 +41,7 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 
 ### Linux
 
-- KDE Plasma: the ScreenCast portal source type `VIRTUAL` creates a KWin virtual output. The user picks its size in the portal dialog, default 1920×1080, and `restore_token` skips the dialog afterwards. KWin virtual outputs start at 60 Hz but support custom modes, so the host adds the tablet's native mode with `kscreen-doctor output.<name>.addCustomMode.<w>.<h>.<mHz>.reduced` and switches to it.
+- KDE Plasma: the ScreenCast portal source type `VIRTUAL` creates a KWin virtual output. The user picks its size in the portal dialog, default 1920×1080, and `restore_token` skips the dialog afterwards. KWin virtual outputs start at 60 Hz but support custom modes, so the host adds the stream-size mode (the tablet's native size, or the `--scale`d one) with `kscreen-doctor output.<name>.addCustomMode.<w>.<h>.<mHz>.reduced` and switches to it.
 - GNOME: portal `VIRTUAL` (Mutter `RecordVirtual`). wlroots: a headless output created over IPC, captured as a monitor.
 - Capture: PipeWire with DMA-BUF. Encoding uses VAAPI on Intel/AMD, and NVENC on NVIDIA through CUDA/EGL interop, with a copy fallback.
 - Input (Phase 2): uinput devices mapped to the virtual output (KWin `org.kde.KWin.InputDevice.outputName`, GNOME settings, Sway/Hyprland config).

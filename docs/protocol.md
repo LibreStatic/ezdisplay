@@ -116,8 +116,8 @@ gives up (the host uses 10 s per step).
 * Codec: H.264 unless the preferences ask for another codec and both sides support it
   (fallback order H.264, HEVC, AV1 among codecs both sides share).
 * Decoder: hardware and low-latency preferred; its limits constrain the stream.
-* Resolution: the client's native size, scaled down (aspect preserved) to the decoder limits,
-  rounded down to even numbers.
+* Resolution: the client's native size, first scaled by the host's `--scale` (default 1.0), then
+  scaled down (aspect preserved) to the decoder limits, rounded down to even numbers.
 * Refresh rate: the highest client rate not above `max_refresh_mhz` (default 120000) and the
   decoder `max_fps`. The encoder frame rate equals the refresh rate.
 * Bitrate: `width * height * fps * 0.07` bit/s for H.264 (`0.05` for HEVC and AV1), clamped to

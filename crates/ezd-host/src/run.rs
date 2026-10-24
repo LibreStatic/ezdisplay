@@ -55,6 +55,10 @@ pub struct RunArgs {
     /// Capture this existing output instead of creating one (`--source virtual`).
     #[arg(long)]
     output: Option<String>,
+    /// Stream at this fraction of the tablet's native resolution (0.25-1.0). Lower values
+    /// reduce GPU load; the tablet scales the picture up.
+    #[arg(long, default_value_t = 1.0, value_parser = parse_scale)]
+    scale: f32,
     /// Video frames that may be sent but not yet acknowledged by the tablet. 1 gives the
     /// lowest latency; more raises the frame rate when the round trip is long (Wi-Fi).
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=8))]
@@ -107,6 +111,15 @@ fn setup_adb(serial: Option<&str>, host_port: u16) -> Result<ReverseGuard> {
     Ok(guard)
 }
 
+fn parse_scale(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
+    if (0.25..=1.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err(format!("scale must be between 0.25 and 1.0, got {s}"))
+    }
+}
+
 pub async fn run(args: RunArgs) -> Result<()> {
     let listener = TcpListener::bind(&args.listen)
         .await
@@ -125,6 +138,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         },
         bitrate_kbps: args.bitrate_kbps,
         encoder: args.encoder.clone(),
+        scale_permille: (args.scale * 1000.0).round() as u16,
         ..Prefs::default()
     };
 
@@ -175,6 +189,21 @@ pub async fn run(args: RunArgs) -> Result<()> {
                 tracing::info!("interrupted, shutting down");
                 return Ok(());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_scale;
+
+    #[test]
+    fn scale_parsing() {
+        assert_eq!(parse_scale("0.75"), Ok(0.75));
+        assert_eq!(parse_scale("0.25"), Ok(0.25));
+        assert_eq!(parse_scale("1"), Ok(1.0));
+        for bad in ["0.24", "1.01", "0", "-1", "abc", "NaN", ""] {
+            assert!(parse_scale(bad).is_err(), "{bad}");
         }
     }
 }

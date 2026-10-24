@@ -37,6 +37,9 @@ pub struct Prefs {
     pub bitrate_kbps: Option<u32>,
     /// Force a specific host encoder by name (must support the chosen codec).
     pub encoder: Option<String>,
+    /// Stream size as a fraction of the client's native size, in thousandths (250-1000).
+    /// Default 1000. Values outside the range are clamped.
+    pub scale_permille: u16,
 }
 
 impl Default for Prefs {
@@ -48,6 +51,7 @@ impl Default for Prefs {
             max_bitrate_kbps: None,
             bitrate_kbps: None,
             encoder: None,
+            scale_permille: 1000,
         }
     }
 }
@@ -99,9 +103,11 @@ fn even_floor(v: u64) -> u32 {
     ((v.max(2)) & !1) as u32
 }
 
-/// Native size clamped to the decoder limits, aspect preserved, rounded down to even.
-fn pick_resolution(w: u32, h: u32, dec: &DecoderCaps) -> (u32, u32) {
-    let (mut w, mut h) = (w as u64, h as u64);
+/// Native size scaled by `prefs.scale_permille`, clamped to the decoder limits, aspect
+/// preserved, rounded down to even.
+fn pick_resolution(w: u32, h: u32, dec: &DecoderCaps, prefs: &Prefs) -> (u32, u32) {
+    let s = prefs.scale_permille.clamp(250, 1000) as u64;
+    let (mut w, mut h) = (w as u64 * s / 1000, h as u64 * s / 1000);
     let (mw, mh) = (dec.max_width as u64, dec.max_height as u64);
     // Scale down by the tighter of the two limits (cross-multiplied to stay in integers).
     if mw != 0 && w > mw {
@@ -159,7 +165,8 @@ fn pick_encoder<'a>(host: &'a HostCaps, codec: Codec, prefs: &Prefs) -> Option<&
 ///
 /// * codec: `prefs.codec` if both sides support it, else H.264 (then HEVC, AV1);
 /// * decoder: hardware + low-latency preferred; its limits clamp resolution and fps;
-/// * resolution: client native, clamped to the decoder maximum, aspect kept, even;
+/// * resolution: client native times `prefs.scale_permille`, clamped to the decoder maximum,
+///   aspect kept, even;
 /// * refresh: highest client rate not above `prefs.max_refresh_mhz` (and decoder fps);
 /// * bitrate: `w*h*fps*0.07` bit/s for H.264 (`0.05` HEVC/AV1) unless `prefs.bitrate_kbps`,
 ///   clamped to the link ceiling;
@@ -171,7 +178,12 @@ pub fn negotiate(client: &ClientCaps, host: &HostCaps, prefs: &Prefs) -> Result<
     let codec = pick_codec(client, host, prefs)?;
     let dec = pick_decoder(client, codec).ok_or(ProtoError::NoCommonCodec)?;
     let enc = pick_encoder(host, codec, prefs).ok_or(ProtoError::NoCommonCodec)?;
-    let (width, height) = pick_resolution(client.display.width_px, client.display.height_px, dec);
+    let (width, height) = pick_resolution(
+        client.display.width_px,
+        client.display.height_px,
+        dec,
+        prefs,
+    );
     let refresh_mhz = pick_refresh(client, dec, prefs);
     let fps = refresh_mhz as f64 / 1000.0;
     let ceiling = prefs
@@ -426,6 +438,75 @@ mod tests {
                 host: h264_hw.clone(),
                 prefs: Prefs::default(),
                 want: Some((1920, 1080, 60000, Codec::H264, 8709, "h264_nvenc")),
+            },
+            Case {
+                name: "scale 750: 2220x1386, bitrate follows area",
+                client: client(2960, 1848, &[60000, 120000], std_dec.clone()),
+                host: h264_hw.clone(),
+                prefs: Prefs {
+                    scale_permille: 750,
+                    ..Prefs::default()
+                },
+                want: Some((2220, 1386, 120000, Codec::H264, 25846, "h264_nvenc")),
+            },
+            Case {
+                name: "scale 500: 1480x924",
+                client: client(2960, 1848, &[60000], std_dec.clone()),
+                host: h264_hw.clone(),
+                prefs: Prefs {
+                    scale_permille: 500,
+                    ..Prefs::default()
+                },
+                want: Some((1480, 924, 60000, Codec::H264, 5744, "h264_nvenc")),
+            },
+            Case {
+                name: "scale then decoder limit: 2220x1386 -> 1920x1198",
+                client: client(
+                    2960,
+                    1848,
+                    &[60000],
+                    vec![DecoderCaps {
+                        max_width: 1920,
+                        max_height: 1920,
+                        ..dec(Codec::H264, "d", true, true)
+                    }],
+                ),
+                host: h264_hw.clone(),
+                prefs: Prefs {
+                    scale_permille: 750,
+                    ..Prefs::default()
+                },
+                want: Some((1920, 1198, 60000, Codec::H264, 9661, "h264_nvenc")),
+            },
+            Case {
+                name: "scaled odd size rounds down to even",
+                client: client(1001, 1001, &[60000], std_dec.clone()),
+                host: h264_hw.clone(),
+                prefs: Prefs {
+                    scale_permille: 999,
+                    ..Prefs::default()
+                },
+                want: Some((998, 998, 60000, Codec::H264, 4183, "h264_nvenc")),
+            },
+            Case {
+                name: "scale 0 clamps to 250",
+                client: client(2960, 1848, &[60000], std_dec.clone()),
+                host: h264_hw.clone(),
+                prefs: Prefs {
+                    scale_permille: 0,
+                    ..Prefs::default()
+                },
+                want: Some((740, 462, 60000, Codec::H264, 1436, "h264_nvenc")),
+            },
+            Case {
+                name: "scale 2000 clamps to 1000",
+                client: client(2960, 1848, &[60000], std_dec.clone()),
+                host: h264_hw.clone(),
+                prefs: Prefs {
+                    scale_permille: 2000,
+                    ..Prefs::default()
+                },
+                want: Some((2960, 1848, 60000, Codec::H264, 22974, "h264_nvenc")),
             },
             Case {
                 name: "no common codec",
