@@ -503,6 +503,7 @@ fn on_process(stream: &pw::stream::Stream, local: &Rc<RefCell<Local>>) {
             if old.is_some() {
                 s.coalesced += 1;
             }
+            tracing::trace!(replaced = old.is_some(), "pipewire frame");
             drop(s);
             l.shared.cv.notify_all();
             drop(l);

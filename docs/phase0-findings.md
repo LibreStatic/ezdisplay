@@ -228,12 +228,55 @@ Maximize loop with KWrite, 11 s:
   X-tiled, then linear.
 - KWin 6.6.4 only offers BGRA and BGRx for screencasts, so the conversion to NV12 can't be
   handed to KWin.
-- Next options to look at:
-  - Converting on another engine (VEBOX), if the Gen 9.5 driver accepts RGB input there.
-  - A higher GPU priority for the host's contexts. This needs `CAP_SYS_NICE`, and FFmpeg does
-    not expose the VA context priority.
-  - A 60 Hz default on integrated GPUs.
-  - The dGPU (MUX) mode, where KWin and NVENC share the NVIDIA GPU.
+
+### Animation benchmark
+
+A KWin script shows and hides the quick-tile outline 8 times, maximizes and restores a KWrite
+window 8 times, and then moves it for 3 s. For each event, the host trace counts the frames KWin
+delivered over PipeWire and the frames encoded in the next 500 ms. GPU busy time is one minus the
+RC6 (idle) residency from `/sys/class/drm/card2/power/rc6_residency_ms`, sampled every 10 ms.
+Tablet size 2960x1848, Y-tiled buffers.
+
+Maximize, 500 ms after the event (KWin's animation lasts about 300 ms):
+
+| Run | Frames from KWin | Encoded | GPU busy | E2E p50 / p95 |
+|---|---|---|---|---|
+| 120 Hz | 20.5 | 10.5 | 97 % | 61 / 206 ms |
+| 60 Hz | 18 | 16 | 89 % | 43 / 94 ms |
+| 120 Hz, frames dropped without encoding | 25 | - | - | - |
+| 60 Hz, frames dropped without encoding | 16-17 | - | 82 % | - |
+| 2220x1386, 120 Hz | 26 | 18.5 | 92 % | 32 / 68 ms |
+| 2220x1386, 60 Hz | 18.5 | 16 | 87 % | 32 / 117 ms |
+
+- The UHD 630 is the limit. With nothing encoded, KWin alone keeps it 82 % busy during the
+  maximize animation at 60 Hz, and 52 % while a window moves. On the 1920x1080 panel (which has
+  an ICC profile), KWin needs 40 % to move a window and 58 % to maximize one.
+- At 120 Hz the host is the bottleneck. Each frame goes through three steps in series:
+  - waiting for KWin's fence: 4-10 ms;
+  - the conversion: 2-17 ms, waiting behind KWin on the render engine;
+  - the encode: 7-9 ms.
+
+  At 60 Hz the host encodes nearly every frame KWin delivers.
+- The GPU clock is not the cause. With `gt_min_freq_mhz` raised to the 1050 MHz maximum, the
+  results did not change; the 350 MHz readings were idle (RC6) time. The host could not raise the
+  clock anyway: i915 on kernel 6.19 has no fence-deadline boost (`i915_fence_set_deadline` is
+  absent), and its wait boost only applies to requests that have not started.
+- Maximize and restore on the virtual output stall KWin's main thread for 34-51 ms per event (a
+  10 ms script timer fires late), even when nothing is encoded. The same script on the panel
+  shows no stall.
+- The outline's 100-200 ms gaps also appear with nothing encoded and without main-thread stalls.
+  They come from the outline animation itself, not from the host. Unloading the blur effect
+  changed nothing.
+
+Next options:
+- A 60 Hz default when encoding on an integrated GPU.
+- A lower stream resolution as an option: smoother animations, less sharp text.
+- The NVIDIA GPU for both compositing and encoding, either in MUX dGPU mode or with KWin using
+  the NVIDIA GPU as primary. This needs the zero-copy NVENC path.
+- Overlapping the encode (video engine) with the next frame's conversion (render engine). At
+  120 Hz this saves up to 8 ms per frame, but the render engine is close to saturated.
+- A higher GPU priority for the conversion needs `CAP_SYS_NICE`. It would also take render time
+  from KWin, which is already the limit at 60 Hz.
 
 ## Still to measure
 
