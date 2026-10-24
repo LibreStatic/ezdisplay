@@ -117,8 +117,9 @@ intact, cursor drawn by the client.
 `ezd-host run --source virtual --adb <serial>` on the dev machine (Plasma 6.6 on Wayland,
 Intel UHD 630 and GTX 1650 Mobile, KWin composing on the Intel GPU) and the app on the tablet,
 over the same USB 2.0 link. The host resizes the KDE portal's virtual screen to 2960x1848 at
-120 Hz. PipeWire delivers linear DMA-BUFs (modifier 0) and `h264_vaapi` encodes them on the
-Intel GPU without a copy through the CPU. KWin only sends a frame when the output has damage,
+120 Hz. PipeWire delivered linear DMA-BUFs (modifier 0) in these runs; the host now prefers
+Y-tiled ones (see "Real use" below). `h264_vaapi` encodes them on the Intel GPU without a copy
+through the CPU. KWin only sends a frame when the output has damage,
 so mpv played an animated pattern (`testsrc2` at 120 frames/s) full screen on the virtual
 output. The figures are medians of 1 s windows over about 25 s. No frame was dropped in any
 run. "Capture to encoded" starts at KWin's frame timestamp. "E2E" runs from that timestamp
@@ -181,11 +182,64 @@ What came up on this machine:
 
 Screenshots of the tablet showed the KDE desktop full screen, in landscape.
 
+## Real use on the KDE path (dragging windows)
+
+Same machine and setup, VAAPI low-power with fixed QP. The user dragged windows onto the tablet
+by hand. For repeatable runs, a KWin script (`loadDeclarativeScript` over D-Bus) moved a window
+between the panel and the virtual output, or maximized and restored it every 700 ms.
+
+**Dragging felt as laggy as the existing second-screen app at first. The cause was `adb reverse`, not the USB
+bandwidth.**
+- While the mouse moved, each video frame took 25-33 ms to reach the app, even with frames
+  under 65 KB. A USB 3 cable (5 Gbit/s) did not change it.
+- adbd accepts the device-side socket with Nagle's algorithm on. It holds each message until
+  the app acknowledges the previous one. The app's kernel delays that acknowledgement by up to
+  40 ms when the app has nothing to send back. Small cursor updates between frames triggered
+  it.
+- Fix: the app's read half sets `TCP_QUICKACK` again after every read (`ezd-link`).
+- Result during a drag: link transfer 1-3 ms (from 25-33 ms), E2E p50 33-41 ms (from 60-70 ms).
+  The user reported that dragging felt smooth after the fix.
+
+**Scripted drags with a still window** ran at 63-73 frames/s, with about 10 ms per encode and
+E2E p50 35-39 ms. That held both for KWrite and for Firefox with a busy page.
+
+**Window animations still stall.** These include the maximize animation and the preview that
+appears when a window is dragged against the top edge.
+- Each one held a frame for 100-260 ms in the conversion step: `hwmap` plus `scale_vaapi`,
+  BGRx to NV12.
+- The encoder thread sleeps in `i915_request_wait_timeout` the whole time. The host's own GPU
+  time stays low (DRM fdinfo: render about 10 %, video about 45 %, video-enhance 0 %).
+- So the conversion waits on the render engine behind KWin's work. KWin uses a high-priority
+  GPU context (it has `CAP_SYS_NICE`).
+- Part of the wait is KWin finishing the frame itself: the buffer's write fence takes 10-50 ms
+  to signal during the animation.
+- It happens with KWrite (drawn on the CPU) too, so it is KWin's drawing, not the app's.
+
+Maximize loop with KWrite, 11 s:
+
+| Buffers | Virtual output | Frames held > 40 ms | Wait p95 (fence + conversion) | Worst |
+|---|---|---|---|---|
+| Linear | 120 Hz | 31 | 127 ms | 156 ms |
+| Y-tiled | 120 Hz | 18-22 | 50-56 ms | 78-140 ms |
+| Y-tiled | 60 Hz (`--max-refresh-mhz 60000`) | 8 | 29 ms | 75 ms |
+
+- With Y-tiled buffers, KWin finishes each frame sooner (fence p90 12.5 ms, from 19.8 ms), and
+  the conversion waits less (p90 29 ms, from 66 ms). The host now prefers Y-tiled, then
+  X-tiled, then linear.
+- KWin 6.6.4 only offers BGRA and BGRx for screencasts, so the conversion to NV12 can't be
+  handed to KWin.
+- Next options to look at:
+  - Converting on another engine (VEBOX), if the Gen 9.5 driver accepts RGB input there.
+  - A higher GPU priority for the host's contexts. This needs `CAP_SYS_NICE`, and FFmpeg does
+    not expose the VA context priority.
+  - A 60 Hz default on integrated GPUs.
+  - The dGPU (MUX) mode, where KWin and NVENC share the NVIDIA GPU.
+
 ## Still to measure
 
-- The same runs with a USB 3 cable.
+- The table runs above with a USB 3 cable. A drag over USB 3 did not change the link transfer.
 - The stylus `MotionEvent`s the app receives (button state, hover, tool type) with Air
   actions on and off, and whether an app can read `spen_air_action`.
 - The Windows path on the Nitro (see `phase0-nitro-checklist.md` and `windows-testing.md`).
-- The KDE path with real use (cursor crossing, dragging windows onto the tablet), over Wi-Fi,
-  and glass to glass with `tools/latency`.
+- The KDE path with the cursor crossing between screens, over Wi-Fi, and glass to glass with
+  `tools/latency`.

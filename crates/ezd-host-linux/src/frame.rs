@@ -190,13 +190,9 @@ pub fn capture_us_from_pts(pts_ns: i64, mono_now_ns: i64, now_us: u64) -> u64 {
     now_us.saturating_sub((age_ns / 1000) as u64)
 }
 
-/// Picks the modifier to fixate: linear if offered (always importable), otherwise the first
-/// offered modifier we support.
+/// Picks the modifier to fixate: the first of `supported` (most preferred first) that was offered.
 pub fn choose_modifier(offered: &[u64], supported: &[u64]) -> Option<u64> {
-    if offered.contains(&DRM_MOD_LINEAR) && supported.contains(&DRM_MOD_LINEAR) {
-        return Some(DRM_MOD_LINEAR);
-    }
-    offered.iter().copied().find(|m| supported.contains(m))
+    supported.iter().copied().find(|m| offered.contains(m))
 }
 
 #[cfg(test)]
@@ -249,15 +245,12 @@ mod tests {
 
     #[test]
     fn modifier_choice() {
-        let sup = [0, 0x0100_0000_0000_0002];
+        let sup = [0x0100_0000_0000_0002, 0];
         assert_eq!(
             choose_modifier(&[5, 0, 0x0100_0000_0000_0002], &sup),
-            Some(0)
-        );
-        assert_eq!(
-            choose_modifier(&[5, 0x0100_0000_0000_0002], &sup),
             Some(0x0100_0000_0000_0002)
         );
+        assert_eq!(choose_modifier(&[5, 0], &sup), Some(0));
         assert_eq!(choose_modifier(&[5, 6], &sup), None);
         assert_eq!(choose_modifier(&[], &sup), None);
     }

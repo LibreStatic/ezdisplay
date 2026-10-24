@@ -779,13 +779,18 @@ fn run(
     Ok(())
 }
 
-/// Exposed for tests: the number of modifiers offered by default for Intel.
+/// Modifiers offered for Intel, most preferred first.
+///
+/// Tiled first: KWin draws the virtual output into these buffers and the VAAPI conversion reads
+/// them, and both are much slower on linear memory. On a UHD 630 at 2960x1848, linear buffers
+/// doubled the time KWin took to finish a frame during window animations and our conversion
+/// waited up to 150 ms behind it.
 pub fn default_intel_modifiers() -> Vec<u64> {
     vec![
-        DRM_MOD_LINEAR,
-        // I915_FORMAT_MOD_X_TILED, I915_FORMAT_MOD_Y_TILED
-        0x0100_0000_0000_0001,
+        // I915_FORMAT_MOD_Y_TILED, I915_FORMAT_MOD_X_TILED
         0x0100_0000_0000_0002,
+        0x0100_0000_0000_0001,
+        DRM_MOD_LINEAR,
     ]
 }
 

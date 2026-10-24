@@ -818,6 +818,23 @@ impl Pipeline {
         let want_key = force_key || !a.sent_config;
         let (w, h) = (frame.width, frame.height);
 
+        // Waits until the compositor's GPU has finished drawing into the buffer. The conversion
+        // would wait for it anyway; waiting here splits the compositor's time from ours in the
+        // "encode stages" trace.
+        let t_fence = now_us();
+        if let Pixels::Dma(d) = &frame.pixels
+            && let Some(p) = d.planes.first()
+        {
+            use std::os::fd::AsRawFd;
+            let mut pfd = libc::pollfd {
+                fd: p.fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one valid pollfd; the fd stays open for the call.
+            unsafe { libc::poll(&mut pfd, 1, 1000) };
+        }
+        let fence_us = now_us() - t_fence;
         let (av, _release) = match frame.pixels {
             Pixels::Dma(d) => {
                 let frames = a.drm_frames.as_ref().ok_or("no DRM frames context")?;
@@ -831,6 +848,7 @@ impl Pipeline {
             (*av.0).pts = self.pts;
         }
         self.pts += 1;
+        let t_graph = now_us();
         let out = match a.graph.as_mut() {
             Some(g) => match g.run(av.0)? {
                 Some(o) => o,
@@ -849,10 +867,19 @@ impl Pipeline {
                 f.flags &= !(ff::AV_FRAME_FLAG_KEY);
             }
         }
+        let t_send = now_us();
         a.enc.send(out.0)?;
         drop(out);
+        let t_receive = now_us();
         let packet = a.enc.receive()?;
         let encoded_us = now_us();
+        tracing::trace!(
+            fence_us,
+            graph_us = t_send - t_graph,
+            send_us = t_receive - t_send,
+            receive_us = encoded_us - t_receive,
+            "encode stages"
+        );
         // The GPU/CPU is done with the capture buffer once the packet is out.
         drop(_release);
         let Some((data, keyframe)) = packet else {
