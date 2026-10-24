@@ -14,5 +14,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+socket2 = { version = "0.6", features = ["all"] }
+
 [lints]
 workspace = true

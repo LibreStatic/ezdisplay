@@ -49,6 +49,8 @@ impl Link {
             .map(|a| a.to_string())
             .unwrap_or_else(|_| "tcp:?".into());
         let (r, w) = stream.into_split();
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let r = QuickAckRead(r);
         Ok(Link::new(Box::new(r), Box::new(w), peer))
     }
 
@@ -81,5 +83,57 @@ impl Link {
         let rx = MuxReceiver::new(self.reader);
         let (tx, task) = spawn_mux(self.writer, opts);
         (tx, rx, task)
+    }
+}
+
+/// Read half of a TCP link that acknowledges what it reads right away.
+///
+/// With `adb reverse`, the app talks to a socket that adbd accepted with Nagle's algorithm on, so
+/// adbd holds each message until the app has acknowledged the previous one. The app's kernel
+/// delays that acknowledgement by up to 40 ms when the app has nothing to send back. While the
+/// mouse moved, each small cursor update held the next video frame back by about 30 ms.
+/// `TCP_QUICKACK` sends the pending acknowledgement at once. The kernel drops back to delayed
+/// acknowledgements on its own, so it is set again after every read.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+struct QuickAckRead(tokio::net::tcp::OwnedReadHalf);
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl AsyncRead for QuickAckRead {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let r = std::pin::Pin::new(&mut self.0).poll_read(cx, buf);
+        if matches!(r, std::task::Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            // Best effort: if it fails, the acknowledgement is only delayed as before.
+            let _ = socket2::SockRef::from(self.0.as_ref()).set_tcp_quickack(true);
+        }
+        r
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn tcp_link_reads_everything_in_order() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            for i in 0..50u8 {
+                s.write_all(&[i; 300]).await.unwrap();
+            }
+        });
+        let mut link = Link::connect_tcp(addr).await.unwrap();
+        let mut got = Vec::new();
+        link.reader.read_to_end(&mut got).await.unwrap();
+        server.await.unwrap();
+        let want: Vec<u8> = (0..50u8).flat_map(|i| [i; 300]).collect();
+        assert_eq!(got, want);
     }
 }
