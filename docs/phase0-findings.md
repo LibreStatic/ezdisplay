@@ -235,7 +235,8 @@ A KWin script shows and hides the quick-tile outline 8 times, maximizes and rest
 window 8 times, and then moves it for 3 s. For each event, the host trace counts the frames KWin
 delivered over PipeWire and the frames encoded in the next 500 ms. GPU busy time is one minus the
 RC6 (idle) residency from `/sys/class/drm/card2/power/rc6_residency_ms`, sampled every 10 ms.
-Tablet size 2960x1848, Y-tiled buffers.
+Tablet size 2960x1848, Y-tiled buffers. The tool is in
+[`tools/kwin-anim-bench`](../tools/kwin-anim-bench/README.md).
 
 Maximize, 500 ms after the event (KWin's animation lasts about 300 ms):
 
@@ -249,8 +250,13 @@ Maximize, 500 ms after the event (KWin's animation lasts about 300 ms):
 | 2220x1386, 60 Hz | 18.5 | 16 | 87 % | 32 / 117 ms |
 
 - The UHD 630 is the limit. With nothing encoded, KWin alone keeps it 82 % busy during the
-  maximize animation at 60 Hz, and 52 % while a window moves. On the 1920x1080 panel (which has
-  an ICC profile), KWin needs 40 % to move a window and 58 % to maximize one.
+  maximize animation at 60 Hz, and 52 % while a window moves. On the 1920x1080 panel, KWin needs
+  40 % to move a window and 58 % to maximize one.
+- KWin's color settings do not help the stream. The panel's ICC profile is configured but
+  inactive (`kscreen-doctor` reports "Color profile source: sRGB"). Switching the panel's color
+  power preference from "prefer accuracy" to "prefer efficiency" lowered its maximize cost from
+  58 % to 52 % and its move cost from 41 % to 39 %. Virtual outputs do not expose the setting at
+  all.
 - At 120 Hz the host is the bottleneck. Each frame goes through three steps in series:
   - waiting for KWin's fence: 4-10 ms;
   - the conversion: 2-17 ms, waiting behind KWin on the render engine;

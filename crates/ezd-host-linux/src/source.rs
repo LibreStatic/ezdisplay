@@ -210,6 +210,11 @@ impl VideoSource for KdeVirtualSource {
             }
             Err(e) => return Err(SourceError::msg(e)),
         };
+        // Benchmark aid (tools/kwin-anim-bench): drop every frame to measure KWin alone.
+        if std::env::var_os("EZD_DIAG_SKIP_ENCODE").is_some() {
+            drop(frame);
+            return Ok(None);
+        }
         let capture_us = frame.capture_us;
         let seq = frame.seq;
         let was_dma = frame.is_dma();
