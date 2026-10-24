@@ -27,7 +27,7 @@ pub const FLAG_MORE: u16 = 1;
 pub enum Channel {
     /// Handshake, capabilities, keepalive, statistics.
     Control = 0,
-    /// Input events (reserved for phase 2).
+    /// Input events (pen, touch, buttons, scroll; protocol 0.3).
     Input = 1,
     /// Cursor shape and position.
     Cursor = 2,

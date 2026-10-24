@@ -1,4 +1,4 @@
-# ezdisplay wire protocol (version 0.2)
+# ezdisplay wire protocol (version 0.3)
 
 All integers are little endian. The protocol runs over any reliable ordered byte stream (TCP
 through `adb reverse` today; AOA bulk endpoints later). It is implemented in the `ezd-proto`
@@ -27,7 +27,7 @@ Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 | Id | Name | Use |
 | --- | --- | --- |
 | 0 | Control | Handshake, capabilities, keepalive, statistics. |
-| 1 | Input | Reserved for phase 2 (touch/stylus events). |
+| 1 | Input | Pen, touch, pointer buttons and scroll, client to host (0.3). |
 | 2 | Cursor | Cursor shape and position. |
 | 3 | Video | Encoded video frames. |
 | 4 | Audio | Reserved. |
@@ -48,6 +48,12 @@ Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 | Control | 10 | `Reject` | either | postcard |
 | Control | 11 | `Bye` | either | postcard |
 | Control | 12 | `FrameAck` | client to host | postcard |
+| Control | 13 | `InputStatus` | host to client | postcard (0.3) |
+| Control | 14 | `ClientOptions` | host to client | postcard (0.3) |
+| Input | 1 | `Pen` (`PenSample`) | client to host | postcard (0.3) |
+| Input | 2 | `Touch` (`TouchFrame`) | client to host | postcard (0.3) |
+| Input | 3 | `PointerButton` | client to host | postcard (0.3) |
+| Input | 4 | `Scroll` | client to host | postcard (0.3) |
 | Cursor | 1 | `CursorShape` | host to client | postcard |
 | Cursor | 2 | `CursorState` | host to client | postcard |
 | Video | 1 | `VideoFrame` | host to client | postcard |
@@ -82,9 +88,13 @@ per push) and yields complete messages.
 
 ### Versioning
 
-`Hello` carries `proto_major` and `proto_minor` (currently 0 and 2; 0.2 added `FrameAck`). A different major version
-is fatal: the receiver answers `Reject` and closes. Minor versions only add new `(channel,
-kind)` pairs, so peers with different minors interoperate.
+`Hello` carries `proto_major` and `proto_minor` (currently 0 and 3; 0.2 added `FrameAck`, 0.3
+the input messages, `InputStatus` and `ClientOptions`). A different major version is fatal: the
+receiver answers `Reject` and closes. Minor versions only add new `(channel,
+kind)` pairs, so peers with different minors interoperate. `Hello::supports_input()` is true
+when the peer's minor is at least `MINOR_INPUT` = 3; a host must not send `InputStatus` or
+`ClientOptions` to an older client (it would skip them anyway), and a client must not send
+Input messages to an older host.
 
 ## Handshake and session
 
@@ -167,12 +177,50 @@ which is only meant for tests.
 
 ### Priority
 
-The writer serves queues in the order Control, Input, Cursor, Audio, Video. Video frames are
-written in chunks and the higher-priority queues are re-checked between chunks, so a large
-keyframe delays a control or cursor message by at most one chunk (64 KiB by default).
-`CursorState` is latest-wins: a state that has not been written yet is replaced by a newer
-one. Everything else is reliable FIFO. Note that control messages overtake video: send `Bye`
-after the last frame has been written if the peer should see all frames first.
+The writer serves queues in the order control, input, cursor shapes, cursor state, video.
+Video frames are written in chunks and the higher-priority queues are re-checked between
+chunks, so a large keyframe delays a control, input or cursor message by at most one chunk
+(64 KiB by default). `CursorState` is latest-wins: a state that has not been written yet is
+replaced by a newer one. Everything else is reliable FIFO. Note that control messages overtake
+video: send `Bye` after the last frame has been written if the peer should see all frames first.
+
+Input is batched: when the writer takes input it drains every queued input message into one
+buffer and writes and flushes it once. Under a backlog (128 or more queued input messages) a
+new `Pen` replaces the last queued message if that is a `Pen` with identical `flags`, and a new
+`Touch` whose contacts are all `MOVE` replaces the last queued message if that is also an
+all-`MOVE` `Touch` with the same set of ids. Transitions (any pen flag change, `DOWN`, `UP`,
+`CANCEL`, buttons, scrolls) are never dropped.
+
+## Input (0.3)
+
+All input messages travel client to host on the Input channel and carry `t_us`, the client's
+monotonic clock (same epoch as the other client timestamps). Coordinates `x`, `y` are `u16`
+normalized over the stream: 0 is the left/top edge and 65535 (`NORM_MAX`) the right/bottom edge
+(`normalize(px, extent)` and `denormalize(v, extent)` convert). Codes and flag bits are plain
+integers, not enums: receivers ignore unknown codes and bits.
+
+`Pen(PenSample { t_us, x, y, pressure, tilt_x, tilt_y, flags })`, one message per sample.
+`pressure` 65535 = 1.0. Tilt is in hundredths of a degree (-9000..=9000); positive `tilt_x` =
+top of the pen tilted to the right, positive `tilt_y` = tilted toward the user. `flags`:
+`IN_RANGE` = 1, `CONTACT` = 2, `BARREL` = 4, `ERASER` = 8. A sample without `IN_RANGE` means
+the pen left proximity.
+
+`Touch(TouchFrame { t_us, contacts })`, with `TouchContact { id: u8, x, y, phase: u8 }` and
+phases `DOWN` = 0, `MOVE` = 1, `UP` = 2, `CANCEL` = 3. Every frame lists ALL active contacts;
+a contact that ended in this frame appears once with `UP` or `CANCEL` and is absent afterwards.
+
+`PointerButton { t_us, x, y, button: u8, pressed: bool }` with `LEFT` = 0, `RIGHT` = 1,
+`MIDDLE` = 2.
+
+`Scroll { t_us, x, y, dx: i32, dy: i32, modifiers: u8 }`. Deltas are in 1/120 of a notch with
+the signs of Windows `WHEEL_DELTA` and evdev `REL_WHEEL`/`REL_HWHEEL`: `dy > 0` = wheel rotated
+forward, away from the user (scroll up; zoom in with Ctrl), `dx > 0` = right. `modifiers`:
+`CTRL` = 1, `SHIFT` = 2.
+
+Host to client, on the Control channel: `InputStatus { caps: u32, note: String }` with `caps`
+bits `TOUCH` = 1, `PEN` = 2, `ACTIONS` = 4 (what the host can inject) and a human-readable
+`note` explaining what is unavailable (empty when all is fine); `ClientOptions { flags: u32 }`
+with `TELEMETRY` = 1 (show the telemetry overlay).
 
 ## Cursor
 

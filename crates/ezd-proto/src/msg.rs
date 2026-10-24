@@ -56,6 +56,12 @@ impl Hello {
         }
     }
 
+    /// True if the peer speaks at least protocol minor [`MINOR_INPUT`](crate::MINOR_INPUT)
+    /// (input messages, `InputStatus`, `ClientOptions`).
+    pub fn supports_input(&self) -> bool {
+        self.proto_minor >= crate::MINOR_INPUT
+    }
+
     /// Fails with [`ProtoError::VersionMismatch`] if the peer's major differs from ours.
     pub fn check_compatible(&self) -> Result<()> {
         if self.proto_major != crate::PROTOCOL_MAJOR {
@@ -294,7 +300,183 @@ pub struct CursorState {
     pub ts_us: u64,
 }
 
-/// Any message of protocol 0.1.
+/// Maximum value of a normalized coordinate: 0 is the left/top edge of the
+/// stream and `NORM_MAX` the right/bottom edge.
+pub const NORM_MAX: u16 = 65535;
+
+/// Maps a pixel position `px` within `extent` pixels to a normalized `u16`
+/// coordinate. Rounds to nearest and clamps to `0..=NORM_MAX`; a non-positive
+/// (or NaN) `extent` gives 0.
+pub fn normalize(px: f64, extent: f64) -> u16 {
+    if extent.is_nan() || extent <= 0.0 || px.is_nan() {
+        return 0;
+    }
+    (px / extent * f64::from(NORM_MAX))
+        .round()
+        .clamp(0.0, f64::from(NORM_MAX)) as u16
+}
+
+/// Inverse of [`normalize`]: maps a normalized coordinate to pixels within `extent`.
+pub fn denormalize(v: u16, extent: f64) -> f64 {
+    f64::from(v) / f64::from(NORM_MAX) * extent
+}
+
+/// One pen (stylus) sample (input channel, client to host). One message per
+/// sample. Coordinates are normalized over the stream, see [`NORM_MAX`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PenSample {
+    /// Client monotonic clock (same epoch as other client timestamps), microseconds.
+    pub t_us: u64,
+    /// X, 0 = left edge, 65535 = right edge.
+    pub x: u16,
+    /// Y, 0 = top edge, 65535 = bottom edge.
+    pub y: u16,
+    /// Pressure, 65535 = 1.0.
+    pub pressure: u16,
+    /// Tilt around the y axis in hundredths of a degree (-9000..=9000);
+    /// positive = top of the pen tilted to the right.
+    pub tilt_x: i16,
+    /// Tilt around the x axis in hundredths of a degree (-9000..=9000);
+    /// positive = top of the pen tilted toward the user.
+    pub tilt_y: i16,
+    /// Bit set of [`PenSample::IN_RANGE`], [`PenSample::CONTACT`],
+    /// [`PenSample::BARREL`], [`PenSample::ERASER`]. Unknown bits are ignored.
+    pub flags: u8,
+}
+
+impl PenSample {
+    /// Flag: the pen is in proximity. Absent = the pen left proximity.
+    pub const IN_RANGE: u8 = 1;
+    /// Flag: the tip (or eraser) touches the surface.
+    pub const CONTACT: u8 = 2;
+    /// Flag: the barrel button is pressed.
+    pub const BARREL: u8 = 4;
+    /// Flag: the eraser end is in use.
+    pub const ERASER: u8 = 8;
+}
+
+/// One touch contact within a [`TouchFrame`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TouchContact {
+    /// Contact id, stable from `DOWN` to `UP`/`CANCEL`.
+    pub id: u8,
+    /// X, normalized (see [`NORM_MAX`]).
+    pub x: u16,
+    /// Y, normalized (see [`NORM_MAX`]).
+    pub y: u16,
+    /// One of [`TouchContact::DOWN`], [`MOVE`](Self::MOVE), [`UP`](Self::UP),
+    /// [`CANCEL`](Self::CANCEL). Receivers treat unknown codes as `MOVE`.
+    pub phase: u8,
+}
+
+impl TouchContact {
+    /// Phase: the contact appeared.
+    pub const DOWN: u8 = 0;
+    /// Phase: the contact is active (moved or unchanged).
+    pub const MOVE: u8 = 1;
+    /// Phase: the contact was lifted.
+    pub const UP: u8 = 2;
+    /// Phase: the contact was cancelled (e.g. palm rejection, system gesture).
+    pub const CANCEL: u8 = 3;
+}
+
+/// A touch frame (input channel, client to host). Lists ALL active contacts;
+/// contacts that ended in this frame appear once with `UP`/`CANCEL` and then
+/// disappear.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TouchFrame {
+    /// Client monotonic clock, microseconds.
+    pub t_us: u64,
+    /// All active contacts.
+    pub contacts: Vec<TouchContact>,
+}
+
+/// Mouse-style button press or release (input channel, client to host).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointerButton {
+    /// Client monotonic clock, microseconds.
+    pub t_us: u64,
+    /// X, normalized (see [`NORM_MAX`]).
+    pub x: u16,
+    /// Y, normalized (see [`NORM_MAX`]).
+    pub y: u16,
+    /// One of [`PointerButton::LEFT`], [`RIGHT`](Self::RIGHT), [`MIDDLE`](Self::MIDDLE).
+    /// Receivers ignore unknown codes.
+    pub button: u8,
+    /// True on press, false on release.
+    pub pressed: bool,
+}
+
+impl PointerButton {
+    /// Button: primary.
+    pub const LEFT: u8 = 0;
+    /// Button: secondary.
+    pub const RIGHT: u8 = 1;
+    /// Button: middle.
+    pub const MIDDLE: u8 = 2;
+}
+
+/// Scroll or zoom wheel event (input channel, client to host).
+///
+/// Deltas are in 1/120 of a notch with the signs of Windows `WHEEL_DELTA` and
+/// evdev `REL_WHEEL`/`REL_HWHEEL`: `dy > 0` = wheel rotated forward/away from
+/// the user (scroll up; zoom in with Ctrl), `dx > 0` = right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Scroll {
+    /// Client monotonic clock, microseconds.
+    pub t_us: u64,
+    /// X of the pointer, normalized (see [`NORM_MAX`]).
+    pub x: u16,
+    /// Y of the pointer, normalized (see [`NORM_MAX`]).
+    pub y: u16,
+    /// Horizontal delta in 1/120 notch.
+    pub dx: i32,
+    /// Vertical delta in 1/120 notch.
+    pub dy: i32,
+    /// Bit set of [`Scroll::CTRL`], [`Scroll::SHIFT`]. Unknown bits are ignored.
+    pub modifiers: u8,
+}
+
+impl Scroll {
+    /// Modifier: Ctrl held (pinch zoom is sent as Ctrl + wheel).
+    pub const CTRL: u8 = 1;
+    /// Modifier: Shift held.
+    pub const SHIFT: u8 = 2;
+}
+
+/// Which input kinds the host can inject (host to client).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputStatus {
+    /// Bit set of [`InputStatus::TOUCH`], [`InputStatus::PEN`], [`InputStatus::ACTIONS`].
+    /// Unknown bits are ignored.
+    pub caps: u32,
+    /// Human-readable explanation when something is unavailable (empty when all is fine).
+    pub note: String,
+}
+
+impl InputStatus {
+    /// Capability: touch injection works.
+    pub const TOUCH: u32 = 1;
+    /// Capability: pen injection works.
+    pub const PEN: u32 = 2;
+    /// Capability: pointer buttons and scrolling work.
+    pub const ACTIONS: u32 = 4;
+}
+
+/// Host-controlled client options (host to client).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientOptions {
+    /// Bit set of [`ClientOptions::TELEMETRY`]. Unknown bits are ignored.
+    pub flags: u32,
+}
+
+impl ClientOptions {
+    /// Flag: show the telemetry overlay.
+    pub const TELEMETRY: u32 = 1;
+}
+
+/// Any message of protocol 0.x (0.2 added `FrameAck`, 0.3 the input messages,
+/// `InputStatus` and `ClientOptions`).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
@@ -322,6 +504,18 @@ pub enum Message {
     Bye(Bye),
     /// Control/12.
     FrameAck(FrameAck),
+    /// Control/13 (0.3), host to client.
+    InputStatus(InputStatus),
+    /// Control/14 (0.3), host to client.
+    ClientOptions(ClientOptions),
+    /// Input/1 (0.3), client to host.
+    Pen(PenSample),
+    /// Input/2 (0.3), client to host.
+    Touch(TouchFrame),
+    /// Input/3 (0.3), client to host.
+    PointerButton(PointerButton),
+    /// Input/4 (0.3), client to host.
+    Scroll(Scroll),
     /// Cursor/1.
     CursorShape(CursorShape),
     /// Cursor/2.
@@ -334,6 +528,10 @@ impl Message {
     /// Channel this message travels on.
     pub fn channel(&self) -> Channel {
         match self {
+            Message::Pen(_)
+            | Message::Touch(_)
+            | Message::PointerButton(_)
+            | Message::Scroll(_) => Channel::Input,
             Message::CursorShape(_) | Message::CursorState(_) => Channel::Cursor,
             Message::VideoFrame(_) => Channel::Video,
             _ => Channel::Control,
@@ -355,6 +553,12 @@ impl Message {
             Message::Reject(_) => 10,
             Message::Bye(_) => 11,
             Message::FrameAck(_) => 12,
+            Message::InputStatus(_) => 13,
+            Message::ClientOptions(_) => 14,
+            Message::Pen(_) => 1,
+            Message::Touch(_) => 2,
+            Message::PointerButton(_) => 3,
+            Message::Scroll(_) => 4,
             Message::CursorShape(_) => 1,
             Message::CursorState(_) => 2,
             Message::VideoFrame(_) => 1,
@@ -381,6 +585,12 @@ pub fn encode_message(msg: &Message) -> Result<(Channel, u8, Vec<u8>)> {
         Message::Reject(m) => enc(m)?,
         Message::Bye(m) => enc(m)?,
         Message::FrameAck(m) => enc(m)?,
+        Message::InputStatus(m) => enc(m)?,
+        Message::ClientOptions(m) => enc(m)?,
+        Message::Pen(m) => enc(m)?,
+        Message::Touch(m) => enc(m)?,
+        Message::PointerButton(m) => enc(m)?,
+        Message::Scroll(m) => enc(m)?,
         Message::CursorShape(m) => enc(m)?,
         Message::CursorState(m) => enc(m)?,
         Message::VideoFrame(m) => enc(m)?,
@@ -417,6 +627,12 @@ pub fn decode_message(channel: u8, kind: u8, payload: &[u8]) -> Result<Option<Me
         (Channel::Control, 10) => Message::Reject(dec(c, k, payload)?),
         (Channel::Control, 11) => Message::Bye(dec(c, k, payload)?),
         (Channel::Control, 12) => Message::FrameAck(dec(c, k, payload)?),
+        (Channel::Control, 13) => Message::InputStatus(dec(c, k, payload)?),
+        (Channel::Control, 14) => Message::ClientOptions(dec(c, k, payload)?),
+        (Channel::Input, 1) => Message::Pen(dec(c, k, payload)?),
+        (Channel::Input, 2) => Message::Touch(dec(c, k, payload)?),
+        (Channel::Input, 3) => Message::PointerButton(dec(c, k, payload)?),
+        (Channel::Input, 4) => Message::Scroll(dec(c, k, payload)?),
         (Channel::Cursor, 1) => Message::CursorShape(dec(c, k, payload)?),
         (Channel::Cursor, 2) => Message::CursorState(dec(c, k, payload)?),
         (Channel::Video, 1) => Message::VideoFrame(dec(c, k, payload)?),
@@ -505,6 +721,54 @@ mod tests {
                 frame_id: 1 << 33,
                 received_us: 99,
             }),
+            Message::InputStatus(InputStatus {
+                caps: InputStatus::TOUCH | InputStatus::PEN,
+                note: "pen injection unavailable".into(),
+            }),
+            Message::ClientOptions(ClientOptions {
+                flags: ClientOptions::TELEMETRY,
+            }),
+            Message::Pen(PenSample {
+                t_us: 1 << 40,
+                x: 65535,
+                y: 1,
+                pressure: 32768,
+                tilt_x: -9000,
+                tilt_y: 9000,
+                flags: PenSample::IN_RANGE | PenSample::CONTACT | PenSample::BARREL,
+            }),
+            Message::Touch(TouchFrame {
+                t_us: 5,
+                contacts: vec![
+                    TouchContact {
+                        id: 0,
+                        x: 10,
+                        y: 20,
+                        phase: TouchContact::DOWN,
+                    },
+                    TouchContact {
+                        id: 3,
+                        x: 30,
+                        y: 40,
+                        phase: TouchContact::UP,
+                    },
+                ],
+            }),
+            Message::PointerButton(PointerButton {
+                t_us: 6,
+                x: 100,
+                y: 200,
+                button: PointerButton::RIGHT,
+                pressed: true,
+            }),
+            Message::Scroll(Scroll {
+                t_us: 7,
+                x: 1,
+                y: 2,
+                dx: -120,
+                dy: 240,
+                modifiers: Scroll::CTRL,
+            }),
             Message::CursorShape(CursorShape {
                 shape_id: 9,
                 width: 2,
@@ -556,7 +820,10 @@ mod tests {
     fn unknown_pairs_decode_to_none() {
         assert_eq!(decode_message(0, 99, b"x").unwrap(), None);
         assert_eq!(decode_message(77, 1, b"x").unwrap(), None);
-        assert_eq!(decode_message(Channel::Input as u8, 1, b"x").unwrap(), None);
+        assert_eq!(
+            decode_message(Channel::Input as u8, 200, b"x").unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -571,6 +838,69 @@ mod tests {
         };
         let (_, _, p) = encode_message(&Message::VideoFrame(m)).unwrap();
         assert_eq!(p.len(), 4 + 2 + 200);
+    }
+
+    #[test]
+    fn input_payloads_are_small() {
+        // Realistic worst case: one hour of client uptime, full-range coordinates.
+        let mut sample = PenSample {
+            t_us: 3_600_000_000,
+            x: u16::MAX,
+            y: u16::MAX,
+            pressure: u16::MAX,
+            tilt_x: -4500,
+            tilt_y: 4500,
+            flags: 15,
+        };
+        let (_, _, p) = encode_message(&Message::Pen(sample)).unwrap();
+        assert!(p.len() <= 20, "pen payload {} bytes", p.len());
+        // Absolute worst case is still small.
+        sample.t_us = u64::MAX;
+        sample.tilt_x = i16::MIN;
+        let (_, _, p) = encode_message(&Message::Pen(sample)).unwrap();
+        assert!(p.len() <= 26, "pen payload {} bytes", p.len());
+        let touch = Message::Touch(TouchFrame {
+            t_us: u64::MAX,
+            contacts: (0..10)
+                .map(|id| TouchContact {
+                    id,
+                    x: u16::MAX,
+                    y: u16::MAX,
+                    phase: TouchContact::MOVE,
+                })
+                .collect(),
+        });
+        let (_, _, p) = encode_message(&touch).unwrap();
+        assert!(
+            p.len() <= 10 + 1 + 10 * 8,
+            "touch payload {} bytes",
+            p.len()
+        );
+    }
+
+    #[test]
+    fn normalization() {
+        assert_eq!(normalize(0.0, 2960.0), 0);
+        assert_eq!(normalize(2960.0, 2960.0), NORM_MAX);
+        assert_eq!(normalize(-10.0, 2960.0), 0);
+        assert_eq!(normalize(5000.0, 2960.0), NORM_MAX);
+        assert_eq!(normalize(10.0, 0.0), 0);
+        assert_eq!(normalize(10.0, -5.0), 0);
+        assert_eq!(normalize(f64::NAN, 100.0), 0);
+        assert_eq!(denormalize(0, 2960.0), 0.0);
+        assert_eq!(denormalize(NORM_MAX, 2960.0), 2960.0);
+        for px in 0..=2960 {
+            let back = denormalize(normalize(px as f64, 2960.0), 2960.0);
+            assert!((back - px as f64).abs() <= 0.5, "{px} -> {back}");
+        }
+    }
+
+    #[test]
+    fn input_support_by_minor() {
+        let mut h = Hello::new(Role::Client, "x", "y");
+        assert!(h.supports_input());
+        h.proto_minor = crate::MINOR_INPUT - 1;
+        assert!(!h.supports_input());
     }
 
     #[test]

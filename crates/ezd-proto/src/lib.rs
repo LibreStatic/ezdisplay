@@ -28,7 +28,9 @@ pub use negotiate::{LinkKind, Prefs, negotiate};
 /// Wire protocol major version. A mismatch is fatal at handshake.
 pub const PROTOCOL_MAJOR: u16 = 0;
 /// Wire protocol minor version. Newer minors may add new `(channel, kind)` pairs.
-pub const PROTOCOL_MINOR: u16 = 2;
+pub const PROTOCOL_MINOR: u16 = 3;
+/// First protocol minor with the input messages, `InputStatus` and `ClientOptions`.
+pub const MINOR_INPUT: u16 = 3;
 /// Default TCP port used for the host listener and `adb reverse`.
 pub const DEFAULT_PORT: u16 = 27183;
 

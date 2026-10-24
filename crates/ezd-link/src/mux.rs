@@ -2,9 +2,15 @@
 //!
 //! [`MuxSender`] (cloneable) queues messages; a single writer task serializes
 //! them onto the link with strict priority
-//! `Control > Input > Cursor > Audio > Video`:
+//! `Control > Input > CursorShape > CursorState > Video`:
 //!
 //! * control messages and cursor shapes are reliable FIFO;
+//! * input messages (pen, touch, buttons, scroll) are reliable FIFO too. When
+//!   the writer takes input it drains the whole queue into one buffer and
+//!   flushes once. Under a backlog (128 or more queued entries) a new pen
+//!   sample with the same flags as the last queued pen sample, or a touch
+//!   frame of only `MOVE` contacts with the same ids as the last queued such
+//!   frame, replaces it; transitions are never dropped;
 //! * [`CursorState`] is *latest wins*: a newer state replaces one that has not
 //!   been written yet;
 //! * video frames are fragmented into chunks and the writer re-checks the
@@ -24,9 +30,10 @@
 use crate::link::BoxRead;
 use crate::link::BoxWrite;
 use ezd_proto::{
-    Channel, CursorState, FrameDecoder, Incoming, Message, ProtoError, VideoFrame, encode_message,
-    fragments, frame::put_frame,
+    Channel, CursorState, FrameDecoder, Incoming, Message, ProtoError, TouchContact, VideoFrame,
+    encode_message, fragments, frame::put_frame,
 };
+
 use std::collections::VecDeque;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,6 +68,10 @@ pub struct MuxStats {
     pub cursor_states_coalesced: u64,
     /// Cursor states written.
     pub cursor_states_sent: u64,
+    /// Input messages written.
+    pub inputs_sent: u64,
+    /// Input messages dropped by backlog coalescing (replaced by a newer one).
+    pub inputs_coalesced: u64,
     /// Video frames fully written.
     pub video_frames_sent: u64,
     /// Total frames (all channels, fragments counted individually) written.
@@ -125,6 +136,39 @@ impl MuxOptions {
     }
 }
 
+/// Input queue length from which equivalent samples replace each other.
+const INPUT_BACKLOG: usize = 128;
+
+/// What a queued input message is, for backlog coalescing without re-decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputClass {
+    /// Pen sample with these flags.
+    Pen(u8),
+    /// Touch frame whose contacts are all `MOVE`, with this set of ids.
+    TouchMove([u64; 4]),
+    /// Never coalesced.
+    Other,
+}
+
+impl InputClass {
+    fn of(msg: &Message) -> InputClass {
+        match msg {
+            Message::Pen(p) => InputClass::Pen(p.flags),
+            Message::Touch(t)
+                if !t.contacts.is_empty()
+                    && t.contacts.iter().all(|c| c.phase == TouchContact::MOVE) =>
+            {
+                let mut ids = [0u64; 4];
+                for c in &t.contacts {
+                    ids[usize::from(c.id >> 6)] |= 1 << (c.id & 63);
+                }
+                InputClass::TouchMove(ids)
+            }
+            _ => InputClass::Other,
+        }
+    }
+}
+
 struct Encoded {
     channel: u8,
     kind: u8,
@@ -133,9 +177,16 @@ struct Encoded {
     ack_id: Option<u64>,
 }
 
+/// Input queue entry.
+struct QueuedInput {
+    enc: Encoded,
+    class: InputClass,
+}
+
 #[derive(Default)]
 struct Queues {
     control: VecDeque<Encoded>,
+    input: VecDeque<QueuedInput>,
     cursor_shapes: VecDeque<Encoded>,
     cursor_state: Option<Encoded>,
     video: VecDeque<Encoded>,
@@ -158,6 +209,8 @@ struct Shared {
     slot: watch::Sender<SlotState>,
     coalesced: AtomicU64,
     states_sent: AtomicU64,
+    inputs_sent: AtomicU64,
+    inputs_coalesced: AtomicU64,
     videos_sent: AtomicU64,
     frames_written: AtomicU64,
     ack_timeouts: AtomicU64,
@@ -219,6 +272,9 @@ impl MuxSender {
     /// * [`CursorState`] replaces a pending one (latest wins);
     /// * [`VideoFrame`] is queued behind earlier video frames, never dropped
     ///   (the credit is advisory, see [`wait_video_slot`](Self::wait_video_slot));
+    /// * input messages go to a reliable FIFO served right after control; under
+    ///   a backlog, equivalent pen samples / touch moves replace the last queued
+    ///   one (see the module docs);
     /// * everything else is reliable FIFO.
     pub fn send(&self, msg: &Message) -> Result<(), MuxError> {
         let (ch, kind, payload) = encode_message(msg)?;
@@ -241,6 +297,23 @@ impl MuxSender {
                 Message::CursorState(_) => {
                     if q.cursor_state.replace(enc).is_some() {
                         self.shared.coalesced.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Message::Pen(_)
+                | Message::Touch(_)
+                | Message::PointerButton(_)
+                | Message::Scroll(_) => {
+                    let class = InputClass::of(msg);
+                    let replace = class != InputClass::Other
+                        && q.input.len() >= INPUT_BACKLOG
+                        && q.input.back().is_some_and(|l| l.class == class);
+                    if replace {
+                        if let Some(last) = q.input.back_mut() {
+                            last.enc = enc;
+                        }
+                        self.shared.inputs_coalesced.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        q.input.push_back(QueuedInput { enc, class });
                     }
                 }
                 Message::CursorShape(_) => q.cursor_shapes.push_back(enc),
@@ -318,6 +391,8 @@ impl MuxSender {
         MuxStats {
             cursor_states_coalesced: self.shared.coalesced.load(Ordering::Relaxed),
             cursor_states_sent: self.shared.states_sent.load(Ordering::Relaxed),
+            inputs_sent: self.shared.inputs_sent.load(Ordering::Relaxed),
+            inputs_coalesced: self.shared.inputs_coalesced.load(Ordering::Relaxed),
             video_frames_sent: self.shared.videos_sent.load(Ordering::Relaxed),
             frames_written: self.shared.frames_written.load(Ordering::Relaxed),
             ack_timeouts: self.shared.ack_timeouts.load(Ordering::Relaxed),
@@ -357,6 +432,8 @@ pub fn spawn_mux(writer: BoxWrite, opts: MuxOptions) -> (MuxSender, MuxTask) {
         slot,
         coalesced: AtomicU64::new(0),
         states_sent: AtomicU64::new(0),
+        inputs_sent: AtomicU64::new(0),
+        inputs_coalesced: AtomicU64::new(0),
         videos_sent: AtomicU64::new(0),
         frames_written: AtomicU64::new(0),
         ack_timeouts: AtomicU64::new(0),
@@ -373,6 +450,7 @@ pub fn spawn_mux(writer: BoxWrite, opts: MuxOptions) -> (MuxSender, MuxTask) {
 
 enum Next {
     Whole(Encoded, bool),
+    Input(Vec<Encoded>),
     VideoChunk,
     Done,
     Idle(Option<Instant>),
@@ -402,6 +480,8 @@ async fn writer_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io:
             let deadline = expire_acks(shared, &mut q);
             if let Some(m) = q.control.pop_front() {
                 Next::Whole(m, false)
+            } else if !q.input.is_empty() {
+                Next::Input(q.input.drain(..).map(|i| i.enc).collect())
             } else if let Some(m) = q.cursor_shapes.pop_front() {
                 Next::Whole(m, false)
             } else if let Some(m) = q.cursor_state.take() {
@@ -435,6 +515,21 @@ async fn writer_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io:
                 if is_state {
                     shared.states_sent.fetch_add(1, Ordering::Relaxed);
                 }
+            }
+            Next::Input(batch) => {
+                // One contiguous buffer, one write, one flush.
+                buf.clear();
+                let mut n = 0u64;
+                for m in &batch {
+                    for (flags, chunk) in fragments(&m.payload, chunk_len) {
+                        put_frame(&mut buf, m.channel, m.kind, flags, chunk);
+                        shared.frames_written.fetch_add(1, Ordering::Relaxed);
+                    }
+                    n += 1;
+                }
+                w.write_all(&buf).await?;
+                w.flush().await?;
+                shared.inputs_sent.fetch_add(n, Ordering::Relaxed);
             }
             Next::VideoChunk => {
                 let Some((enc, off)) = in_flight.as_mut() else {
@@ -558,7 +653,8 @@ impl MuxReceiver {
     }
 }
 
-/// Priority rank of a channel (lower is more urgent); documents the writer order.
+/// Priority rank of a channel (lower is more urgent); documents the writer
+/// order: control, input, cursor (shapes before states), audio, video.
 pub fn priority(ch: Channel) -> u8 {
     match ch {
         Channel::Control => 0,
@@ -573,7 +669,7 @@ pub fn priority(ch: Channel) -> u8 {
 mod tests {
     use super::*;
     use crate::Link;
-    use ezd_proto::{Bye, CursorShape, Ping};
+    use ezd_proto::{Bye, CursorShape, PenSample, Ping, PointerButton, Scroll, TouchFrame};
     use std::time::Duration;
     use tokio::time::{sleep, timeout};
 
@@ -611,6 +707,60 @@ mod tests {
             ts_us: x as u64,
         }
     }
+    fn pen(t: u64, flags: u8) -> Message {
+        Message::Pen(PenSample {
+            t_us: t,
+            x: 1,
+            y: 2,
+            pressure: 3,
+            tilt_x: 0,
+            tilt_y: 0,
+            flags,
+        })
+    }
+    fn touch(t: u64, contacts: &[(u8, u8)]) -> Message {
+        Message::Touch(TouchFrame {
+            t_us: t,
+            contacts: contacts
+                .iter()
+                .map(|&(id, phase)| TouchContact {
+                    id,
+                    x: 1,
+                    y: 2,
+                    phase,
+                })
+                .collect(),
+        })
+    }
+    /// Writer that records the size of each write and counts flushes.
+    struct Recorder {
+        writes: Arc<Mutex<Vec<usize>>>,
+        flushes: Arc<AtomicU64>,
+    }
+    impl tokio::io::AsyncWrite for Recorder {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            b: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            self.writes.lock().unwrap().push(b.len());
+            std::task::Poll::Ready(Ok(b.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            self.flushes.fetch_add(1, Ordering::SeqCst);
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
     async fn recv(rx: &mut MuxReceiver) -> Message {
         timeout(Duration::from_secs(10), rx.recv())
             .await
@@ -635,6 +785,137 @@ mod tests {
         assert!(
             matches!(recv(&mut rx).await, Message::VideoFrame(v) if v.frame_id == 1 && v.data.len() == 2 * 1024 * 1024)
         );
+    }
+
+    #[tokio::test]
+    async fn input_overtakes_big_video_but_not_control() {
+        let (a, b) = Link::duplex_pair(8 * 1024);
+        let (tx, _arx, _t) = a.into_mux_with(onwrite(16 * 1024));
+        let (_btx, mut rx, _t2) = b.into_mux(16 * 1024);
+        tx.send_video(vf(1, 2 * 1024 * 1024)).unwrap();
+        sleep(Duration::from_millis(50)).await; // writer is blocked mid-frame
+        tx.send_cursor_state(cs(5)).unwrap();
+        tx.send(&pen(1, PenSample::IN_RANGE)).unwrap();
+        tx.send_control(Message::Ping(Ping { seq: 1, t0_us: 0 }))
+            .unwrap();
+        // Control, then input, then cursor, all before the video frame completes.
+        assert!(matches!(recv(&mut rx).await, Message::Ping(_)));
+        assert!(matches!(recv(&mut rx).await, Message::Pen(p) if p.t_us == 1));
+        assert!(matches!(recv(&mut rx).await, Message::CursorState(_)));
+        assert!(matches!(recv(&mut rx).await, Message::VideoFrame(_)));
+        assert_eq!(tx.stats().inputs_sent, 1);
+    }
+
+    #[tokio::test]
+    async fn queued_input_is_written_in_one_flush() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let flushes = Arc::new(AtomicU64::new(0));
+        let w = Recorder {
+            writes: writes.clone(),
+            flushes: flushes.clone(),
+        };
+        let (tx, task) = spawn_mux(Box::new(w), onwrite(1024));
+        // Queue everything before the writer task gets to run (current-thread runtime).
+        for i in 0..5 {
+            tx.send(&pen(i, PenSample::IN_RANGE)).unwrap();
+        }
+        tx.send(&Message::PointerButton(PointerButton {
+            t_us: 9,
+            x: 0,
+            y: 0,
+            button: PointerButton::LEFT,
+            pressed: true,
+        }))
+        .unwrap();
+        tx.send(&Message::Scroll(Scroll {
+            t_us: 10,
+            x: 0,
+            y: 0,
+            dx: 0,
+            dy: 120,
+            modifiers: 0,
+        }))
+        .unwrap();
+        tx.close();
+        task.join().await.unwrap();
+        assert_eq!(writes.lock().unwrap().len(), 1, "one write for the batch");
+        assert_eq!(flushes.load(Ordering::SeqCst), 1, "one flush for the batch");
+        let s = tx.stats();
+        assert_eq!(
+            (s.inputs_sent, s.inputs_coalesced, s.frames_written),
+            (7, 0, 7)
+        );
+    }
+
+    #[tokio::test]
+    async fn input_coalesces_only_under_backlog_and_keeps_transitions() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let flushes = Arc::new(AtomicU64::new(0));
+        let w = Recorder { writes, flushes };
+        let (tx, task) = spawn_mux(Box::new(w), onwrite(1024));
+        let _ = task;
+        // Below the backlog threshold nothing is replaced.
+        for i in 0..INPUT_BACKLOG as u64 {
+            tx.send(&pen(i, PenSample::IN_RANGE)).unwrap();
+        }
+        assert_eq!(tx.stats().inputs_coalesced, 0);
+        // Now at the threshold: equal-flag pens replace the last entry.
+        tx.send(&pen(1000, PenSample::IN_RANGE)).unwrap();
+        tx.send(&pen(1001, PenSample::IN_RANGE)).unwrap();
+        assert_eq!(tx.stats().inputs_coalesced, 2);
+        // A flag change is a transition and is kept, as are later equal-flag
+        // pens replacing only entries of their own flags.
+        tx.send(&pen(1002, PenSample::IN_RANGE | PenSample::CONTACT))
+            .unwrap();
+        tx.send(&pen(1003, PenSample::IN_RANGE | PenSample::CONTACT))
+            .unwrap();
+        tx.send(&pen(1004, PenSample::IN_RANGE)).unwrap();
+        assert_eq!(tx.stats().inputs_coalesced, 3);
+        // Touch: DOWN is kept, same-id MOVEs replace, id change / UP are kept.
+        tx.send(&touch(2000, &[(1, TouchContact::DOWN)])).unwrap();
+        tx.send(&touch(2001, &[(1, TouchContact::MOVE)])).unwrap();
+        tx.send(&touch(2002, &[(1, TouchContact::MOVE)])).unwrap();
+        tx.send(&touch(
+            2003,
+            &[(1, TouchContact::MOVE), (2, TouchContact::MOVE)],
+        ))
+        .unwrap();
+        tx.send(&touch(
+            2004,
+            &[(2, TouchContact::MOVE), (1, TouchContact::MOVE)],
+        ))
+        .unwrap();
+        tx.send(&touch(
+            2005,
+            &[(1, TouchContact::UP), (2, TouchContact::MOVE)],
+        ))
+        .unwrap();
+        assert_eq!(tx.stats().inputs_coalesced, 5);
+        tx.close();
+        // Inspect the queue directly (order preserved, transitions present).
+        let q = tx.shared.lock();
+        let ts: Vec<u64> = q
+            .input
+            .iter()
+            .map(|i| {
+                match ezd_proto::decode_message(i.enc.channel, i.enc.kind, &i.enc.payload)
+                    .unwrap()
+                    .unwrap()
+                {
+                    Message::Pen(p) => p.t_us,
+                    Message::Touch(t) => t.t_us,
+                    m => panic!("{m:?}"),
+                }
+            })
+            .collect();
+        let tail: Vec<u64> = ts.iter().copied().filter(|t| *t >= 1000).collect();
+        assert_eq!(
+            tail,
+            vec![1001, 1003, 1004, 2000, 2002, 2004, 2005],
+            "latest of each run survives"
+        );
+        assert!(ts.windows(2).all(|w| w[0] < w[1]), "order preserved");
+        assert_eq!(ts.len(), INPUT_BACKLOG + 6);
     }
 
     #[tokio::test]
