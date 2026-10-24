@@ -26,7 +26,7 @@ mod uinput_sink;
 mod vkdma;
 
 pub use ezd_host_core::PlatformOptions;
-use ezd_host_core::{InputBackend, PlatformError, VideoSource};
+use ezd_host_core::{InputBackend, PlatformError, UnavailableBackend, VideoSource};
 use std::sync::Arc;
 
 /// Creates the capture + encode source for one client connection.
@@ -42,12 +42,18 @@ pub fn create_virtual_source(
     Ok(Box::new(src))
 }
 
-/// Input injection backend (`None` = not available on this desktop).
+/// Input injection backend. KWin is detected from `XDG_CURRENT_DESKTOP` or, when that does not
+/// say KDE (a host started over ssh or from a stripped environment), from KWin's input device
+/// manager on the session bus. Elsewhere the backend is unavailable with a note for the tablet.
 pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-    if !desktop.to_ascii_uppercase().split(':').any(|d| d == "KDE") {
-        tracing::info!(%desktop, "input injection is only implemented for KDE Plasma");
-        return None;
+    let kde = desktop.to_ascii_uppercase().split(':').any(|d| d == "KDE");
+    if !kde && !kwin_input::manager_available() {
+        tracing::info!(%desktop, "KWin not found; input injection is only implemented for KDE Plasma");
+        return Some(Arc::new(UnavailableBackend(
+            "input injection on Linux needs KDE Plasma 6 (KWin was not found on the session bus)"
+                .into(),
+        )));
     }
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => Some(Arc::new(uinput_sink::KdeInputBackend::new(handle))),
