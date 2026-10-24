@@ -1,43 +1,61 @@
-# Fase 0 — checklist en la Acer Nitro 5 (Windows)
+# Phase 0 — checklist on the Acer Nitro 5 (Windows)
 
-Objetivo: confirmar con datos por qué la app de segunda pantalla actual se traba (en qué GPU queda su pantalla y si hay copias entre GPUs) y dejar una línea base de latencia para comparar ezdisplay. Después, probar si Virtual Display Driver (VDD) queda en la GPU que elegimos.
+Goal: confirm with data why the current second-screen app stutters (which GPU its display ends up on
+and whether there are cross-GPU copies) and record a latency baseline to compare ezdisplay against.
+Then test whether the Virtual Display Driver (VDD) stays on the GPU we choose.
 
-Hacé las partes A y B **en los dos modos del MUX** (Discreta y Optimus/Híbrido; el cambio se hace en NitroSense y pide reiniciar). Completá la tabla del final y pegámela en el chat junto con las capturas.
+Run parts A and B **in both MUX modes** (Discrete and Optimus/Hybrid; the switch is made in
+NitroSense and requires a reboot). Fill in the table at the end and send it back together with the
+screenshots.
 
-## 0. Datos de base (una sola vez)
+## 0. Baseline data (once)
 
-- Windows: `winver` → versión y build.
-- Modelo exacto de la Nitro (etiqueta de abajo o `wmic csproduct get name`).
-- Administrador de dispositivos → Adaptadores de pantalla: nombre **exacto** de las dos GPU y versión de cada driver.
-- Monitor principal: ¿el panel de la notebook o uno externo? Si es externo, ¿por HDMI, USB-C o Mini DP?
-- Tablet: modelo exacto, versión de Android y resolución nativa (Ajustes → Acerca de la tablet, o `adb shell wm size`).
-- App de segunda pantalla actual: versión y configuración (resolución, fps, calidad, USB/Wi-Fi). Cable usado.
+- Windows: `winver` → version and build.
+- Exact Nitro model (label underneath or `wmic csproduct get name`).
+- Device Manager → Display adapters: **exact** name of both GPUs and each driver version.
+- Main monitor: the laptop panel or an external one? If external, over HDMI, USB-C or Mini DP?
+- Tablet: exact model, Android version and native resolution (Settings → About tablet, or
+  `adb shell wm size`).
+- Current second-screen app: version and settings (resolution, fps, quality, USB/Wi-Fi). Cable used.
 
-## A. App de segunda pantalla actual (línea base)
+## A. Current second-screen app (baseline)
 
-1. **¿A qué GPU está conectada la pantalla de la app actual?** Configuración → Sistema → Pantalla → Pantalla avanzada → elegí la pantalla de la app actual → anotá "Conectada a: …". Repetí con el monitor principal.
-2. **Motores de cada GPU.** Administrador de tareas → Rendimiento → GPU 0 y GPU 1. En cada una cambiá dos de los gráficos chicos (clic en el título del gráfico) a **Copy** y **Video Encode**. Anotá el % aproximado de cada motor en cada GPU en estos casos:
-   - a. Quieto, con la tablet mostrando el escritorio.
-   - b. Moviendo el cursor de un lado a otro entre el monitor principal y la tablet.
-   - c. Arrastrando una ventana (por ejemplo, el navegador) entre las dos pantallas.
-   - d. Un video de YouTube reproduciéndose en la tablet.
+1. **Which GPU is the current app's display connected to?** Settings → System → Display → Advanced
+   display → pick the current app's display → note "Connected to: …". Repeat for the main monitor.
+2. **Engines of each GPU.** Task Manager → Performance → GPU 0 and GPU 1. On each one switch two of
+   the small graphs (click the graph title) to **Copy** and **Video Encode**. Note the approximate %
+   of each engine on each GPU in these cases:
+   - a. Idle, with the tablet showing the desktop.
+   - b. Moving the cursor back and forth between the main monitor and the tablet.
+   - c. Dragging a window (for example, the browser) between the two displays.
+   - d. A YouTube video playing on the tablet.
 
-   Sacá una captura del Administrador de tareas en el caso c.
-3. **Qué GPU usa el proceso.** Administrador de tareas → Detalles → clic derecho en los encabezados → Seleccionar columnas → "Motor de GPU". Anotá lo que muestra para los procesos de la app actual.
-4. **Latencia.** Abrí `tools/latency/index.html` del repo en **dos** ventanas del navegador: una maximizada en el monitor principal y otra maximizada en la tablet. En la ventana de la tablet, la línea de arriba a la izquierda muestra a qué refresco llega realmente (anotalo).
-   - Con el celular en cámara lenta (240 fps si se puede), filmá las dos pantallas juntas unos 10 segundos.
-   - Después filmá el cursor cruzando de una pantalla a la otra, y una ventana arrastrándose entre las dos.
-   - Mandame los videos, o medí vos: pausá en un cuadro y restá los dos relojes (tablet − principal). Tomá unas 10 lecturas en cuadros distintos.
+   Take a screenshot of Task Manager in case c.
+3. **Which GPU the process uses.** Task Manager → Details → right-click the headers → Select columns →
+   "GPU engine". Note what it shows for the current app's processes.
+4. **Latency.** Open the repo's `tools/latency/index.html` in **two** browser windows: one maximized
+   on the main monitor and one maximized on the tablet. In the tablet window, the line at the top left
+   shows the refresh rate it really reaches (note it).
+   - With a phone in slow motion (240 fps if possible), film both displays together for about
+     10 seconds.
+   - Then film the cursor crossing from one display to the other, and a window being dragged between
+     the two.
+   - Send the videos, or measure yourself: pause on a frame and subtract the two clocks
+     (tablet − main). Take about 10 readings on different frames.
 
-## B. Virtual Display Driver (prueba de concepto)
+## B. Virtual Display Driver (proof of concept)
 
-> Instala un driver de pantalla firmado (MIT). Se desinstala desde "Agregar o quitar programas" o con `winget uninstall`.
+> It installs a signed display driver (MIT). Uninstall it from "Add or remove programs" or with
+> `winget uninstall`.
 
-1. En una terminal como administrador: `winget install --id=VirtualDrivers.Virtual-Display-Driver -e`
-2. Si existe la clave `HKLM\SOFTWARE\MikeTheTech\VirtualDisplayDriver` en regedit, anotá qué valores tiene: el driver la lee **antes** que el XML.
-3. Editá `C:\VirtualDisplayDriver\vdd_settings.xml`:
-   - En `<gpu><friendlyname>` poné el nombre exacto de la GPU a probar, copiado del Administrador de dispositivos. Primero la NVIDIA y después la Intel/AMD.
-   - En `<resolutions>` agregá la resolución nativa de la tablet. Los refrescos de `<global>` (60–240) se suman a todas las resoluciones.
+1. In an administrator terminal: `winget install --id=VirtualDrivers.Virtual-Display-Driver -e`
+2. If the key `HKLM\SOFTWARE\MikeTheTech\VirtualDisplayDriver` exists in regedit, note its values:
+   the driver reads it **before** the XML.
+3. Edit `C:\VirtualDisplayDriver\vdd_settings.xml`:
+   - In `<gpu><friendlyname>` put the exact name of the GPU under test, copied from Device Manager.
+     First the NVIDIA one, then the Intel/AMD one.
+   - In `<resolutions>` add the tablet's native resolution. The refresh rates in `<global>` (60–240)
+     are added to every resolution.
 
      ```xml
      <resolution>
@@ -46,26 +64,30 @@ Hacé las partes A y B **en los dos modos del MUX** (Discreta y Optimus/Híbrido
          <refresh_rate>120</refresh_rate>
      </resolution>
      ```
-4. Reiniciá el driver: Administrador de dispositivos → Adaptadores de pantalla → Virtual Display Driver → Deshabilitar y Habilitar.
-5. Configuración → Pantalla: poné el monitor virtual en **Extender**, con la resolución de la tablet y **120 Hz**. En Pantalla avanzada, anotá a qué GPU dice "Conectada a".
-6. Repetí el paso A.2 caso c, arrastrando una ventana al monitor virtual. No se ve, pero se puede mover con `Win+Shift+←/→`. Anotá el % de Copy de cada GPU.
-7. Cambiá `friendlyname` a la otra GPU, reiniciá el driver (paso 4) y repetí 5–6.
+4. Restart the driver: Device Manager → Display adapters → Virtual Display Driver → Disable and
+   Enable.
+5. Settings → Display: set the virtual monitor to **Extend**, with the tablet's resolution and
+   **120 Hz**. In Advanced display, note which GPU it says "Connected to".
+6. Repeat step A.2 case c, dragging a window to the virtual monitor. It is not visible, but windows
+   can be moved with `Win+Shift+←/→`. Note the Copy % of each GPU.
+7. Change `friendlyname` to the other GPU, restart the driver (step 4) and repeat 5–6.
 
-## Tabla para completar
+## Table to fill in
 
-| Modo MUX | Prueba | Pantalla conectada a | Copy GPU0 / GPU1 (%) | Video Encode GPU0 / GPU1 (%) | Latencia tablet − principal (ms) | Refresco real en la tablet |
+| MUX mode | Test | Display connected to | Copy GPU0 / GPU1 (%) | Video Encode GPU0 / GPU1 (%) | Latency tablet − main (ms) | Real refresh on the tablet |
 |---|---|---|---|---|---|---|
-| Discreta | App actual quieto | | | | | |
-| Discreta | App actual cursor cruzando | | | | | |
-| Discreta | App actual arrastrando ventana | | | | | |
-| Discreta | App actual video | | | | | |
-| Discreta | VDD → NVIDIA, arrastrando | | | | — | — |
-| Discreta | VDD → iGPU, arrastrando | | | | — | — |
-| Híbrido | App actual quieto | | | | | |
-| Híbrido | App actual cursor cruzando | | | | | |
-| Híbrido | App actual arrastrando ventana | | | | | |
-| Híbrido | App actual video | | | | | |
-| Híbrido | VDD → NVIDIA, arrastrando | | | | — | — |
-| Híbrido | VDD → iGPU, arrastrando | | | | — | — |
+| Discrete | Current app idle | | | | | |
+| Discrete | Current app cursor crossing | | | | | |
+| Discrete | Current app dragging window | | | | | |
+| Discrete | Current app video | | | | | |
+| Discrete | VDD → NVIDIA, dragging | | | | — | — |
+| Discrete | VDD → iGPU, dragging | | | | — | — |
+| Hybrid | Current app idle | | | | | |
+| Hybrid | Current app cursor crossing | | | | | |
+| Hybrid | Current app dragging window | | | | | |
+| Hybrid | Current app video | | | | | |
+| Hybrid | VDD → NVIDIA, dragging | | | | — | — |
+| Hybrid | VDD → iGPU, dragging | | | | — | — |
 
-Notas libres: lo que se sienta distinto, errores del driver, si alguna resolución o refresco no aparece, etc.
+Free-form notes: anything that feels different, driver errors, whether some resolution or refresh rate
+is missing, etc.

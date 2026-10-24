@@ -1,5 +1,7 @@
 # Android app (agent notes)
 
+Repository-wide rules (languages and localization, naming) are in the root `AGENTS.md`.
+
 ## Layout
 - Package `io.github.facum.ezdisplay`, module `app`, flavors `full` and `play`. The Rust library is built by the
   cargo-ndk task as part of assemble (slow the first time).
@@ -35,11 +37,6 @@
   `app/build/test-results/testFullDebugUnitTest/*.xml`). Read the tree first: hierarchy, text, selected state, tags.
 - Loop: edit, check the semantics tree, and take a screenshot only for genuinely visual questions (spacing, clipping,
   colour). Use a real device for insets, the S Pen and Samsung's own settings.
-
-## Naming
-Do not name pen-tablet vendors or commercial drawing apps in code, strings, docs, tests or commit messages; describe
-the behaviour instead (for example "graphics tablet", "drawing apps"). The platforms the app runs on or talks to
-(Android, Samsung and the S Pen, KDE, Windows) and open-source apps used as test examples (Krita) are fine.
 
 ## Icons
 Material Symbols Rounded vector drawables from `@material-symbols/svg-400` (viewport 960 with translateY 960), named

@@ -1,130 +1,128 @@
-# Prueba del host de Windows
+# Testing the Windows host
 
-Esta guia sirve para probar el host de Windows (Fase 1d) en una maquina real y devolver
-la informacion necesaria para corregir lo que falle. El host crea un monitor virtual con
-el Virtual Display Driver (VDD), lo captura con Desktop Duplication y lo codifica en la GPU.
+This guide covers testing the Windows host (Phase 1d) on a real machine and reporting back what is
+needed to fix anything that fails. The host creates a virtual monitor with the Virtual Display Driver
+(VDD), captures it with Desktop Duplication and encodes it on the GPU.
 
-Hay que probarlo en las dos configuraciones de la laptop (la pantalla interna cuelga de
-la iGPU o de la dGPU segun el modo MUX) y, si se puede, con una tercera pasada forzando la GPU.
+Test it in both laptop configurations (the internal panel hangs off the iGPU or the dGPU depending on
+the MUX mode) and, if possible, in a third pass that forces the GPU.
 
-## Requisitos
+## Requirements
 
-- Windows 10 21H2 o Windows 11, con los drivers de GPU al dia.
-- Una tablet Android con depuracion USB activada y `adb` en el PATH.
-- Permisos de administrador una sola vez (paso 5).
+- Windows 10 21H2 or Windows 11, with up-to-date GPU drivers.
+- An Android tablet with USB debugging enabled and `adb` on the PATH.
+- Administrator rights once (step 5).
 
-## Pasos
+## Steps
 
-1. **Descargar el artefacto de CI.** En GitHub, pestana *Actions*, ultima ejecucion verde,
-   artefacto `ezdisplay-windows-x86_64`. Descomprimirlo en una carpeta, por ejemplo
-   `C:\ezdisplay`. Contiene `ezd-host.exe`, `ezd-fake-client.exe` y las DLL de FFmpeg
-   (deben quedar junto al `.exe`).
+1. **Download the CI artifact.** On GitHub, *Actions* tab, latest green run, artifact
+   `ezdisplay-windows-x86_64`. Unzip it into a folder, for example `C:\ezdisplay`. It contains
+   `ezd-host.exe`, `ezd-fake-client.exe` and the FFmpeg DLLs (they must stay next to the `.exe`).
 
-2. **Instalar el VDD** (una vez):
+2. **Install the VDD** (once):
 
    ```powershell
    winget install --id=VirtualDrivers.Virtual-Display-Driver -e
    ```
 
-   Aceptar la instalacion del driver cuando Windows lo pida.
+   Accept the driver installation when Windows asks.
 
-3. **Diagnostico completo.** Desde la carpeta del artefacto:
+3. **Full diagnostics.** From the artifact folder:
 
    ```powershell
    .\ezd-host.exe diag > diag.json
    ```
 
-   No cambia nada en el sistema. Incluye version de Windows y DPI, adaptadores (LUID,
-   VRAM, orden de rendimiento/consumo), salidas por adaptador, la decision de GPU,
-   el estado del VDD, una prueba de codificador por adaptador (1920x1080, un cuadro) y una
-   prueba de Desktop Duplication sobre el monitor virtual.
+   It changes nothing on the system. It includes the Windows version and DPI, the adapters (LUID,
+   VRAM, performance/power order), the outputs of each adapter, the GPU decision, the VDD state, an
+   encoder test per adapter (1920x1080, one frame) and a Desktop Duplication test on the virtual
+   monitor.
 
-4. **Estado del VDD:**
+4. **VDD state:**
 
    ```powershell
    .\ezd-host.exe vdd status > vdd-status.json
    ```
 
-5. **Preparar el VDD** (una vez, en una consola como administrador):
+5. **Prepare the VDD** (once, in an administrator console):
 
    ```powershell
    .\ezd-host.exe vdd setup
    ```
 
-   Da permiso de escritura solo sobre `vdd_settings.xml`, en la carpeta de configuracion del VDD
-   (`C:\VirtualDisplayDriver` o el valor `VDDPATH` del registro), para que las siguientes
-   ejecuciones no necesiten administrador. Opciones utiles: `--gpu "NOMBRE"` para asignar
-   el monitor virtual a una GPU, y `--mode 2560x1600@120` (repetible) para ofrecer modos
-   por adelantado. `.\ezd-host.exe vdd revert` deshace el permiso.
+   It grants write access to `vdd_settings.xml` only, in the VDD configuration folder
+   (`C:\VirtualDisplayDriver` or the `VDDPATH` registry value), so later runs do not need
+   administrator rights. Useful options: `--gpu "NAME"` to assign the virtual monitor to a GPU, and
+   `--mode 2560x1600@120` (repeatable) to offer modes in advance. `.\ezd-host.exe vdd revert` undoes
+   the permission.
 
-6. **Instalar la app en la tablet** (una vez por version). Del workflow *Android* en
-   *Actions*, artefacto `ezdisplay-android-apks`:
+6. **Install the app on the tablet** (once per version). From the *Android* workflow in *Actions*,
+   artifact `ezdisplay-android-apks`:
 
    ```powershell
    adb install -r app-full-debug.apk
    ```
 
-7. **Transmitir** (sin administrador, con la tablet conectada por USB):
+7. **Stream** (no administrator rights, with the tablet connected over USB):
 
    ```powershell
    .\ezd-host.exe run --source virtual --adb
    ```
 
-   Abrir la app en la tablet. Para elegir GPU a mano: `--adapter "NVIDIA"` (nombre o LUID
-   `0x...`) o `--prefer-dgpu`. Para capturar un monitor que ya existe: `--output \\.\DISPLAY3`.
-   Con `$env:RUST_LOG="debug"` el log es mas detallado.
+   Open the app on the tablet. To pick the GPU by hand: `--adapter "NVIDIA"` (name or LUID `0x...`)
+   or `--prefer-dgpu`. To capture an existing monitor: `--output \\.\DISPLAY3`. With
+   `$env:RUST_LOG="debug"` the log is more detailed.
 
-## Que probar en cada modo MUX
+## What to test in each MUX mode
 
-Repetir los pasos 3, 4 y 7 una vez por modo:
+Repeat steps 3, 4 and 7 once per mode:
 
-- **Modo hibrido / Optimus (la pantalla interna usa la iGPU):** la politica elige la iGPU
-  (la que maneja la pantalla principal). Esperado: codificador `h264_qsv` (Intel) y
-  `adapter_mismatch: false` en `vdd_output`.
-- **Modo dGPU / MUX discreto (la pantalla interna usa la dGPU):** la politica elige la dGPU.
-  Esperado: `h264_nvenc` (NVIDIA) o `h264_amf` (AMD).
-- **Forzando la dGPU en modo hibrido:** `--prefer-dgpu`. Esperado: el host asigna el VDD a la
-  dGPU (SETGPU), y el video sigue fluyendo.
+- **Hybrid / Optimus mode (the internal panel uses the iGPU):** the policy picks the iGPU (the one
+  driving the main display). Expected: encoder `h264_qsv` (Intel) and `adapter_mismatch: false` in
+  `vdd_output`.
+- **dGPU / discrete MUX mode (the internal panel uses the dGPU):** the policy picks the dGPU.
+  Expected: `h264_nvenc` (NVIDIA) or `h264_amf` (AMD).
+- **Forcing the dGPU in hybrid mode:** `--prefer-dgpu`. Expected: the host assigns the VDD to the
+  dGPU (SETGPU) and video keeps flowing.
 
-En cada caso comprobar: que el monitor virtual aparece a la derecha del principal, que la
-imagen llega a la tablet con el modo pedido, que el puntero se mueve sin retraso, y que
-al cambiar la resolucion o bloquear/desbloquear la sesion el video se recupera solo.
+In each case check that the virtual monitor appears to the right of the main one, that the image
+reaches the tablet in the requested mode, that the pointer moves without lag, and that video recovers
+on its own after changing the resolution or locking/unlocking the session.
 
-## Entrada (lapiz y tacto)
+## Input (pen and touch)
 
-El host inyecta el lapiz y el tacto de la tablet con dispositivos de puntero sinteticos de
-Windows (Windows 10 1809 o posterior), y los clics, el scroll y las teclas con `SendInput`.
+The host injects the tablet's pen and touch with Windows synthetic pointer devices (Windows 10 1809
+or later), and clicks, scrolling and keys with `SendInput`.
 
-1. **Diagnostico.** En `diag.json`, la seccion `input` debe decir `"pen": "ok"` y `"touch": "ok"`.
-   Si no, copiar el error (HRESULT) tal cual.
-2. **Sin tablet.** Con `.\ezd-host.exe run --source virtual` en una consola, ejecutar en otra
-   `.\ezd-fake-client.exe` con `--input-script drag`, `touch2` y `scroll` (uno por vez; ver
-   `.\ezd-fake-client.exe --help` por las demas opciones) y mirar el cursor y la tinta en Paint o
-   en Pizarra (Whiteboard) en el monitor virtual. `drag` dibuja un trazo, `touch2` hace dos dedos,
-   `scroll` rueda y zoom con Ctrl, `keys` mantiene Ctrl+Espacio mientras dibuja un trazo.
-3. **Presion.** Con la tablet y un lapiz: en Paint o Pizarra el grosor del trazo debe seguir la
-   presion; el borrador (si el lapiz tiene) debe borrar.
-4. **Tacto.** En Edge: arrastrar con un dedo desplaza la pagina, pellizcar con dos dedos hace zoom.
-   Un dedo quieto no debe soltarse solo (el host lo refresca cada 100 ms; si se suelta, anotarlo).
-5. **Boton del lapiz.** Boton lateral apretado + toque = clic derecho (menu contextual).
-6. **Atajos de teclado (perfil Tableta gráfica).** En la app de la tablet elegir el perfil
-   "Tableta gráfica". En Krita (Settings > Configure Krita > Tablet settings) elegir Windows Ink
-   para que haya presion. Mantener apretado el boton del lapiz y arrastrar
-   con la punta debe hacer zoom (atajo por defecto: Ctrl+Espacio). Sin tablet,
-   `.\ezd-fake-client.exe --input-script keys` reproduce lo mismo. En la pagina de prueba
-   (`tools/input-test`) las teclas aparecen como `keydown` / `keyup`, con Ctrl mantenido durante
-   el trazo. Anotar si alguna tecla queda "pegada" al soltar el boton o al cortar la sesion.
-7. **Ventanas elevadas.** Con el Administrador de tareas abierto (elevado): Windows bloquea la
-   entrada hacia el, salvo que el host tambien corra como administrador. Anotar si en el log de
-   `ezd-host run` aparece el aviso de UIPI y si el lapiz/tacto no tienen efecto ahi.
-8. Anotar el campo `note` del estado de entrada que muestra la tablet y cualquier linea
-   `input:` del log (con `RUST_LOG=debug`).
+1. **Diagnostics.** In `diag.json`, the `input` section must say `"pen": "ok"` and `"touch": "ok"`.
+   If not, copy the error (HRESULT) as is.
+2. **Without a tablet.** With `.\ezd-host.exe run --source virtual` in one console, run
+   `.\ezd-fake-client.exe` in another with `--input-script drag`, `touch2` and `scroll` (one at a
+   time; see `.\ezd-fake-client.exe --help` for the other options) and watch the cursor and the ink in
+   Paint or Whiteboard on the virtual monitor. `drag` draws a stroke, `touch2` does two fingers,
+   `scroll` scrolls and zooms with Ctrl, `keys` holds Ctrl+Space while drawing a stroke.
+3. **Pressure.** With the tablet and a pen: in Paint or Whiteboard the stroke width must follow the
+   pressure; the eraser (if the pen has one) must erase.
+4. **Touch.** In Edge: dragging with one finger scrolls the page, pinching with two fingers zooms.
+   A still finger must not lift on its own (the host refreshes it every 100 ms; if it lifts, note it).
+5. **Pen button.** Side button held + tap = right click (context menu).
+6. **Keyboard shortcuts ("Graphics tablet" profile).** In the tablet app pick the "Graphics tablet"
+   profile. In Krita (Settings > Configure Krita > Tablet settings) choose Windows Ink so pressure
+   works. Holding the pen button and dragging with the tip must zoom (default shortcut: Ctrl+Space).
+   Without a tablet, `.\ezd-fake-client.exe --input-script keys` plays the same thing. On the test
+   page (`tools/input-test`) the keys show up as `keydown` / `keyup`, with Ctrl held during the
+   stroke. Note whether any key stays "stuck" after releasing the button or ending the session.
+7. **Elevated windows.** With Task Manager open (elevated), Windows blocks input to it unless the
+   host also runs as administrator. Note whether the `ezd-host run` log shows the UIPI warning and
+   whether pen/touch have no effect there.
+8. Note the `note` field of the input state shown on the tablet and any `input:` line in the log
+   (with `RUST_LOG=debug`).
 
-## Que enviar de vuelta
+## What to send back
 
-- `diag.json` y `vdd-status.json` de cada modo MUX (indicar cual era).
-- La salida de consola (stderr) de `ezd-host run ...` desde que arranca hasta el problema;
-  si algo falla, repetir con `RUST_LOG=debug`.
-- Una descripcion de lo observado: ¿se creo el monitor?, ¿llego video?, ¿cuanta latencia
-  aproximada?, ¿el puntero iba bien?, ¿hubo parpadeos o pantalla negra?
-- Modelo de laptop, GPU(s) y version de driver (aparecen en `diag.json`).
+- `diag.json` and `vdd-status.json` from each MUX mode (say which one).
+- The console output (stderr) of `ezd-host run ...` from start until the problem; if something fails,
+  repeat with `RUST_LOG=debug`.
+- A description of what you saw: was the monitor created? did video arrive? roughly how much latency?
+  did the pointer behave? was there flicker or a black screen?
+- Laptop model, GPU(s) and driver version (they appear in `diag.json`).
