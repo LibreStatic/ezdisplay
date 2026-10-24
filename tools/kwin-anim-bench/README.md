@@ -41,6 +41,7 @@ screen must stay on: KWin stops drawing while the panel is blanked, so the scrip
 | `EZD_LOG` | trace for `source`, `encode`, `pw` | Host `RUST_LOG` |
 | `EZD_DIAG_SKIP_ENCODE` | unset | The host drops every frame without converting or encoding it, so the run measures KWin alone |
 | `EZD_CONVERT_AHEAD` | unset | `1` converts the next frame on its own thread while the current one is encoded and sent, starting so it finishes when the encoder asks for it; `early` starts right after the previous frame was taken. Unset, each frame is converted and encoded in series |
+| `EZD_DIAG_DUMP` | unset | A file the host writes the H.264 stream to as it is sent (codec config and frames), playable with `ffplay` |
 
 ## Output
 

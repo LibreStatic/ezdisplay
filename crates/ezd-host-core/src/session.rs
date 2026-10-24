@@ -506,6 +506,23 @@ fn video_loop(
 ) -> Result<(), SourceError> {
     let mut last_config: Option<Vec<u8>> = None;
     let mut next_id = 0u64;
+    // Diagnostics: `EZD_DIAG_DUMP=<file>` writes the stream as sent (codec config and frames).
+    let mut dump =
+        std::env::var_os("EZD_DIAG_DUMP").and_then(|p| match std::fs::File::create(&p) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                tracing::warn!("cannot create {}: {e}", p.to_string_lossy());
+                None
+            }
+        });
+    let mut write_dump = |data: &[u8]| {
+        if let Some(f) = dump.as_mut()
+            && let Err(e) = std::io::Write::write_all(f, data)
+        {
+            tracing::warn!("stream dump stopped: {e}");
+            dump = None;
+        }
+    };
     loop {
         if sh.stop.load(Ordering::Acquire) {
             return Ok(());
@@ -534,6 +551,7 @@ fn video_loop(
                 encoded_us: f.encoded_us,
                 data: cfg.clone(),
             };
+            write_dump(&cfg);
             if tx.send_video(frame).is_err() {
                 return Ok(());
             }
@@ -551,6 +569,7 @@ fn video_loop(
         if f.keyframe {
             sh.keyframes.fetch_add(1, Ordering::Relaxed);
         }
+        write_dump(&f.data);
         let frame = VideoFrame {
             frame_id: id,
             flags: if f.keyframe { VideoFrame::KEYFRAME } else { 0 },
