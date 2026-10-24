@@ -78,6 +78,7 @@ impl InputEngine {
     /// CANCEL, gesture dropped.
     pub fn release_all(&mut self, now_us: u64, out: &mut Vec<Message>) {
         self.drop_gesture();
+        self.release_keys(now_us, out);
         self.pen.exit_at = None;
         if self.pen.in_range {
             self.pen_out(now_us, out);

@@ -444,11 +444,39 @@ impl Scroll {
     pub const SHIFT: u8 = 2;
 }
 
+/// Keyboard key event (input channel, client to host, 0.4).
+///
+/// `usage` is a USB HID keyboard-page (0x07) usage id, i.e. a physical key
+/// position on a US layout; the host applies the user's layout like a real USB
+/// keyboard. Clients send it only when the host reports [`InputStatus::KEYS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Key {
+    /// Client monotonic clock, microseconds.
+    pub t_us: u64,
+    /// HID keyboard-page usage id. Receivers ignore unknown usages.
+    pub usage: u16,
+    /// True on press, false on release.
+    pub pressed: bool,
+}
+
+impl Key {
+    /// Usage: Left Ctrl.
+    pub const LEFT_CTRL: u16 = 0xE0;
+    /// Usage: Left Shift.
+    pub const LEFT_SHIFT: u16 = 0xE1;
+    /// Usage: Left Alt.
+    pub const LEFT_ALT: u16 = 0xE2;
+    /// Usage: Left GUI (Windows / Super / Command).
+    pub const LEFT_GUI: u16 = 0xE3;
+    /// Usage: Space.
+    pub const SPACE: u16 = 0x2C;
+}
+
 /// Which input kinds the host can inject (host to client).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputStatus {
-    /// Bit set of [`InputStatus::TOUCH`], [`InputStatus::PEN`], [`InputStatus::ACTIONS`].
-    /// Unknown bits are ignored.
+    /// Bit set of [`InputStatus::TOUCH`], [`InputStatus::PEN`], [`InputStatus::ACTIONS`],
+    /// [`InputStatus::KEYS`]. Unknown bits are ignored.
     pub caps: u32,
     /// Human-readable explanation when something is unavailable (empty when all is fine).
     pub note: String,
@@ -461,6 +489,8 @@ impl InputStatus {
     pub const PEN: u32 = 2;
     /// Capability: pointer buttons and scrolling work.
     pub const ACTIONS: u32 = 4;
+    /// Capability: key injection works.
+    pub const KEYS: u32 = 8;
 }
 
 /// Host-controlled client options (host to client).
@@ -516,6 +546,8 @@ pub enum Message {
     PointerButton(PointerButton),
     /// Input/4 (0.3), client to host.
     Scroll(Scroll),
+    /// Input/5 (0.4), client to host.
+    Key(Key),
     /// Cursor/1.
     CursorShape(CursorShape),
     /// Cursor/2.
@@ -531,7 +563,8 @@ impl Message {
             Message::Pen(_)
             | Message::Touch(_)
             | Message::PointerButton(_)
-            | Message::Scroll(_) => Channel::Input,
+            | Message::Scroll(_)
+            | Message::Key(_) => Channel::Input,
             Message::CursorShape(_) | Message::CursorState(_) => Channel::Cursor,
             Message::VideoFrame(_) => Channel::Video,
             _ => Channel::Control,
@@ -559,6 +592,7 @@ impl Message {
             Message::Touch(_) => 2,
             Message::PointerButton(_) => 3,
             Message::Scroll(_) => 4,
+            Message::Key(_) => 5,
             Message::CursorShape(_) => 1,
             Message::CursorState(_) => 2,
             Message::VideoFrame(_) => 1,
@@ -591,6 +625,7 @@ pub fn encode_message(msg: &Message) -> Result<(Channel, u8, Vec<u8>)> {
         Message::Touch(m) => enc(m)?,
         Message::PointerButton(m) => enc(m)?,
         Message::Scroll(m) => enc(m)?,
+        Message::Key(m) => enc(m)?,
         Message::CursorShape(m) => enc(m)?,
         Message::CursorState(m) => enc(m)?,
         Message::VideoFrame(m) => enc(m)?,
@@ -633,6 +668,7 @@ pub fn decode_message(channel: u8, kind: u8, payload: &[u8]) -> Result<Option<Me
         (Channel::Input, 2) => Message::Touch(dec(c, k, payload)?),
         (Channel::Input, 3) => Message::PointerButton(dec(c, k, payload)?),
         (Channel::Input, 4) => Message::Scroll(dec(c, k, payload)?),
+        (Channel::Input, 5) => Message::Key(dec(c, k, payload)?),
         (Channel::Cursor, 1) => Message::CursorShape(dec(c, k, payload)?),
         (Channel::Cursor, 2) => Message::CursorState(dec(c, k, payload)?),
         (Channel::Video, 1) => Message::VideoFrame(dec(c, k, payload)?),
@@ -768,6 +804,11 @@ mod tests {
                 dx: -120,
                 dy: 240,
                 modifiers: Scroll::CTRL,
+            }),
+            Message::Key(Key {
+                t_us: 8,
+                usage: Key::LEFT_CTRL,
+                pressed: true,
             }),
             Message::CursorShape(CursorShape {
                 shape_id: 9,

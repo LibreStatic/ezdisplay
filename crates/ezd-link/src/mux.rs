@@ -305,7 +305,8 @@ impl MuxSender {
                 Message::Pen(_)
                 | Message::Touch(_)
                 | Message::PointerButton(_)
-                | Message::Scroll(_) => {
+                | Message::Scroll(_)
+                | Message::Key(_) => {
                     let class = InputClass::of(msg);
                     let replace = class != InputClass::Other
                         && q.input.len() >= INPUT_BACKLOG
@@ -678,7 +679,7 @@ pub fn priority(ch: Channel) -> u8 {
 mod tests {
     use super::*;
     use crate::Link;
-    use ezd_proto::{Bye, CursorShape, PenSample, Ping, PointerButton, Scroll, TouchFrame};
+    use ezd_proto::{Bye, CursorShape, Key, PenSample, Ping, PointerButton, Scroll, TouchFrame};
     use std::time::Duration;
     use tokio::time::{sleep, timeout};
 
@@ -925,6 +926,52 @@ mod tests {
         );
         assert!(ts.windows(2).all(|w| w[0] < w[1]), "order preserved");
         assert_eq!(ts.len(), INPUT_BACKLOG + 6);
+    }
+
+    #[tokio::test]
+    async fn key_messages_queue_in_order_and_are_never_coalesced() {
+        let w = Recorder {
+            writes: Arc::new(Mutex::new(Vec::new())),
+            flushes: Arc::new(AtomicU64::new(0)),
+        };
+        let (tx, task) = spawn_mux(Box::new(w), onwrite(1024));
+        let _ = task;
+        for i in 0..INPUT_BACKLOG as u64 {
+            tx.send(&pen(i, PenSample::IN_RANGE)).unwrap();
+        }
+        // At the backlog threshold: identical consecutive key edges are all kept.
+        let key = |t_us, usage, pressed| {
+            Message::Key(Key {
+                t_us,
+                usage,
+                pressed,
+            })
+        };
+        let sent = [
+            key(1000, Key::LEFT_CTRL, true),
+            key(1001, Key::SPACE, true),
+            key(1002, Key::SPACE, true),
+            key(1003, Key::SPACE, false),
+            key(1004, Key::LEFT_CTRL, false),
+        ];
+        for m in &sent {
+            tx.send(m).unwrap();
+        }
+        assert_eq!(tx.stats().inputs_coalesced, 0);
+        tx.close();
+        let q = tx.shared.lock();
+        let keys: Vec<Message> = q
+            .input
+            .iter()
+            .map(|i| {
+                ezd_proto::decode_message(i.enc.channel, i.enc.kind, &i.enc.payload)
+                    .unwrap()
+                    .unwrap()
+            })
+            .filter(|m| matches!(m, Message::Key(_)))
+            .collect();
+        assert_eq!(keys, sent);
+        assert_eq!(q.input.len(), INPUT_BACKLOG + sent.len());
     }
 
     #[tokio::test]

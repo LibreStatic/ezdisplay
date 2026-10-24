@@ -1,6 +1,7 @@
 //! Pen handling: proximity, contact, sample emission and the delayed Out.
 
 use crate::android as a;
+use crate::config::KeyCombo;
 use crate::engine::InputEngine;
 use crate::gesture::Gesture;
 use crate::motion::{Motion, MotionStep, PointerSample};
@@ -49,6 +50,9 @@ pub(crate) struct PenState {
     /// the same state twice.
     pub last_flush: Option<PenSample>,
     pub gesture: Gesture,
+    /// Key combination currently pressed on the host. Only the release paths
+    /// clear it (`drop_gesture` cannot emit, so it leaves it alone).
+    pub keys_held: Option<KeyCombo>,
 }
 
 const BARREL_MASK: i32 =
@@ -128,6 +132,7 @@ impl InputEngine {
 
     /// The pen left range: resolve what is pending and emit the Out sample.
     pub(crate) fn pen_out(&mut self, t: u64, out: &mut Vec<Message>) {
+        self.release_keys(t, out);
         self.resolve_gesture_on_out(t, out);
         self.drop_gesture();
         self.pen.eraser_hold = false;

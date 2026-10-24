@@ -15,6 +15,9 @@ pub enum Profile {
     Drawing,
     /// Use [`InputConfig::custom`].
     Custom,
+    /// Graphics-tablet style: hold presses the key combination, click right-clicks,
+    /// double click toggles the local zoom.
+    GraphicsTablet,
 }
 
 /// What a barrel-button trigger does.
@@ -36,8 +39,84 @@ pub enum ButtonAction {
     LocalZoom,
     /// Switch to the eraser while held (hold trigger only).
     Eraser,
+    /// Press a key combination ([`InputConfig::keys`]).
+    Keys,
     /// Disabled.
     None,
+}
+
+/// A key combination: modifiers plus an optional key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeyCombo {
+    /// Bit set of [`KeyCombo::CTRL`], [`SHIFT`](Self::SHIFT), [`ALT`](Self::ALT),
+    /// [`META`](Self::META).
+    pub mods: u8,
+    /// HID keyboard-page usage id of the key, 0 = modifiers only.
+    pub key: u16,
+}
+
+impl KeyCombo {
+    /// Modifier: Ctrl.
+    pub const CTRL: u8 = 1;
+    /// Modifier: Shift.
+    pub const SHIFT: u8 = 2;
+    /// Modifier: Alt.
+    pub const ALT: u8 = 4;
+    /// Modifier: Meta (Windows / Super).
+    pub const META: u8 = 8;
+
+    /// No modifiers and no key.
+    pub fn is_empty(&self) -> bool {
+        self.mods == 0 && self.key == 0
+    }
+
+    /// Masks unknown modifier bits; a `key` that is not a letter, digit,
+    /// punctuation, function or navigation usage (0x04..=0x73) or a modifier
+    /// usage (0xE0..=0xE7) becomes 0.
+    pub fn sanitized(self) -> KeyCombo {
+        let valid = matches!(self.key, 0x04..=0x73 | 0xE0..=0xE7);
+        KeyCombo {
+            mods: self.mods & 0x0F,
+            key: if valid { self.key } else { 0 },
+        }
+    }
+}
+
+/// Key combinations of the [`ButtonAction::Keys`] action, per trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeyBindings {
+    /// Tapped on a click.
+    pub click: KeyCombo,
+    /// Tapped on a double click.
+    pub double_click: KeyCombo,
+    /// Kept pressed while the barrel button is held.
+    pub hold: KeyCombo,
+}
+
+impl Default for KeyBindings {
+    fn default() -> Self {
+        KeyBindings {
+            click: KeyCombo::default(),
+            double_click: KeyCombo::default(),
+            // Ctrl + Space: a common drag-zoom shortcut in drawing apps.
+            hold: KeyCombo {
+                mods: KeyCombo::CTRL,
+                key: 0x2C,
+            },
+        }
+    }
+}
+
+impl KeyBindings {
+    fn sanitized(self) -> KeyBindings {
+        KeyBindings {
+            click: self.click.sanitized(),
+            double_click: self.double_click.sanitized(),
+            hold: self.hold.sanitized(),
+        }
+    }
 }
 
 /// Actions for every barrel-button trigger.
@@ -70,6 +149,8 @@ impl ButtonMap {
             Profile::Raw | Profile::Custom => (Raw, LocalZoom, Raw, Raw, Raw),
             Profile::Desktop => (RightClick, LocalZoom, None, Scroll, PcZoom),
             Profile::Drawing => (Raw, LocalZoom, Eraser, Raw, Raw),
+            // The drag entries are unused: a Keys hold takes precedence.
+            Profile::GraphicsTablet => (RightClick, LocalZoom, Keys, Raw, Raw),
         };
         ButtonMap {
             click,
@@ -82,14 +163,14 @@ impl ButtonMap {
 
     /// Replaces actions that are invalid for their trigger by `None`.
     ///
-    /// Allowed: `click`: Raw, RightClick, MiddleClick, LocalZoom, None;
-    /// `double_click`: RightClick, MiddleClick, LocalZoom, None (Raw becomes
-    /// `None`, since a raw double click is two raw clicks); `hold`: as `click`
-    /// plus Eraser; drag triggers: Raw, Scroll, PcZoom, None.
+    /// Allowed: `click`: Raw, RightClick, MiddleClick, LocalZoom, Keys, None;
+    /// `double_click`: RightClick, MiddleClick, LocalZoom, Keys, None (Raw
+    /// becomes `None`, since a raw double click is two raw clicks); `hold`: as
+    /// `click` plus Eraser; drag triggers: Raw, Scroll, PcZoom, None.
     fn sanitized(self) -> ButtonMap {
         use ButtonAction::*;
         let click_like = |a: ButtonAction| match a {
-            Raw | RightClick | MiddleClick | LocalZoom | None => a,
+            Raw | RightClick | MiddleClick | LocalZoom | Keys | None => a,
             _ => None,
         };
         let hold = |a: ButtonAction| match a {
@@ -122,6 +203,8 @@ pub struct InputConfig {
     pub profile: Profile,
     /// Map used when `profile == Custom`.
     pub custom: ButtonMap,
+    /// Combinations used by triggers whose action is [`ButtonAction::Keys`].
+    pub keys: KeyBindings,
     /// Local zoom factor, clamped to 1.25..=4.0 on use.
     pub zoom_factor: f32,
     /// Double-click / hold time, clamped to 150..=800 on use.
@@ -143,6 +226,7 @@ impl Default for InputConfig {
         InputConfig {
             profile: Profile::Raw,
             custom: ButtonMap::default(),
+            keys: KeyBindings::default(),
             zoom_factor: 2.0,
             double_click_ms: 300,
             slop_px: 24.0,
@@ -161,12 +245,24 @@ impl InputConfig {
         serde_json::from_str(s).map_err(|e| e.to_string())
     }
 
-    /// The effective, sanitized button map for the selected profile.
+    /// The effective, sanitized button map for the selected profile. A Keys
+    /// trigger whose (sanitized) combination is empty becomes `None`.
     pub fn button_map(&self) -> ButtonMap {
-        match self.profile {
+        let mut m = match self.profile {
             Profile::Custom => self.custom.sanitized(),
             p => ButtonMap::for_profile(p),
+        };
+        let k = self.keys.sanitized();
+        for (a, combo) in [
+            (&mut m.click, k.click),
+            (&mut m.double_click, k.double_click),
+            (&mut m.hold, k.hold),
+        ] {
+            if *a == ButtonAction::Keys && combo.is_empty() {
+                *a = ButtonAction::None;
+            }
         }
+        m
     }
 }
 
@@ -174,6 +270,7 @@ impl InputConfig {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Params {
     pub map: ButtonMap,
+    pub keys: KeyBindings,
     pub double_us: u64,
     pub slop: f32,
     pub zoom: f32,
@@ -188,6 +285,7 @@ impl Params {
         let fin = |v: f32, d: f32| if v.is_finite() { v } else { d };
         Params {
             map: c.button_map(),
+            keys: c.keys.sanitized(),
             double_us: u64::from(c.double_click_ms.clamp(150, 800)) * 1000,
             slop: fin(c.slop_px, 24.0).max(0.0),
             zoom: fin(c.zoom_factor, 2.0).clamp(1.25, 4.0),

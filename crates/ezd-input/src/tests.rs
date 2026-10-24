@@ -2,7 +2,7 @@
 //! equal normalized coordinates.
 
 use crate::android::*;
-use crate::config::{ButtonAction, ButtonMap, InputConfig, Profile};
+use crate::config::{ButtonAction, ButtonMap, InputConfig, KeyBindings, KeyCombo, Profile};
 use crate::engine::InputEngine;
 use crate::motion::{Motion, MotionStep, PointerSample};
 use crate::tilt::tilt_xy;
@@ -146,6 +146,11 @@ fn show(m: &Message) -> String {
             )
         }
         Message::Scroll(s) => format!("scroll {},{} m{} @{},{}", s.dx, s.dy, s.modifiers, s.x, s.y),
+        Message::Key(k) => format!(
+            "key {:#04x} {}",
+            k.usage,
+            if k.pressed { "down" } else { "up" }
+        ),
         other => panic!("unexpected {other:?}"),
     }
 }
@@ -1083,6 +1088,10 @@ fn profile_maps() {
         [RightClick, LocalZoom, None, Scroll, PcZoom]
     );
     assert_eq!(t(Profile::Drawing), [Raw, LocalZoom, Eraser, Raw, Raw]);
+    assert_eq!(
+        t(Profile::GraphicsTablet),
+        [RightClick, LocalZoom, Keys, Raw, Raw]
+    );
 }
 
 #[test]
@@ -1298,4 +1307,424 @@ fn empty_motion_is_ignored() {
         r.feed(motion(ACTION_OUTSIDE, 0, 0, vec![(0, vec![])]))
             .is_empty()
     );
+}
+
+// ---- 9. keyboard shortcut (Keys action) ------------------------------------
+
+const CTRL_SPACE_DOWN: [&str; 2] = ["key 0xe0 down", "key 0x2c down"];
+const CTRL_SPACE_UP: [&str; 2] = ["key 0x2c up", "key 0xe0 up"];
+
+fn keys_of(out: &[String]) -> Vec<&str> {
+    out.iter()
+        .map(String::as_str)
+        .filter(|s| s.starts_with("key "))
+        .collect()
+}
+
+fn custom_keys(map: ButtonMap, keys: KeyBindings) -> Rig {
+    Rig::with(InputConfig {
+        profile: Profile::Custom,
+        custom: map,
+        keys,
+        ..InputConfig::default()
+    })
+}
+
+/// A graphics-tablet rig with the barrel held past the timer (keys down, output drained).
+fn graphics_tablet_held() -> Rig {
+    let mut r = Rig::profile(Profile::GraphicsTablet);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    assert_eq!(r.tick(400), CTRL_SPACE_DOWN);
+    r
+}
+
+#[test]
+fn graphics_tablet_hold_presses_the_combo_at_press_plus_t_and_releases_with_the_barrel() {
+    let mut r = Rig::profile(Profile::GraphicsTablet);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    assert_eq!(r.feed(press(100, 500.0, 500.0)), ["pen I 500,500"]);
+    assert_eq!(r.e.next_deadline(), Some(ms(400)));
+    assert_eq!(r.tick(399), Vec::<String>::new());
+    r.e.tick(ms(450), &mut r.out);
+    assert_eq!(r.out.len(), 2);
+    for m in &r.out {
+        assert!(matches!(m, Message::Key(k) if k.t_us == ms(400)));
+    }
+    assert_eq!(
+        r.raw().iter().map(show).collect::<Vec<_>>(),
+        CTRL_SPACE_DOWN
+    );
+    assert_eq!(r.e.next_deadline(), None);
+    // Pen tip and hover go through without BARREL and without suppression.
+    assert_eq!(r.feed(hover(500, 510.0, 500.0, PRIMARY)), ["pen I 510,500"]);
+    assert_eq!(
+        r.feed(pen_down(600, 510.0, 500.0, PRIMARY)),
+        ["pen IC 510,500 p=32768"]
+    );
+    assert_eq!(
+        r.feed(pen_move(700, 600.0, 500.0, PRIMARY)),
+        ["pen IC 600,500 p=32768"]
+    );
+    assert_eq!(
+        r.feed(pen_up(800, 600.0, 500.0, PRIMARY)),
+        ["pen I 600,500"]
+    );
+    // Barrel up: release in reverse order, then the sample.
+    let mut want = CTRL_SPACE_UP.map(String::from).to_vec();
+    want.push("pen I 600,500".into());
+    assert_eq!(r.feed(release(900, 600.0, 500.0)), want);
+    assert_eq!(r.e.next_deadline(), None);
+}
+
+#[test]
+fn graphics_tablet_tip_down_before_the_timer_presses_the_keys_before_the_contact() {
+    let mut r = Rig::profile(Profile::GraphicsTablet);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    assert_eq!(
+        r.feed(pen_down(150, 500.0, 500.0, PRIMARY)),
+        [
+            CTRL_SPACE_DOWN[0],
+            CTRL_SPACE_DOWN[1],
+            "pen IC 500,500 p=32768"
+        ]
+    );
+    // The timer no longer does anything.
+    assert_eq!(r.e.next_deadline(), None);
+    assert_eq!(r.tick(1000), Vec::<String>::new());
+}
+
+#[test]
+fn graphics_tablet_hover_move_beyond_slop_presses_the_keys_before_the_move() {
+    let mut r = Rig::profile(Profile::GraphicsTablet);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    // Within the slop (24 px): still pending.
+    assert_eq!(r.feed(hover(110, 520.0, 500.0, PRIMARY)), ["pen I 520,500"]);
+    assert_eq!(r.e.next_deadline(), Some(ms(400)));
+    assert_eq!(
+        r.feed(hover(120, 530.0, 500.0, PRIMARY)),
+        [CTRL_SPACE_DOWN[0], CTRL_SPACE_DOWN[1], "pen I 530,500"]
+    );
+    assert_eq!(r.e.next_deadline(), None);
+    assert_eq!(r.feed(hover(130, 540.0, 500.0, PRIMARY)), ["pen I 540,500"]);
+}
+
+#[test]
+fn graphics_tablet_zoomed_hover_move_pans_instead_of_pressing_keys() {
+    let mut r = Rig::profile(Profile::GraphicsTablet);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    for (t, f) in [(10, true), (20, false), (30, true), (40, false)] {
+        r.feed(if f {
+            press(t, 500.0, 500.0)
+        } else {
+            release(t, 500.0, 500.0)
+        });
+    }
+    assert_eq!(r.e.view().scale, 2.0);
+    let before = r.e.view();
+    r.feed(press(100, 500.0, 500.0));
+    let out = r.feed(hover(110, 600.0, 500.0, PRIMARY));
+    assert!(keys_of(&out).is_empty(), "{out:?}");
+    assert_ne!(r.e.view(), before, "panned");
+    assert_eq!(r.e.next_deadline(), None);
+    let out = r.feed(release(200, 600.0, 500.0));
+    assert!(keys_of(&out).is_empty(), "{out:?}");
+}
+
+#[test]
+fn pen_out_while_held_releases_the_keys_before_the_out_sample() {
+    let mut r = graphics_tablet_held();
+    r.feed(exit(500, 500.0, 500.0));
+    assert_eq!(
+        r.tick(540),
+        [CTRL_SPACE_UP[0], CTRL_SPACE_UP[1], "pen - 500,500"]
+    );
+    // The later barrel-up edge has nothing left to release.
+    assert_eq!(r.feed(release(600, 500.0, 500.0)), ["pen I 500,500"]);
+}
+
+#[test]
+fn release_all_releases_held_keys_once() {
+    let mut r = graphics_tablet_held();
+    r.e.release_all(ms(500), &mut r.out);
+    let out: Vec<String> = r.raw().iter().map(show).collect();
+    assert_eq!(out, [CTRL_SPACE_UP[0], CTRL_SPACE_UP[1], "pen - 500,500"]);
+    r.e.release_all(ms(510), &mut r.out);
+    assert!(r.out.is_empty());
+    assert_eq!(r.feed(release(600, 500.0, 500.0)), ["pen I 500,500"]);
+}
+
+#[test]
+fn set_config_while_held_still_releases_the_keys_on_barrel_up() {
+    let mut r = graphics_tablet_held();
+    r.e.set_config(InputConfig {
+        profile: Profile::Raw,
+        ..InputConfig::default()
+    });
+    assert_eq!(r.e.next_deadline(), None);
+    assert_eq!(
+        r.feed(release(500, 500.0, 500.0)),
+        [CTRL_SPACE_UP[0], CTRL_SPACE_UP[1], "pen I 500,500"]
+    );
+    assert_eq!(r.feed(release(600, 500.0, 500.0)), ["pen I 500,500"]);
+}
+
+#[test]
+fn graphics_tablet_click_is_a_right_click_and_double_click_toggles_the_zoom() {
+    let mut r = Rig::profile(Profile::GraphicsTablet);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 400.0, 300.0));
+    r.feed(release(200, 400.0, 300.0));
+    assert_eq!(r.tick(499), Vec::<String>::new());
+    assert_eq!(r.tick(500), ["btn R+ 400,300", "btn R- 400,300"]);
+
+    let mut r = Rig::profile(Profile::GraphicsTablet);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    let mut all = Vec::new();
+    all.extend(r.feed(press(100, 500.0, 500.0)));
+    all.extend(r.feed(release(200, 500.0, 500.0)));
+    all.extend(r.feed(press(300, 500.0, 500.0)));
+    all.extend(r.feed(release(400, 500.0, 500.0)));
+    assert!(keys_of(&all).is_empty(), "{all:?}");
+    assert!(all.iter().all(|s| s.starts_with("pen ")), "{all:?}");
+    assert_eq!(r.e.view().scale, 2.0);
+    assert_eq!(r.e.next_deadline(), None);
+}
+
+#[test]
+fn custom_click_and_double_click_tap_their_own_combos() {
+    let map = ButtonMap {
+        click: ButtonAction::Keys,
+        double_click: ButtonAction::Keys,
+        hold: ButtonAction::None,
+        hold_drag_contact: ButtonAction::None,
+        hold_drag_hover: ButtonAction::None,
+    };
+    let keys = KeyBindings {
+        click: KeyCombo {
+            mods: KeyCombo::CTRL,
+            key: 0x1D,
+        },
+        double_click: KeyCombo {
+            mods: KeyCombo::CTRL | KeyCombo::SHIFT,
+            key: 0x1D,
+        },
+        ..KeyBindings::default()
+    };
+    // Single click: after the double-click window.
+    let mut r = custom_keys(map, keys);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(release(200, 500.0, 500.0));
+    assert_eq!(r.tick(499), Vec::<String>::new());
+    assert_eq!(
+        r.tick(500),
+        [
+            "key 0xe0 down",
+            "key 0x1d down",
+            "key 0x1d up",
+            "key 0xe0 up"
+        ]
+    );
+    // Double click: the second press taps the other combo at once.
+    let mut r = custom_keys(map, keys);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(release(200, 500.0, 500.0));
+    assert_eq!(
+        r.feed(press(300, 500.0, 500.0)),
+        [
+            "key 0xe0 down",
+            "key 0xe1 down",
+            "key 0x1d down",
+            "key 0x1d up",
+            "key 0xe1 up",
+            "key 0xe0 up",
+            "pen I 500,500"
+        ]
+    );
+    assert_eq!(r.feed(release(400, 500.0, 500.0)), ["pen I 500,500"]);
+    assert_eq!(r.e.next_deadline(), None);
+    // Same action with equal combos resolves the click at the release.
+    let same = KeyBindings {
+        double_click: keys.click,
+        ..keys
+    };
+    let mut r = custom_keys(map, same);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    let out = r.feed(release(200, 500.0, 500.0));
+    assert_eq!(keys_of(&out).len(), 4, "{out:?}");
+}
+
+#[test]
+fn contact_drag_tap_taps_the_click_combo() {
+    let map = ButtonMap {
+        click: ButtonAction::Keys,
+        double_click: ButtonAction::None,
+        hold: ButtonAction::None,
+        hold_drag_contact: ButtonAction::Scroll,
+        hold_drag_hover: ButtonAction::None,
+    };
+    let keys = KeyBindings {
+        click: KeyCombo { mods: 0, key: 0x1D },
+        ..KeyBindings::default()
+    };
+    let mut r = custom_keys(map, keys);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(pen_down(110, 500.0, 500.0, PRIMARY));
+    assert_eq!(
+        r.feed(pen_up(120, 500.0, 500.0, PRIMARY)),
+        ["pen I 500,500", "key 0x1d down", "key 0x1d up"]
+    );
+}
+
+#[test]
+fn keys_hold_wins_over_the_drag_triggers() {
+    let map = ButtonMap {
+        click: ButtonAction::None,
+        double_click: ButtonAction::None,
+        hold: ButtonAction::Keys,
+        hold_drag_contact: ButtonAction::Scroll,
+        hold_drag_hover: ButtonAction::PcZoom,
+    };
+    let mut r = custom_keys(map, KeyBindings::default());
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    let mut all = r.feed(pen_down(110, 500.0, 500.0, PRIMARY));
+    all.extend(r.feed(pen_move(120, 500.0, 700.0, PRIMARY)));
+    assert_eq!(
+        all,
+        [
+            CTRL_SPACE_DOWN[0],
+            CTRL_SPACE_DOWN[1],
+            "pen IC 500,500 p=32768",
+            "pen IC 500,700 p=32768"
+        ]
+    );
+    // Hover movement resolves it as keys too, not as a PC zoom.
+    let mut r = custom_keys(map, KeyBindings::default());
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    let out = r.feed(hover(110, 500.0, 600.0, PRIMARY));
+    assert_eq!(
+        out,
+        [CTRL_SPACE_DOWN[0], CTRL_SPACE_DOWN[1], "pen I 500,600"]
+    );
+}
+
+#[test]
+fn keys_press_starting_with_the_tip_down_is_forwarded_raw() {
+    let mut r = Rig::profile(Profile::GraphicsTablet);
+    r.feed(pen_down(0, 500.0, 500.0, 0));
+    assert_eq!(
+        r.feed(pen_move(10, 501.0, 500.0, PRIMARY)),
+        ["pen ICB 501,500 p=32768"]
+    );
+    assert_eq!(r.tick(1000), Vec::<String>::new());
+    assert_eq!(
+        r.feed(pen_up(1100, 501.0, 500.0, PRIMARY)),
+        ["pen IB 501,500"]
+    );
+    assert_eq!(r.feed(release(1200, 501.0, 500.0)), ["pen I 501,500"]);
+}
+
+#[test]
+fn keys_with_an_empty_combo_behave_as_none() {
+    let cfg = InputConfig {
+        profile: Profile::GraphicsTablet,
+        keys: KeyBindings {
+            hold: KeyCombo::default(),
+            ..KeyBindings::default()
+        },
+        ..InputConfig::default()
+    };
+    assert_eq!(cfg.button_map().hold, ButtonAction::None);
+    // An invalid key with no modifiers sanitizes to empty too.
+    let cfg2 = InputConfig {
+        keys: KeyBindings {
+            hold: KeyCombo {
+                mods: 0x10,
+                key: 0x03,
+            },
+            ..KeyBindings::default()
+        },
+        ..cfg.clone()
+    };
+    assert_eq!(cfg2.button_map().hold, ButtonAction::None);
+    let mut r = Rig::with(cfg);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    assert_eq!(r.tick(1000), Vec::<String>::new());
+    assert_eq!(r.feed(release(1100, 500.0, 500.0)), ["pen I 500,500"]);
+    // The click trigger is unaffected by the hold combo.
+    assert_eq!(r.e.next_deadline(), Some(ms(1400)));
+
+    // Custom: Keys on click with an empty click combo is None as well.
+    let c = InputConfig {
+        profile: Profile::Custom,
+        custom: ButtonMap {
+            click: ButtonAction::Keys,
+            double_click: ButtonAction::Keys,
+            ..ButtonMap::default()
+        },
+        ..InputConfig::default()
+    };
+    let m = c.button_map();
+    assert_eq!(
+        (m.click, m.double_click),
+        (ButtonAction::None, ButtonAction::None)
+    );
+}
+
+#[test]
+fn keys_config_json_and_sanitizing() {
+    let c = InputConfig::from_json(r#"{"profile":"graphics_tablet"}"#).unwrap();
+    assert_eq!(c.profile, Profile::GraphicsTablet);
+    assert_eq!(c.keys, KeyBindings::default());
+    assert_eq!(
+        c.keys.hold,
+        KeyCombo {
+            mods: KeyCombo::CTRL,
+            key: 0x2C
+        }
+    );
+    assert!(c.keys.click.is_empty() && c.keys.double_click.is_empty());
+
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"click":"keys","hold_drag_hover":"keys"},
+            "keys":{"hold":{"mods":3,"key":44},"click":{"mods":1}}}"#,
+    )
+    .unwrap();
+    assert_eq!(c.custom.click, ButtonAction::Keys);
+    assert_eq!(c.keys.hold, KeyCombo { mods: 3, key: 44 });
+    assert_eq!(c.keys.click, KeyCombo { mods: 1, key: 0 });
+    assert_eq!(c.keys.double_click, KeyCombo::default());
+    // Keys is not valid on a drag trigger.
+    assert_eq!(c.button_map().hold_drag_hover, ButtonAction::None);
+    assert_eq!(c.button_map().click, ButtonAction::Keys);
+    let j = serde_json::to_string(&c).unwrap();
+    assert_eq!(InputConfig::from_json(&j).unwrap(), c);
+
+    let k = KeyCombo {
+        mods: 0xFF,
+        key: 0x03,
+    }
+    .sanitized();
+    assert_eq!(k, KeyCombo { mods: 0x0F, key: 0 });
+    for (key, ok) in [
+        (0x04, true),
+        (0x73, true),
+        (0x74, false),
+        (0xE0, true),
+        (0xE7, true),
+        (0xE8, false),
+        (0x2C, true),
+    ] {
+        let k = KeyCombo { mods: 0, key }.sanitized();
+        assert_eq!(k.key, if ok { key } else { 0 }, "{key:#x}");
+    }
 }

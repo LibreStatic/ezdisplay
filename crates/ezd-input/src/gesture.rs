@@ -1,8 +1,24 @@
 //! S Pen barrel-button gesture state machine and the actions it triggers.
 
-use crate::config::ButtonAction;
+use crate::config::{ButtonAction, KeyCombo};
 use crate::engine::InputEngine;
-use ezd_proto::{Message, PenSample, PointerButton, Scroll};
+use ezd_proto::{Key, Message, PenSample, PointerButton, Scroll};
+
+/// Which trigger an action belongs to (selects its key combination).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Trigger {
+    Click,
+    DoubleClick,
+    Hold,
+}
+
+/// Modifier bits of a [`KeyCombo`] with their HID usages, in press order.
+const MODIFIER_KEYS: [(u8, u16); 4] = [
+    (KeyCombo::CTRL, Key::LEFT_CTRL),
+    (KeyCombo::SHIFT, Key::LEFT_SHIFT),
+    (KeyCombo::ALT, Key::LEFT_ALT),
+    (KeyCombo::META, Key::LEFT_GUI),
+];
 
 /// Axis conversion of a drag action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +45,9 @@ pub(crate) enum Held {
     },
     /// Panning the locally zoomed view.
     Pan,
+    /// The hold key combination is pressed (`PenState::keys_held`); the pen
+    /// reports contact and motion as usual.
+    Keys,
     /// Barrel held and the tip touched: contact is reported as hover.
     ContactDrag {
         kind: DragKind,
@@ -161,9 +180,63 @@ impl InputEngine {
         }
     }
 
+    /// Emits the key presses of `c`: modifiers first, then the key.
+    fn press_combo(c: KeyCombo, t: u64, out: &mut Vec<Message>) {
+        let keys = MODIFIER_KEYS
+            .iter()
+            .filter(|(bit, _)| c.mods & bit != 0)
+            .map(|(_, usage)| *usage)
+            .chain((c.key != 0).then_some(c.key));
+        for usage in keys {
+            out.push(Message::Key(Key {
+                t_us: t,
+                usage,
+                pressed: true,
+            }));
+        }
+    }
+
+    /// Emits the key releases of `c`, the reverse of [`Self::press_combo`].
+    fn release_combo(c: KeyCombo, t: u64, out: &mut Vec<Message>) {
+        let start = out.len();
+        Self::press_combo(c, t, out);
+        out[start..].reverse();
+        for m in &mut out[start..] {
+            if let Message::Key(k) = m {
+                k.pressed = false;
+            }
+        }
+    }
+
+    /// Presses the hold combination and keeps it pressed until the barrel is
+    /// released (modifier mode).
+    fn start_keys_hold(&mut self, t: u64, out: &mut Vec<Message>) {
+        let c = self.p.keys.hold;
+        Self::press_combo(c, t, out);
+        self.pen.keys_held = Some(c);
+        self.set_held(Held::Keys);
+    }
+
+    /// Releases the held combination, if any (never twice).
+    pub(crate) fn release_keys(&mut self, t: u64, out: &mut Vec<Message>) {
+        if let Some(c) = self.pen.keys_held.take() {
+            Self::release_combo(c, t, out);
+        }
+    }
+
     /// One-shot actions at the current pen position.
-    fn instant(&mut self, a: ButtonAction, t: u64, out: &mut Vec<Message>) {
+    fn instant(&mut self, a: ButtonAction, trigger: Trigger, t: u64, out: &mut Vec<Message>) {
         match a {
+            ButtonAction::Keys => {
+                let k = &self.p.keys;
+                let c = match trigger {
+                    Trigger::Click => k.click,
+                    Trigger::DoubleClick => k.double_click,
+                    Trigger::Hold => k.hold,
+                };
+                Self::press_combo(c, t, out);
+                Self::release_combo(c, t, out);
+            }
             ButtonAction::RightClick => self.click_button(PointerButton::RIGHT, t, out),
             ButtonAction::MiddleClick => self.click_button(PointerButton::MIDDLE, t, out),
             ButtonAction::LocalZoom => self.toggle_zoom(),
@@ -192,7 +265,7 @@ impl InputEngine {
     fn resolve_click(&mut self, t: u64, out: &mut Vec<Message>) {
         match self.p.map.click {
             ButtonAction::Raw => self.raw_late(t, out),
-            a => self.instant(a, t, out),
+            a => self.instant(a, Trigger::Click, t, out),
         }
     }
 
@@ -212,8 +285,9 @@ impl InputEngine {
                 self.eraser_start(t, out);
                 self.set_held(Held::Done);
             }
+            ButtonAction::Keys => self.start_keys_hold(t, out),
             a => {
-                self.instant(a, t, out);
+                self.instant(a, Trigger::Hold, t, out);
                 self.set_held(Held::Done);
             }
         }
@@ -244,13 +318,15 @@ impl InputEngine {
                 Gesture::Waiting { .. } => match self.p.map.double_click {
                     ButtonAction::Raw => self.raw_held(t, out),
                     a => {
-                        self.instant(a, t, out);
+                        self.instant(a, Trigger::DoubleClick, t, out);
                         self.set_held(Held::Done);
                     }
                 },
                 _ => {}
             }
         } else {
+            // The held keys are released whatever the gesture state is.
+            self.release_keys(t, out);
             self.pen.gesture = Gesture::Idle;
             match g {
                 Gesture::Pending { .. } => {
@@ -259,7 +335,10 @@ impl InputEngine {
                         return;
                     }
                     let dc = self.p.map.double_click;
-                    if dc == ButtonAction::None || dc == click {
+                    let same = dc == click
+                        && (click != ButtonAction::Keys
+                            || self.p.keys.click == self.p.keys.double_click);
+                    if dc == ButtonAction::None || same {
                         self.resolve_click(t, out);
                     } else {
                         self.pen.gesture = Gesture::Waiting {
@@ -345,6 +424,9 @@ impl InputEngine {
     /// The tip is about to touch (called before `contact` is set).
     pub(crate) fn on_tip_down(&mut self, t: u64, out: &mut Vec<Message>) {
         match self.pen.gesture {
+            Gesture::Pending { .. } if self.p.map.hold == ButtonAction::Keys => {
+                self.start_keys_hold(t, out);
+            }
             Gesture::Pending { press, .. } => match self.p.map.hold_drag_contact {
                 ButtonAction::Raw => self.raw_held(t, out),
                 a @ (ButtonAction::Scroll | ButtonAction::PcZoom) => {
@@ -408,7 +490,7 @@ impl InputEngine {
             });
             if touching && !dragging {
                 let click = self.p.map.click;
-                self.instant(click, t, out);
+                self.instant(click, Trigger::Click, t, out);
             }
         }
         if self.pen.eraser_switch_pending {
@@ -427,6 +509,8 @@ impl InputEngine {
         {
             if self.view.is_zoomed() {
                 self.set_held(Held::Pan);
+            } else if self.p.map.hold == ButtonAction::Keys {
+                self.start_keys_hold(t, out);
             } else {
                 match self.p.map.hold_drag_hover {
                     ButtonAction::Raw => self.raw_held(t, out),

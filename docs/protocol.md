@@ -1,4 +1,4 @@
-# ezdisplay wire protocol (version 0.3)
+# ezdisplay wire protocol (version 0.4)
 
 All integers are little endian. The protocol runs over any reliable ordered byte stream (TCP
 through `adb reverse` today; AOA bulk endpoints later). It is implemented in the `ezd-proto`
@@ -27,7 +27,7 @@ Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 | Id | Name | Use |
 | --- | --- | --- |
 | 0 | Control | Handshake, capabilities, keepalive, statistics. |
-| 1 | Input | Pen, touch, pointer buttons and scroll, client to host (0.3). |
+| 1 | Input | Pen, touch, pointer buttons, scroll and keys, client to host (0.3; keys 0.4). |
 | 2 | Cursor | Cursor shape and position. |
 | 3 | Video | Encoded video frames. |
 | 4 | Audio | Reserved. |
@@ -54,6 +54,7 @@ Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 | Input | 2 | `Touch` (`TouchFrame`) | client to host | postcard (0.3) |
 | Input | 3 | `PointerButton` | client to host | postcard (0.3) |
 | Input | 4 | `Scroll` | client to host | postcard (0.3) |
+| Input | 5 | `Key` | client to host | postcard (0.4) |
 | Cursor | 1 | `CursorShape` | host to client | postcard |
 | Cursor | 2 | `CursorState` | host to client | postcard |
 | Video | 1 | `VideoFrame` | host to client | postcard |
@@ -88,13 +89,14 @@ per push) and yields complete messages.
 
 ### Versioning
 
-`Hello` carries `proto_major` and `proto_minor` (currently 0 and 3; 0.2 added `FrameAck`, 0.3
-the input messages, `InputStatus` and `ClientOptions`). A different major version is fatal: the
+`Hello` carries `proto_major` and `proto_minor` (currently 0 and 4; 0.2 added `FrameAck`, 0.3
+the input messages, `InputStatus` and `ClientOptions`, 0.4 the `Key` message). A different major version is fatal: the
 receiver answers `Reject` and closes. Minor versions only add new `(channel,
 kind)` pairs, so peers with different minors interoperate. `Hello::supports_input()` is true
 when the peer's minor is at least `MINOR_INPUT` = 3; a host must not send `InputStatus` or
 `ClientOptions` to an older client (it would skip them anyway), and a client must not send
-Input messages to an older host.
+Input messages to an older host. `Key` needs no minor gate: a client sends it only when the
+host's `InputStatus.caps` has `KEYS`, and an older host would skip the unknown pair anyway.
 
 ## Handshake and session
 
@@ -217,8 +219,15 @@ the signs of Windows `WHEEL_DELTA` and evdev `REL_WHEEL`/`REL_HWHEEL`: `dy > 0` 
 forward, away from the user (scroll up; zoom in with Ctrl), `dx > 0` = right. `modifiers`:
 `CTRL` = 1, `SHIFT` = 2.
 
+`Key { t_us, usage: u16, pressed: bool }` (0.4). `usage` is a USB HID keyboard-page (0x07)
+usage id, i.e. a physical key position on a US layout; the host applies the user's layout like a
+real USB keyboard. Modifiers are plain keys (`LEFT_CTRL` = 0xE0, `LEFT_SHIFT` = 0xE1, `LEFT_ALT` =
+0xE2, `LEFT_GUI` = 0xE3; `SPACE` = 0x2C). A key stays pressed until its release is sent, so a
+client releases everything it pressed before it disconnects. Clients send `Key` only when the
+host reports the `KEYS` capability.
+
 Host to client, on the Control channel: `InputStatus { caps: u32, note: String }` with `caps`
-bits `TOUCH` = 1, `PEN` = 2, `ACTIONS` = 4 (what the host can inject) and a human-readable
+bits `TOUCH` = 1, `PEN` = 2, `ACTIONS` = 4, `KEYS` = 8 (what the host can inject) and a human-readable
 `note` explaining what is unavailable (empty when all is fine); `ClientOptions { flags: u32 }`
 with `TELEMETRY` = 1 (show the telemetry overlay).
 

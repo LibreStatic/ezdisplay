@@ -1,11 +1,12 @@
 //! ezdisplay client input engine (pure Rust, no IO, no threads, no clock).
 //!
-//! Turns Android `MotionEvent`s ([`Motion`]) into protocol 0.3 input messages
-//! ([`ezd_proto::Message`]: `Pen`, `Touch`, `PointerButton`, `Scroll`), with:
+//! Turns Android `MotionEvent`s ([`Motion`]) into protocol 0.4 input messages
+//! ([`ezd_proto::Message`]: `Pen`, `Touch`, `PointerButton`, `Scroll`, `Key`), with:
 //!
 //! * palm rejection (fingers are dropped while the pen is near),
 //! * S Pen barrel-button gestures (click, double click, hold, drag) mapped to
-//!   right click, scrolling, PC zoom, eraser, local zoom or raw forwarding,
+//!   right click, scrolling, PC zoom, eraser, local zoom, a keyboard shortcut
+//!   (tapped, or held while the barrel is held) or raw forwarding,
 //! * a local zoom of the view ([`ViewTransform`]) that is undone for the
 //!   coordinates sent to the host.
 //!
@@ -28,7 +29,7 @@ mod tilt;
 mod touch;
 mod view;
 
-pub use config::{ButtonAction, ButtonMap, InputConfig, Profile};
+pub use config::{ButtonAction, ButtonMap, InputConfig, KeyBindings, KeyCombo, Profile};
 pub use engine::InputEngine;
 pub use motion::{Motion, MotionStep, PointerSample};
 pub use tilt::tilt_xy;
