@@ -444,53 +444,42 @@ mod tests {
         let mut pen = create_pen(mm).unwrap();
         let mut pointer = create_pointer().unwrap();
 
-        let open = |dev: &mut VirtualDevice| -> evdev::Device {
-            let name = event_name(dev).expect("event node");
-            for _ in 0..40 {
-                if let Ok(d) = evdev::Device::open(format!("/dev/input/{name}")) {
-                    return d;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            panic!("cannot open /dev/input/{name}");
-        };
-        let mut t = open(&mut touch);
-        let p = open(&mut pen);
-        let q = open(&mut pointer);
+        let node = |dev: &mut VirtualDevice| event_name(dev).expect("event node");
+        let (tn, pn, qn) = (node(&mut touch), node(&mut pen), node(&mut pointer));
+        let (t, p, q) = (SysDev::new(&tn), SysDev::new(&pn), SysDev::new(&qn));
 
-        assert_eq!(t.name(), Some(TOUCH_NAME));
-        assert_eq!(p.name(), Some(PEN_NAME));
-        assert_eq!(q.name(), Some(POINTER_NAME));
+        assert_eq!(t.read("name"), TOUCH_NAME);
+        assert_eq!(p.read("name"), PEN_NAME);
+        assert_eq!(q.read("name"), POINTER_NAME);
         for (d, product) in [
             (&t, TOUCH_PRODUCT),
             (&p, PEN_PRODUCT),
             (&q, POINTER_PRODUCT),
         ] {
-            let i = d.input_id();
-            assert_eq!((i.vendor(), i.product()), (VENDOR, product));
+            assert_eq!(d.read("id/vendor"), format!("{VENDOR:04x}"));
+            assert_eq!(d.read("id/product"), format!("{product:04x}"));
         }
-        assert!(t.properties().contains(PropType::DIRECT));
-        assert!(p.properties().contains(PropType::DIRECT));
-        assert!(!q.properties().contains(PropType::DIRECT));
-        let ta = t.supported_absolute_axes().unwrap();
-        assert!(ta.contains(Abs::ABS_MT_SLOT) && ta.contains(Abs::ABS_MT_POSITION_X));
-        assert!(!t.supported_keys().unwrap().contains(Key::BTN_LEFT));
-        let pa = p.supported_absolute_axes().unwrap();
-        assert!(pa.contains(Abs::ABS_PRESSURE) && pa.contains(Abs::ABS_TILT_X));
-        assert!(p.supported_keys().unwrap().contains(Key::BTN_STYLUS2));
-        assert!(q.supported_keys().unwrap().contains(Key::BTN_LEFT));
-        assert!(
-            q.supported_relative_axes()
-                .unwrap()
-                .contains(Rel::REL_WHEEL_HI_RES)
-        );
-        assert!(
-            q.supported_relative_axes()
-                .unwrap()
-                .contains(Rel::REL_WHEEL)
-        );
+        assert!(t.has("properties", PropType::DIRECT.0));
+        assert!(p.has("properties", PropType::DIRECT.0));
+        assert!(!q.has("properties", PropType::DIRECT.0));
+        assert!(t.has("capabilities/abs", Abs::ABS_MT_SLOT.0));
+        assert!(t.has("capabilities/abs", Abs::ABS_MT_POSITION_X.0));
+        assert!(!t.has("capabilities/key", Key::BTN_LEFT.code()));
+        assert!(p.has("capabilities/abs", Abs::ABS_PRESSURE.0));
+        assert!(p.has("capabilities/abs", Abs::ABS_TILT_X.0));
+        assert!(p.has("capabilities/key", Key::BTN_STYLUS2.code()));
+        assert!(q.has("capabilities/key", Key::BTN_LEFT.code()));
+        assert!(q.has("capabilities/rel", Rel::REL_WHEEL_HI_RES.0));
+        assert!(q.has("capabilities/rel", Rel::REL_WHEEL.0));
 
-        // An emitted touch frame is read back.
+        // Reading the events back needs the `input` group, which the host itself does not need.
+        let mut reader = (0..40).find_map(|_| {
+            let d = evdev::Device::open(format!("/dev/input/{tn}")).ok();
+            if d.is_none() {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            d
+        });
         let mut enc = TouchEncoder::new();
         let frames = enc.touch(&TouchFrame {
             t_us: 0,
@@ -504,10 +493,14 @@ mod tests {
         let mut failed = false;
         write(&mut touch, frames, &mut failed);
         assert!(!failed);
-        t.set_nonblocking(true).unwrap();
+        let Some(r) = reader.as_mut() else {
+            eprintln!("touch read-back skipped: no access to /dev/input/{tn}");
+            return;
+        };
+        r.set_nonblocking(true).unwrap();
         let mut seen = false;
         for _ in 0..20 {
-            if let Ok(events) = t.fetch_events() {
+            if let Ok(events) = r.fetch_events() {
                 for ev in events {
                     if ev.code() == Abs::ABS_MT_POSITION_X.0 && ev.value() == 1000 {
                         seen = true;
@@ -520,5 +513,34 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(seen, "touch frame was not read back");
+    }
+
+    /// sysfs view of an input device, readable without the `input` group.
+    struct SysDev(std::path::PathBuf);
+
+    impl SysDev {
+        fn new(event: &str) -> Self {
+            SysDev(format!("/sys/class/input/{event}/device").into())
+        }
+
+        fn read(&self, attr: &str) -> String {
+            std::fs::read_to_string(self.0.join(attr))
+                .unwrap_or_else(|e| panic!("{}/{attr}: {e}", self.0.display()))
+                .trim()
+                .to_string()
+        }
+
+        /// Whether bit `code` is set in a sysfs bitmap (hex `unsigned long` words, most
+        /// significant first).
+        fn has(&self, attr: &str, code: u16) -> bool {
+            let words: Vec<u64> = self
+                .read(attr)
+                .split_whitespace()
+                .map(|w| u64::from_str_radix(w, 16).unwrap())
+                .collect();
+            let bits = usize::BITS as usize;
+            let (i, b) = (usize::from(code) / bits, usize::from(code) % bits);
+            i < words.len() && (words[words.len() - 1 - i] >> b) & 1 == 1
+        }
     }
 }
