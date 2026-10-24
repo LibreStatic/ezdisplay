@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -24,6 +25,11 @@ import java.util.Locale
 class SettingsActivity : Activity() {
     private lateinit var prefs: SharedPreferences
     private val triggerSpinners = mutableListOf<Spinner>()
+    /** Labels and spinners of the Custom section, shown only with the Custom profile. */
+    private val customViews = mutableListOf<View>()
+    private val dragSpinners = mutableListOf<Spinner>()
+    private val keyEditors = mutableListOf<KeyEditor>()
+    private lateinit var dragHint: TextView
 
     private val actionLabels = mapOf(
         "raw" to R.string.action_raw,
@@ -34,12 +40,14 @@ class SettingsActivity : Activity() {
         "scroll" to R.string.action_scroll,
         "pc_zoom" to R.string.action_pc_zoom,
         "none" to R.string.action_none,
+        "keys" to R.string.action_keys,
     )
 
     private val profileLabels = listOf(
         Triple("raw", R.string.profile_raw, R.string.profile_raw_desc),
         Triple("desktop", R.string.profile_desktop, R.string.profile_desktop_desc),
         Triple("drawing", R.string.profile_drawing, R.string.profile_drawing_desc),
+        Triple("graphics_tablet", R.string.profile_graphics_tablet, R.string.profile_graphics_tablet_desc),
         Triple("custom", R.string.profile_custom, R.string.profile_custom_desc),
     )
 
@@ -47,16 +55,116 @@ class SettingsActivity : Activity() {
 
     private val triggers = listOf(
         Trigger(InputPrefs.CUSTOM_CLICK, R.string.trigger_click, "raw",
-            listOf("raw", "right_click", "middle_click", "local_zoom", "none")),
+            listOf("raw", "right_click", "middle_click", "local_zoom", "keys", "none")),
         Trigger(InputPrefs.CUSTOM_DOUBLE_CLICK, R.string.trigger_double_click, "local_zoom",
-            listOf("right_click", "middle_click", "local_zoom", "none")),
+            listOf("right_click", "middle_click", "local_zoom", "keys", "none")),
         Trigger(InputPrefs.CUSTOM_HOLD, R.string.trigger_hold, "raw",
-            listOf("raw", "right_click", "middle_click", "local_zoom", "eraser", "none")),
+            listOf("raw", "right_click", "middle_click", "local_zoom", "eraser", "keys", "none")),
         Trigger(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, R.string.trigger_hold_drag_contact, "raw",
             listOf("raw", "scroll", "pc_zoom", "none")),
         Trigger(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, R.string.trigger_hold_drag_hover, "raw",
             listOf("raw", "scroll", "pc_zoom", "none")),
     )
+
+    private class KeyEditorSpec(val prefKey: String, val title: Int, val triggerKey: String)
+
+    private val keyEditorSpecs = listOf(
+        KeyEditorSpec(InputPrefs.KEYS_CLICK, R.string.keys_title_click, InputPrefs.CUSTOM_CLICK),
+        KeyEditorSpec(InputPrefs.KEYS_DOUBLE_CLICK, R.string.keys_title_double_click, InputPrefs.CUSTOM_DOUBLE_CLICK),
+        KeyEditorSpec(InputPrefs.KEYS_HOLD, R.string.keys_title_hold, InputPrefs.CUSTOM_HOLD),
+    )
+
+    private val presets = listOf(
+        R.string.keys_preset_ctrl_space to InputPrefs.KeyCombo(InputPrefs.MOD_CTRL, 0x2C),
+        R.string.keys_preset_space to InputPrefs.KeyCombo(0, 0x2C),
+        R.string.keys_preset_alt_space to InputPrefs.KeyCombo(InputPrefs.MOD_ALT, 0x2C),
+        R.string.keys_preset_ctrl_z to InputPrefs.KeyCombo(InputPrefs.MOD_CTRL, 0x1D),
+        R.string.keys_preset_ctrl_shift_z to InputPrefs.KeyCombo(InputPrefs.MOD_CTRL or InputPrefs.MOD_SHIFT, 0x1D),
+    )
+
+    /** Editor for one key combination. Every change is written to prefs at once; [sync] mirrors prefs into the widgets. */
+    private inner class KeyEditor(val spec: KeyEditorSpec) {
+        val view = LinearLayout(this@SettingsActivity).apply { orientation = LinearLayout.VERTICAL }
+        private val current = TextView(this@SettingsActivity)
+        private val presetSpinner = Spinner(this@SettingsActivity)
+        private val keySpinner = Spinner(this@SettingsActivity)
+        private val mods = listOf(
+            InputPrefs.MOD_CTRL to R.string.keys_mod_ctrl,
+            InputPrefs.MOD_SHIFT to R.string.keys_mod_shift,
+            InputPrefs.MOD_ALT to R.string.keys_mod_alt,
+            InputPrefs.MOD_META to R.string.keys_mod_meta,
+        )
+        private val boxes = mods.map { CheckBox(this@SettingsActivity).apply { setText(it.second) } }
+        private var syncing = false
+
+        private fun combo() = InputPrefs.keyCombo(this@SettingsActivity, spec.prefKey)
+
+        /** Saves [c] unless it is already stored (spinner callbacks can also fire after programmatic updates). */
+        private fun save(c: InputPrefs.KeyCombo) {
+            if (c == combo()) return
+            prefs.edit().putString(spec.prefKey, c.format()).apply()
+            sync()
+        }
+
+        init {
+            view.setPadding(dp(16), dp(4), 0, dp(8))
+            view.addView(text(spec.title, 14f, bold = true))
+            view.addView(current, matchWrap())
+            presetSpinner.adapter = ArrayAdapter(
+                this@SettingsActivity, android.R.layout.simple_spinner_dropdown_item,
+                presets.map { getString(it.first) } + getString(R.string.keys_preset_custom),
+            )
+            presetSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    if (syncing || pos >= presets.size) return
+                    save(presets[pos].second)
+                }
+
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+            view.addView(presetSpinner, matchWrap())
+            val row = LinearLayout(this@SettingsActivity).apply { orientation = LinearLayout.HORIZONTAL }
+            boxes.forEachIndexed { i, box ->
+                box.setOnCheckedChangeListener { _, on ->
+                    if (syncing) return@setOnCheckedChangeListener
+                    val bit = mods[i].first
+                    val c = combo()
+                    save(c.copy(mods = if (on) c.mods or bit else c.mods and bit.inv()))
+                }
+                row.addView(box, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
+            view.addView(row, matchWrap())
+            keySpinner.adapter = ArrayAdapter(
+                this@SettingsActivity, android.R.layout.simple_spinner_dropdown_item,
+                InputPrefs.KEY_USAGES.map { InputPrefs.keyLabel(this@SettingsActivity, it) },
+            )
+            keySpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    if (syncing) return
+                    save(combo().copy(usage = InputPrefs.KEY_USAGES[pos]))
+                }
+
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+            view.addView(keySpinner, matchWrap())
+            view.addView(text(R.string.keys_note, 12f), matchWrap())
+            sync()
+        }
+
+        fun sync() {
+            val c = combo()
+            syncing = true
+            try {
+                current.text = getString(R.string.keys_current, c.label(this@SettingsActivity))
+                val preset = presets.indexOfFirst { it.second == c }
+                presetSpinner.setSelection(if (preset >= 0) preset else presets.size)
+                mods.forEachIndexed { i, m -> boxes[i].isChecked = c.mods and m.first != 0 }
+                keySpinner.setSelection(InputPrefs.KEY_USAGES.indexOf(c.usage).coerceAtLeast(0))
+            } finally {
+                syncing = false
+            }
+        }
+    }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -80,7 +188,26 @@ class SettingsActivity : Activity() {
         addPalm(col)
         airActionsNote()?.let { col.addView(it, matchWrap().apply { topMargin = dp(20) }) }
         setContentView(ScrollView(this).apply { addView(col) })
-        updateCustomEnabled(prefs.getString(InputPrefs.PROFILE, "raw") == "custom")
+        refreshDependents()
+    }
+
+    private fun refreshDependents() {
+        val profile = prefs.getString(InputPrefs.PROFILE, "raw")
+        updateCustomEnabled(profile == "custom")
+        for (e in keyEditors) {
+            val show = when (profile) {
+                "graphics_tablet" -> e.spec.prefKey == InputPrefs.KEYS_HOLD
+                "custom" -> prefs.getString(e.spec.triggerKey, null) == "keys"
+                else -> false
+            }
+            e.view.visibility = if (show) View.VISIBLE else View.GONE
+        }
+        val holdKeys = profile == "custom" && prefs.getString(InputPrefs.CUSTOM_HOLD, "raw") == "keys"
+        dragHint.visibility = if (holdKeys) View.VISIBLE else View.GONE
+        if (holdKeys) for (s in dragSpinners) {
+            s.isEnabled = false
+            s.alpha = 0.4f
+        }
     }
 
     private fun matchWrap() = LinearLayout.LayoutParams(
@@ -105,14 +232,18 @@ class SettingsActivity : Activity() {
         group.setOnCheckedChangeListener { _, checkedId ->
             val v = ids[checkedId] ?: return@setOnCheckedChangeListener
             prefs.edit().putString(InputPrefs.PROFILE, v).apply()
-            updateCustomEnabled(v == "custom")
+            refreshDependents()
         }
         col.addView(group, matchWrap())
     }
 
     private fun addCustomSection(col: LinearLayout) {
+        dragHint = text(R.string.keys_drag_unused, 12f)
         for (t in triggers) {
-            col.addView(text(t.label).apply { setPadding(0, dp(8), 0, 0) })
+            val isDrag = t.key == InputPrefs.CUSTOM_HOLD_DRAG_CONTACT || t.key == InputPrefs.CUSTOM_HOLD_DRAG_HOVER
+            if (t.key == InputPrefs.CUSTOM_HOLD_DRAG_CONTACT) col.addView(dragHint, matchWrap())
+            val label = text(t.label).apply { setPadding(0, dp(8), 0, 0) }
+            col.addView(label)
             val sp = Spinner(this)
             sp.adapter = ArrayAdapter(
                 this, android.R.layout.simple_spinner_dropdown_item,
@@ -121,20 +252,31 @@ class SettingsActivity : Activity() {
             sp.setSelection(t.actions.indexOf(prefs.getString(t.key, t.default)).coerceAtLeast(0))
             sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    if (prefs.getString(t.key, t.default) == t.actions[pos]) return
                     prefs.edit().putString(t.key, t.actions[pos]).apply()
+                    refreshDependents()
                 }
 
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
             triggerSpinners += sp
+            customViews += listOf(label, sp)
+            if (isDrag) dragSpinners += sp
             col.addView(sp, matchWrap())
+            keyEditorSpecs.firstOrNull { it.triggerKey == t.key }?.let {
+                val ed = KeyEditor(it)
+                keyEditors += ed
+                col.addView(ed.view, matchWrap())
+            }
         }
     }
 
+    /** The Custom section is hidden with the preset profiles: its values are not what they do. */
     private fun updateCustomEnabled(enabled: Boolean) {
+        for (v in customViews) v.visibility = if (enabled) View.VISIBLE else View.GONE
         for (s in triggerSpinners) {
             s.isEnabled = enabled
-            s.alpha = if (enabled) 1f else 0.4f
+            s.alpha = 1f
         }
     }
 

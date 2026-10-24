@@ -40,4 +40,32 @@
     <string name="settings_palm_rejection">Palm rejection (ignore fingers while the pen is near)</string>
     <string name="settings_air_actions_on">Samsung Air actions are on. They may react to button presses that start with the pen tip down. Turn them off in Settings → Advanced features → S Pen → Air actions.</string>
     <string name="settings_air_actions_unknown">If the pen button triggers Samsung Air actions, turn them off in Settings → Advanced features → S Pen → Air actions.</string>
+    <string name="profile_graphics_tablet">Graphics tablet</string>
+    <string name="profile_graphics_tablet_desc">Holding the button presses a keyboard shortcut (Ctrl+Space by default), like the button on a graphics tablet pen; click = right click; double click = local zoom.</string>
+    <string name="action_keys">Keyboard shortcut</string>
+    <string name="keys_title_hold">Shortcut on hold</string>
+    <string name="keys_title_click">Shortcut on click</string>
+    <string name="keys_title_double_click">Shortcut on double click</string>
+    <string name="keys_current">Current: %1$s</string>
+    <string name="keys_preset_custom">Custom</string>
+    <string name="keys_preset_ctrl_space">Ctrl + Space</string>
+    <string name="keys_preset_space">Space</string>
+    <string name="keys_preset_alt_space">Alt + Space</string>
+    <string name="keys_preset_ctrl_z">Ctrl + Z</string>
+    <string name="keys_preset_ctrl_shift_z">Ctrl + Shift + Z</string>
+    <string name="keys_mod_ctrl">Ctrl</string>
+    <string name="keys_mod_shift">Shift</string>
+    <string name="keys_mod_alt">Alt</string>
+    <string name="keys_mod_meta">Win / Super</string>
+    <string name="keys_note">Keys are physical positions on a US keyboard; the PC applies your layout.</string>
+    <string name="keys_drag_unused">With hold = shortcut, the drag gestures are not used</string>
+    <string name="key_none">None</string>
+    <string name="key_space">Space</string>
+    <string name="key_tab">Tab</string>
+    <string name="key_esc">Esc</string>
+    <string name="key_enter">Enter</string>
+    <string name="key_backspace">Backspace</string>
+    <string name="key_delete">Delete</string>
+    <string name="key_meta">Win</string>
+    <string name="status_keys_unsupported">The PC host doesn\'t support keyboard shortcuts; update it.</string>
 </resources>

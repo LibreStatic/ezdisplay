@@ -40,4 +40,32 @@
     <string name="settings_palm_rejection">Rechazo de palma (ignorar los dedos mientras el lápiz está cerca)</string>
     <string name="settings_air_actions_on">Las acciones aéreas de Samsung están activadas. Pueden reaccionar a pulsaciones del botón que empiezan con la punta apoyada. Desactivalas en Ajustes → Funciones avanzadas → S Pen → Acciones aéreas.</string>
     <string name="settings_air_actions_unknown">Si el botón del lápiz dispara las acciones aéreas de Samsung, desactivalas en Ajustes → Funciones avanzadas → S Pen → Acciones aéreas.</string>
+    <string name="profile_graphics_tablet">Tableta gráfica</string>
+    <string name="profile_graphics_tablet_desc">Mantener el botón aprieta un atajo de teclado (Ctrl+Espacio por defecto), como el botón de una tableta gráfica; clic = clic derecho; doble clic = zoom local.</string>
+    <string name="action_keys">Atajo de teclado</string>
+    <string name="keys_title_hold">Atajo al mantener</string>
+    <string name="keys_title_click">Atajo al hacer clic</string>
+    <string name="keys_title_double_click">Atajo al hacer doble clic</string>
+    <string name="keys_current">Actual: %1$s</string>
+    <string name="keys_preset_custom">Personalizada</string>
+    <string name="keys_preset_ctrl_space">Ctrl + Espacio</string>
+    <string name="keys_preset_space">Espacio</string>
+    <string name="keys_preset_alt_space">Alt + Espacio</string>
+    <string name="keys_preset_ctrl_z">Ctrl + Z</string>
+    <string name="keys_preset_ctrl_shift_z">Ctrl + Shift + Z</string>
+    <string name="keys_mod_ctrl">Ctrl</string>
+    <string name="keys_mod_shift">Shift</string>
+    <string name="keys_mod_alt">Alt</string>
+    <string name="keys_mod_meta">Win / Súper</string>
+    <string name="keys_note">Las teclas son posiciones físicas de un teclado US; la PC aplica tu distribución.</string>
+    <string name="keys_drag_unused">Con mantener = atajo, los arrastres no se usan</string>
+    <string name="key_none">Ninguna</string>
+    <string name="key_space">Espacio</string>
+    <string name="key_tab">Tab</string>
+    <string name="key_esc">Esc</string>
+    <string name="key_enter">Enter</string>
+    <string name="key_backspace">Retroceso</string>
+    <string name="key_delete">Supr</string>
+    <string name="key_meta">Win</string>
+    <string name="status_keys_unsupported">El host de la PC no soporta atajos de teclado; actualizalo.</string>
 </resources>

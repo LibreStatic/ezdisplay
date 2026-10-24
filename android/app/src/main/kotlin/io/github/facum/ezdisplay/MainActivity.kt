@@ -81,6 +81,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private var frameRateSet = 0
     private var telemetryOn = false
     private var lastInputNote = ""
+    private var keysHintShown = false
     private var airHintShown = false
     private var barrelDown = false
     private var barrelPressAt = 0L
@@ -290,6 +291,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         applyInputConfig()
         wasStreaming = false
         lastInputNote = ""
+        keysHintShown = false
         airHintShown = false
         streamW = 0
         streamH = 0
@@ -455,7 +457,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         val note = if (j.isNull("input_note")) "" else j.optString("input_note")
         if (note != lastInputNote) {
             lastInputNote = note
-            if (note.isNotEmpty()) showTransient(getString(R.string.status_input_note, note), NOTE_SHOW_MS)
+            if (note.isNotEmpty()) {
+                showTransient(getString(R.string.status_input_note, note), NOTE_SHOW_MS)
+                return
+            }
+        }
+        if (!keysHintShown && !j.isNull("input_caps") && (j.optInt("input_caps") and 8) == 0 &&
+            InputPrefs.usesKeys(this)
+        ) {
+            keysHintShown = true
+            showTransient(getString(R.string.status_keys_unsupported), NOTE_SHOW_MS)
         }
     }
 
