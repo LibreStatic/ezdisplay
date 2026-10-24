@@ -1,7 +1,8 @@
 //! Thin dispatch to the platform crate of the current target.
 
 use anyhow::Result;
-use ezd_host_core::{PlatformOptions, VideoSource};
+use ezd_host_core::{InputBackend, PlatformOptions, VideoSource};
+use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
 use ezd_host_linux as imp;
@@ -19,6 +20,12 @@ pub fn create_virtual_source(opts: &PlatformOptions) -> Result<Box<dyn VideoSour
         let _ = opts;
         anyhow::bail!("no virtual display backend for this platform")
     }
+}
+
+/// Input injection backend of this platform, if it has one.
+pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
+    // The Linux (uinput) and Windows (SendInput) backends are not implemented yet.
+    None
 }
 
 /// Platform part of the diagnostics report.

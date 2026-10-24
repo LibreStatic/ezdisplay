@@ -1,8 +1,8 @@
 //! `ezd-fake-client`: connect to an `ezd-host`, decode the stream, print latency statistics.
 
 use anyhow::{Context, Result};
-use clap::Parser;
-use ezd_fake_client::{FakeClientConfig, run_fake_client};
+use clap::{Parser, ValueEnum};
+use ezd_fake_client::{FakeClientConfig, InputScript, run_fake_client};
 use ezd_link::Link;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -41,6 +41,24 @@ struct Args {
     /// Abort after this many seconds.
     #[arg(long)]
     max_seconds: Option<u64>,
+    /// Play a canned input sequence once, starting at the first video frame.
+    #[arg(long, value_enum)]
+    input_script: Option<ScriptArg>,
+    /// Exit shortly after the input script finished.
+    #[arg(long)]
+    exit_after_script: bool,
+    /// Protocol minor to advertise (to test older clients).
+    #[arg(long, hide = true)]
+    proto_minor: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ScriptArg {
+    Tap,
+    Drag,
+    Circle,
+    Touch2,
+    Scroll,
 }
 
 #[tokio::main]
@@ -67,6 +85,15 @@ async fn main() -> Result<()> {
         dump_frame,
         verify_synthetic: !a.no_verify,
         max_duration: a.max_seconds.map(Duration::from_secs),
+        input_script: a.input_script.map(|s| match s {
+            ScriptArg::Tap => InputScript::Tap,
+            ScriptArg::Drag => InputScript::Drag,
+            ScriptArg::Circle => InputScript::Circle,
+            ScriptArg::Touch2 => InputScript::Touch2,
+            ScriptArg::Scroll => InputScript::Scroll,
+        }),
+        stop_after_script: a.exit_after_script,
+        proto_minor: a.proto_minor,
         ..Default::default()
     };
 

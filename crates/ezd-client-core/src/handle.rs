@@ -1,7 +1,10 @@
 //! Shared state between the receive loop and the application.
 
 use crate::percentile;
-use ezd_proto::{ClientStats, ClockSync, CursorShape, CursorState};
+use ezd_link::MuxSender;
+use ezd_proto::{
+    ClientOptions, ClientStats, ClockSync, CursorShape, CursorState, InputStatus, Message,
+};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -38,7 +41,7 @@ pub struct CursorSnapshot {
 }
 
 /// Last statistics window and session totals.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientSnapshot {
     /// The most recent `ClientStats` sent to the host (`None` before the first).
     pub last_stats: Option<ClientStats>,
@@ -56,6 +59,12 @@ pub struct ClientSnapshot {
     pub total_dropped: u64,
     /// Video payload bytes received.
     pub total_video_bytes: u64,
+    /// Latest `InputStatus` from the host (protocol 0.3).
+    pub input_status: Option<InputStatus>,
+    /// Latest `ClientOptions` from the host (protocol 0.3).
+    pub client_options: Option<ClientOptions>,
+    /// Input messages handed to the link by [`ClientHandle::send_input`].
+    pub inputs_sent: u64,
 }
 
 pub(crate) struct Inner {
@@ -66,6 +75,8 @@ pub(crate) struct Inner {
     pub clock: Mutex<ClockSync>,
     cursor: Mutex<Cursor>,
     snapshot: Mutex<ClientSnapshot>,
+    /// Set while connected to a host that understands input.
+    input_tx: Mutex<Option<MuxSender>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -102,6 +113,7 @@ impl ClientHandle {
             clock: Mutex::new(ClockSync::default()),
             cursor: Mutex::new(Cursor::default()),
             snapshot: Mutex::new(ClientSnapshot::default()),
+            input_tx: Mutex::new(None),
         }))
     }
 
@@ -175,9 +187,53 @@ impl ClientHandle {
         lock(&self.0.cursor).shapes.get(&shape_id).cloned()
     }
 
+    /// Sends an input message (`Pen`, `Touch`, `PointerButton`, `Scroll`) to the host.
+    ///
+    /// Returns false, dropping the message, if the session is not connected, the host speaks
+    /// protocol older than 0.3, `msg` is not an input message or the link is closed. Callable
+    /// from any thread; never blocks.
+    pub fn send_input(&self, msg: &Message) -> bool {
+        if !matches!(
+            msg,
+            Message::Pen(_) | Message::Touch(_) | Message::PointerButton(_) | Message::Scroll(_)
+        ) {
+            return false;
+        }
+        let Some(tx) = lock(&self.0.input_tx).clone() else {
+            return false;
+        };
+        if tx.send(msg).is_err() {
+            return false;
+        }
+        lock(&self.0.snapshot).inputs_sent += 1;
+        true
+    }
+
+    /// Latest `InputStatus` the host sent, if any.
+    pub fn input_status(&self) -> Option<InputStatus> {
+        lock(&self.0.snapshot).input_status.clone()
+    }
+
+    /// Latest `ClientOptions` the host sent, if any.
+    pub fn client_options(&self) -> Option<ClientOptions> {
+        lock(&self.0.snapshot).client_options
+    }
+
+    pub(crate) fn set_input_sender(&self, tx: Option<MuxSender>) {
+        *lock(&self.0.input_tx) = tx;
+    }
+
+    pub(crate) fn store_input_status(&self, st: InputStatus) {
+        lock(&self.0.snapshot).input_status = Some(st);
+    }
+
+    pub(crate) fn store_client_options(&self, o: ClientOptions) {
+        lock(&self.0.snapshot).client_options = Some(o);
+    }
+
     /// Last statistics window and totals.
     pub fn snapshot(&self) -> ClientSnapshot {
-        let mut s = *lock(&self.0.snapshot);
+        let mut s = lock(&self.0.snapshot).clone();
         let clock = lock(&self.0.clock);
         s.rtt_us = clock.rtt_us();
         s.clock_offset_us = clock.offset_us();

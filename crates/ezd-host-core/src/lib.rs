@@ -10,6 +10,7 @@
 //! `next_frame` therefore always runs *after* the link has signalled it can
 //! take a frame and must return the newest content (coalescing).
 
+pub mod input;
 pub mod platform;
 pub mod session;
 pub mod source;
@@ -17,6 +18,7 @@ pub mod synthetic;
 pub mod testing;
 pub mod time;
 
+pub use input::{InputBackend, InputSink, InputTarget, PenMode, UnavailableBackend};
 pub use platform::{PlatformError, PlatformOptions};
 pub use session::{
     EndReason, SessionError, SessionOptions, SessionSummary, run_host_session,

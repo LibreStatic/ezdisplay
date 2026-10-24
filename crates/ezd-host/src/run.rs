@@ -3,11 +3,13 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
 use ezd_host_core::{
-    SessionError, SessionOptions, SessionSummary, VideoSource, run_host_session_with,
+    InputBackend, PenMode, SessionError, SessionOptions, SessionSummary, UnavailableBackend,
+    VideoSource, run_host_session_with,
 };
 use ezd_link::adb::{Adb, DeviceState};
 use ezd_link::{Link, VideoCredit};
 use ezd_proto::{DEFAULT_PORT, LinkKind, Prefs};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -22,6 +24,14 @@ pub enum Source {
 pub enum LinkArg {
     Usb,
     Network,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum PenModeArg {
+    /// Graphics tablet with pressure and tilt.
+    Tablet,
+    /// Absolute mouse pointer.
+    Mouse,
 }
 
 #[derive(Args, Debug)]
@@ -65,6 +75,15 @@ pub struct RunArgs {
     /// lowest latency; more raises the frame rate when the round trip is long (Wi-Fi).
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=8))]
     video_window: u32,
+    /// Ask the tablet to show its telemetry overlay.
+    #[arg(long)]
+    telemetry: bool,
+    /// Do not inject input from the tablet.
+    #[arg(long)]
+    no_input: bool,
+    /// How the pen is injected.
+    #[arg(long, value_enum, default_value = "tablet")]
+    pen_mode: PenModeArg,
 }
 
 /// Removes the adb reverse forwards when dropped.
@@ -150,6 +169,15 @@ pub async fn run(args: RunArgs) -> Result<()> {
         output_name: args.output.clone(),
     };
 
+    let input: Option<Arc<dyn InputBackend>> = if args.no_input {
+        None
+    } else {
+        Some(crate::platform::input_backend().unwrap_or_else(|| {
+            Arc::new(UnavailableBackend(
+                "input injection is not implemented on this platform yet".into(),
+            ))
+        }))
+    };
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let session_opts = SessionOptions {
         video_credit: VideoCredit::OnAck {
@@ -157,6 +185,12 @@ pub async fn run(args: RunArgs) -> Result<()> {
             timeout: std::time::Duration::from_millis(500),
         },
         shutdown: Some(shutdown_rx),
+        input,
+        pen_mode: match args.pen_mode {
+            PenModeArg::Tablet => PenMode::Tablet,
+            PenModeArg::Mouse => PenMode::Mouse,
+        },
+        telemetry: args.telemetry,
         ..SessionOptions::default()
     };
 
@@ -203,6 +237,7 @@ fn log_session_end(r: Result<SessionSummary, SessionError>) {
     match r {
         Ok(s) => tracing::info!(
             end = ?s.end, frames = s.frames_sent, keyframes = s.keyframes_sent,
+            input_events = s.input_events,
             seconds = s.duration.as_secs_f32(), "session finished"
         ),
         Err(e) => tracing::warn!("session failed: {e}"),

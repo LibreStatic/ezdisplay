@@ -147,6 +147,12 @@ pub trait VideoSource: Send {
     /// stream). `Ok(None)` means nothing new yet (timeout).
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<EncodedFrame>, SourceError>;
 
+    /// The output the stream shows, valid after `start` (default: unknown). Input injection
+    /// uses it to map normalized coordinates onto the desktop.
+    fn output(&self) -> Option<OutputInfo> {
+        None
+    }
+
     /// Makes the next frame returned by `next_frame` a keyframe.
     fn request_keyframe(&mut self);
 

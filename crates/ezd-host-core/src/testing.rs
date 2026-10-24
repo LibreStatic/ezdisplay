@@ -1,12 +1,16 @@
 //! Fakes for tests of session code and platform backends.
 
+use crate::input::{InputBackend, InputSink, InputTarget};
 use crate::source::{
     CursorSink, DisplayMode, EncodedFrame, OutputInfo, SourceError, VideoSource, VirtualDisplay,
 };
 use crate::time::now_us;
-use ezd_proto::{Codec, CursorShape, CursorState, EncoderCaps, StreamConfig};
-use std::sync::Arc;
+use ezd_proto::{
+    Codec, CursorShape, CursorState, EncoderCaps, InputStatus, PenSample, PointerButton, Scroll,
+    StreamConfig, TouchFrame,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// A [`VirtualDisplay`] that only records its lifetime in a counter.
@@ -62,6 +66,7 @@ pub struct ScriptedSource {
     n: u64,
     force_key: bool,
     cursor: Option<CursorSink>,
+    output: Option<OutputInfo>,
     config: Vec<u8>,
     sent_config: bool,
     /// Set by `stop`.
@@ -78,10 +83,17 @@ impl ScriptedSource {
             n: 0,
             force_key: false,
             cursor: None,
+            output: None,
             config: vec![0, 0, 0, 1, 0x67, 1, 2, 3],
             sent_config: false,
             stopped: false,
         }
+    }
+
+    /// Makes [`VideoSource::output`] report `output`.
+    pub fn with_output(mut self, output: OutputInfo) -> Self {
+        self.output = Some(output);
+        self
     }
 }
 
@@ -136,10 +148,121 @@ impl VideoSource for ScriptedSource {
             frame_id: Some(n),
         }))
     }
+    fn output(&self) -> Option<OutputInfo> {
+        self.output.clone()
+    }
     fn request_keyframe(&mut self) {
         self.force_key = true;
     }
     fn stop(&mut self) {
         self.stopped = true;
+    }
+}
+
+/// One call received by a [`RecordingSink`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputCall {
+    /// `InputSink::pen`.
+    Pen(PenSample),
+    /// `InputSink::touch`.
+    Touch(TouchFrame),
+    /// `InputSink::button`.
+    Button(PointerButton),
+    /// `InputSink::scroll`.
+    Scroll(Scroll),
+    /// `InputSink::release_all`.
+    ReleaseAll,
+}
+
+/// What the sinks of a [`RecordingBackend`] saw.
+#[derive(Debug, Default)]
+pub struct Recording {
+    /// The target of the last `create`.
+    pub target: Option<InputTarget>,
+    /// Injected calls in order (ticks are only counted).
+    pub calls: Vec<InputCall>,
+    /// Number of `tick` calls.
+    pub ticks: u64,
+}
+
+/// An [`InputBackend`] whose sinks record what they receive.
+#[derive(Debug, Clone)]
+pub struct RecordingBackend {
+    result: Result<InputStatus, String>,
+    /// Shared with the sinks it creates.
+    pub recording: Arc<Mutex<Recording>>,
+}
+
+impl RecordingBackend {
+    /// `create` succeeds and the sink reports `status`.
+    pub fn new(status: InputStatus) -> Self {
+        RecordingBackend {
+            result: Ok(status),
+            recording: Arc::default(),
+        }
+    }
+
+    /// `create` fails with `note`.
+    pub fn failing(note: impl Into<String>) -> Self {
+        RecordingBackend {
+            result: Err(note.into()),
+            recording: Arc::default(),
+        }
+    }
+}
+
+impl InputBackend for RecordingBackend {
+    fn create(&self, target: &InputTarget) -> Result<Box<dyn InputSink>, String> {
+        let status = self.result.clone()?;
+        self.recording
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .target = Some(target.clone());
+        Ok(Box::new(RecordingSink {
+            status,
+            recording: self.recording.clone(),
+        }))
+    }
+}
+
+struct RecordingSink {
+    status: InputStatus,
+    recording: Arc<Mutex<Recording>>,
+}
+
+impl RecordingSink {
+    fn push(&self, c: InputCall) {
+        self.recording
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .calls
+            .push(c);
+    }
+}
+
+impl InputSink for RecordingSink {
+    fn pen(&mut self, s: &PenSample) {
+        self.push(InputCall::Pen(*s));
+    }
+    fn touch(&mut self, f: &TouchFrame) {
+        self.push(InputCall::Touch(f.clone()));
+    }
+    fn button(&mut self, b: &PointerButton) {
+        self.push(InputCall::Button(*b));
+    }
+    fn scroll(&mut self, s: &Scroll) {
+        self.push(InputCall::Scroll(*s));
+    }
+    fn tick(&mut self) {
+        self.recording
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .ticks += 1;
+    }
+    fn release_all(&mut self) {
+        self.push(InputCall::ReleaseAll);
+    }
+    fn status(&self) -> InputStatus {
+        self.status.clone()
     }
 }

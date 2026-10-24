@@ -15,12 +15,16 @@
 //! A rejected handshake is answered with `Reject` and returned as an error. When the host shuts
 //! down ([`SessionOptions::shutdown`]) it sends `Bye` and stops the source before returning.
 
+use crate::input::{
+    InputBackend, InputCmd, InputContext, InputStats, PenMode, SharedOffset, input_thread,
+};
 use crate::source::{CursorSink, SourceError, VideoSource};
 use crate::time::now_us;
 use ezd_link::{Link, MuxClosed, MuxError, MuxOptions, MuxReceiver, MuxSender, VideoCredit};
 use ezd_proto::{
-    Bye, ClientCaps, ClientStats, ClockSync, DEFAULT_CHUNK_LEN, Hello, HostCaps, Message, Ping,
-    Pong, Prefs, ProtoError, Reject, Role, StreamConfig, VideoFrame, negotiate,
+    Bye, ClientCaps, ClientOptions, ClientStats, ClockSync, DEFAULT_CHUNK_LEN, Hello, HostCaps,
+    InputStatus, Message, Ping, Pong, Prefs, ProtoError, Reject, Role, StreamConfig, VideoFrame,
+    negotiate,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -49,6 +53,12 @@ pub struct SessionOptions {
     /// session returns after the source has stopped, so the process can exit safely: tearing a
     /// hardware encoder down while the process exits can deadlock in the driver (NVENC).
     pub shutdown: Option<watch::Receiver<bool>>,
+    /// Creates the input sink of each session; `None` disables input (the client is told).
+    pub input: Option<Arc<dyn InputBackend>>,
+    /// How the pen is injected (passed to the input backend).
+    pub pen_mode: PenMode,
+    /// Ask the client to show its telemetry overlay (`ClientOptions::TELEMETRY`).
+    pub telemetry: bool,
 }
 
 impl Default for SessionOptions {
@@ -62,6 +72,9 @@ impl Default for SessionOptions {
             app_version: env!("CARGO_PKG_VERSION").into(),
             device_name: std::env::var("HOSTNAME").unwrap_or_else(|_| "ezdisplay-host".into()),
             shutdown: None,
+            input: None,
+            pen_mode: PenMode::default(),
+            telemetry: false,
         }
     }
 }
@@ -117,6 +130,12 @@ pub struct SessionSummary {
     pub clock_offset_us: Option<i64>,
     /// Best RTT in microseconds.
     pub rtt_us: Option<i64>,
+    /// Input messages injected into the host.
+    pub input_events: u64,
+    /// Median client-send to host-injected latency (0.25 ms resolution); needs clock sync.
+    pub input_latency_p50_us: Option<u32>,
+    /// 95th percentile of the input latency.
+    pub input_latency_p95_us: Option<u32>,
 }
 
 /// Handshake and setup failures.
@@ -203,7 +222,7 @@ pub async fn run_host_session_with(
         encoders: source.encoders(),
     };
     let setup = handshake(&tx, &mut rx, &host_caps, &prefs, &opts).await;
-    let (client_hello, cfg) = match setup {
+    let (client_hello, client_caps, cfg) = match setup {
         Ok(v) => v,
         Err(e) => {
             tx.close();
@@ -217,8 +236,49 @@ pub async fn run_host_session_with(
     let shared = Arc::new(VideoShared::default());
     let _guard = StopOnDrop(shared.clone());
     let (done_tx, mut done_rx) = oneshot::channel::<Result<(), SourceError>>();
+
+    // Input thread.
+    let supports_input = client_hello.supports_input();
+    let offset = Arc::new(SharedOffset::default());
+    let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<InputStatus>();
+    let mut status_rx = Some(status_rx);
+    let mut input_tx: Option<std::sync::mpsc::Sender<InputCmd>> = None;
+    let mut input_join: Option<std::thread::JoinHandle<InputStats>> = None;
+    if supports_input {
+        let mut flags = 0;
+        if opts.telemetry {
+            flags |= ClientOptions::TELEMETRY;
+        }
+        tx.send_control(Message::ClientOptions(ClientOptions { flags }))?;
+        match &opts.input {
+            Some(backend) => {
+                let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+                let ctx = InputContext {
+                    backend: backend.clone(),
+                    client: client_caps,
+                    stream: cfg.clone(),
+                    pen_mode: opts.pen_mode,
+                    offset: offset.clone(),
+                    status_tx,
+                };
+                input_join = Some(
+                    std::thread::Builder::new()
+                        .name("ezd-input".into())
+                        .spawn(move || input_thread(cmd_rx, ctx))?,
+                );
+                input_tx = Some(cmd_tx);
+            }
+            None => tx.send_control(Message::InputStatus(InputStatus {
+                caps: 0,
+                note: "input is disabled on the host".into(),
+            }))?,
+        }
+    }
+    let mut input_dropped_logged = false;
+
     {
         let (shared, tx, cfg) = (shared.clone(), tx.clone(), cfg.clone());
+        let input_for_video = input_tx.clone();
         let handle = tokio::runtime::Handle::current();
         let poll = opts.poll_interval;
         std::thread::Builder::new()
@@ -227,7 +287,12 @@ pub async fn run_host_session_with(
                 let mut source = source;
                 let cursor = CursorSink::new(tx.clone());
                 let r = match source.start(&cfg, cursor) {
-                    Ok(()) => video_loop(source.as_mut(), &tx, &shared, &handle, poll),
+                    Ok(()) => {
+                        if let Some(t) = &input_for_video {
+                            let _ = t.send(InputCmd::Output(source.output()));
+                        }
+                        video_loop(source.as_mut(), &tx, &shared, &handle, poll)
+                    }
                     Err(e) => Err(e),
                 };
                 source.stop();
@@ -256,6 +321,9 @@ pub async fn run_host_session_with(
                     let t3 = now_us();
                     if let Some(s) = clock.add_sample(p.t0_us, p.t1_us, p.t2_us, t3) {
                         tracing::trace!(rtt_us = s.rtt_us, offset_us = s.offset_us, "pong");
+                    }
+                    if let Some(off) = clock.offset_us() {
+                        offset.set(off);
                     }
                 }
                 Ok(Some(Message::Ping(p))) => {
@@ -317,6 +385,22 @@ pub async fn run_host_session_with(
                     );
                     last_stats = Some(s);
                 }
+                Ok(Some(
+                    m @ (Message::Pen(_)
+                    | Message::Touch(_)
+                    | Message::PointerButton(_)
+                    | Message::Scroll(_)),
+                )) => match &input_tx {
+                    Some(t) => {
+                        let _ = t.send(InputCmd::Msg(m));
+                    }
+                    None => {
+                        if !input_dropped_logged {
+                            input_dropped_logged = true;
+                            tracing::debug!("dropping input: no input sink in this session");
+                        }
+                    }
+                },
                 Ok(Some(Message::Bye(b))) => break EndReason::ClientBye(b.reason),
                 Ok(Some(Message::Reject(r))) => break EndReason::ClientBye(r.reason),
                 Ok(Some(other)) => tracing::debug!(?other, "ignoring message"),
@@ -327,6 +411,11 @@ pub async fn run_host_session_with(
                 ping_seq = ping_seq.wrapping_add(1);
                 let p = Ping { seq: ping_seq, t0_us: now_us() };
                 if tx.send_control(Message::Ping(p)).is_err() {
+                    break EndReason::LinkError("mux closed".into());
+                }
+            }
+            Some(st) = next_status(&mut status_rx) => {
+                if tx.send_control(Message::InputStatus(st)).is_err() {
                     break EndReason::LinkError("mux closed".into());
                 }
             }
@@ -345,6 +434,9 @@ pub async fn run_host_session_with(
 
     // Shutdown: stop the video thread, say goodbye if we are the one leaving.
     shared.stop.store(true, Ordering::Release);
+    if let Some(t) = &input_tx {
+        let _ = t.send(InputCmd::Stop);
+    }
     match &end {
         EndReason::SourceFailed(r) => {
             let _ = tx.send_control(Message::Bye(Bye { reason: r.clone() }));
@@ -365,6 +457,26 @@ pub async fn run_host_session_with(
     if !video_done && timeout(Duration::from_secs(5), &mut done_rx).await.is_err() {
         tracing::warn!("video source did not stop in time");
     }
+    // The input thread releases everything that is down before we return.
+    let input_stats = match input_join {
+        Some(j) => match timeout(
+            Duration::from_secs(2),
+            tokio::task::spawn_blocking(|| j.join()),
+        )
+        .await
+        {
+            Ok(Ok(Ok(stats))) => stats,
+            Ok(_) => {
+                tracing::warn!("input thread panicked");
+                InputStats::default()
+            }
+            Err(_) => {
+                tracing::warn!("input thread did not stop in time");
+                InputStats::default()
+            }
+        },
+        None => InputStats::default(),
+    };
     let ack_timeouts = tx.stats().ack_timeouts;
     drop(tx);
     if timeout(Duration::from_secs(2), task.join()).await.is_err() {
@@ -387,7 +499,22 @@ pub async fn run_host_session_with(
         ack_timeouts,
         clock_offset_us: clock.offset_us(),
         rtt_us: clock.rtt_us(),
+        input_events: input_stats.events,
+        input_latency_p50_us: input_stats.latency_p50_us,
+        input_latency_p95_us: input_stats.latency_p95_us,
     })
+}
+
+/// Next status from the input thread; never resolves without a receiver or once it is gone.
+async fn next_status(
+    rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<InputStatus>>,
+) -> Option<InputStatus> {
+    if let Some(r) = rx
+        && let Some(st) = r.recv().await
+    {
+        return Some(st);
+    }
+    std::future::pending().await
 }
 
 /// Resolves once `rx` holds `true`; never without a receiver or after its sender is gone.
@@ -455,7 +582,7 @@ async fn handshake(
     host_caps: &HostCaps,
     prefs: &Prefs,
     opts: &SessionOptions,
-) -> Result<(Hello, StreamConfig), SessionError> {
+) -> Result<(Hello, ClientCaps, StreamConfig), SessionError> {
     let wait = opts.handshake_timeout;
     tx.send_control(Message::Hello(Hello::new(
         Role::Host,
@@ -490,7 +617,7 @@ async fn handshake(
         o => Err(o),
     })
     .await?;
-    Ok((hello, cfg))
+    Ok((hello, caps, cfg))
 }
 
 fn reject(tx: &MuxSender, reason: String) {
@@ -667,6 +794,7 @@ mod tests {
             mut cursor_shape,
             mut cursor_state,
         ) = (0u32, false, false, false, false);
+        let (mut options, mut status) = (false, false);
         let mut requested = false;
         let mut last_id = None;
         while !kf_after_request {
@@ -710,10 +838,18 @@ mod tests {
                     }))
                     .unwrap();
                 }
+                Message::ClientOptions(o) => {
+                    assert_eq!(o.flags, 0);
+                    options = true;
+                }
+                Message::InputStatus(st) => {
+                    assert_eq!(st.caps, 0, "input is disabled by default");
+                    status = true;
+                }
                 m => panic!("{m:?}"),
             }
         }
-        assert!(cursor_shape && cursor_state);
+        assert!(cursor_shape && cursor_state && options && status);
         tx.send_control(Message::Bye(Bye {
             reason: "test over".into(),
         }))

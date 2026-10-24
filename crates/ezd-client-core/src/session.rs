@@ -66,6 +66,8 @@ pub struct ClientConfig {
     pub handshake_timeout: Duration,
     /// Reason in the `Bye` sent when the client ends the session.
     pub bye_reason: String,
+    /// Protocol minor to advertise in `Hello` instead of ours (to test older clients).
+    pub proto_minor: Option<u16>,
 }
 
 impl ClientConfig {
@@ -80,6 +82,7 @@ impl ClientConfig {
             max_duration: None,
             handshake_timeout: Duration::from_secs(10),
             bye_reason: "client done".into(),
+            proto_minor: None,
         }
     }
 }
@@ -190,11 +193,11 @@ pub async fn run_client<H: ClientHandler>(
     let wait = cfg.handshake_timeout;
 
     // Handshake.
-    tx.send_control(Message::Hello(Hello::new(
-        Role::Client,
-        &cfg.app_version,
-        &cfg.device_name,
-    )))?;
+    let mut my_hello = Hello::new(Role::Client, &cfg.app_version, &cfg.device_name);
+    if let Some(minor) = cfg.proto_minor {
+        my_hello.proto_minor = minor;
+    }
+    tx.send_control(Message::Hello(my_hello))?;
     tx.send_control(Message::ClientCaps(cfg.caps.clone()))?;
     let hello = wait_for(&mut rx, &tx, "Hello", wait, |m| match m {
         Message::Hello(h) => Ok(h),
@@ -223,6 +226,9 @@ pub async fn run_client<H: ClientHandler>(
         return Err(ClientError::Handler(e));
     }
     tx.send_control(Message::ConfigAck)?;
+    if hello.supports_input() {
+        handle.set_input_sender(Some(tx.clone()));
+    }
 
     // Streaming.
     let mut ping_seq = 0u32;
@@ -280,6 +286,7 @@ pub async fn run_client<H: ClientHandler>(
         }
     };
 
+    handle.set_input_sender(None);
     let outcome = ClientOutcome {
         stream,
         end,
@@ -354,6 +361,14 @@ fn on_message<H: ClientHandler>(
             }))?;
             handle.count_received(v.data.len());
             flow(handler.on_video_frame(v, received_us))
+        }
+        Message::InputStatus(st) => {
+            handle.store_input_status(st);
+            Ok(None)
+        }
+        Message::ClientOptions(o) => {
+            handle.store_client_options(o);
+            Ok(None)
         }
         Message::Bye(b) => Ok(Some(ClientEnd::HostBye(b.reason))),
         Message::Reject(r) => Ok(Some(ClientEnd::HostBye(r.reason))),

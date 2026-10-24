@@ -5,6 +5,8 @@
 //! messages, measures capture-to-decoded latency and reports statistics.
 //! It is used by the integration tests and by the `ezd-fake-client` binary.
 
+mod script;
+
 use ezd_client_core::{
     ClientConfig, ClientError as CoreError, ClientHandle, ClientHandler, Flow, HandlerResult,
     now_us, run_client,
@@ -13,12 +15,14 @@ use ezd_ffmpeg::{Decoder, FfmpegError};
 use ezd_host_core::synthetic::read_frame_number;
 use ezd_link::{Link, MuxError};
 use ezd_proto::{
-    ClientCaps, Codec, CursorShape, CursorState, DecoderCaps, DisplayInfo, StreamConfig, VideoFrame,
+    ClientCaps, ClientOptions, Codec, CursorShape, CursorState, DecoderCaps, DisplayInfo,
+    InputStatus, StreamConfig, VideoFrame,
 };
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use ezd_client_core::percentile;
+pub use script::{InputScript, play_script, script_messages};
 
 /// Settings of the fake client.
 #[derive(Debug, Clone)]
@@ -47,6 +51,12 @@ pub struct FakeClientConfig {
     pub max_duration: Option<Duration>,
     /// Handshake step timeout.
     pub handshake_timeout: Duration,
+    /// Input sequence to play once, starting at the first received video frame.
+    pub input_script: Option<InputScript>,
+    /// End the session shortly after the input script finished (`frames` still applies).
+    pub stop_after_script: bool,
+    /// Protocol minor to advertise in `Hello` instead of ours (to test older clients).
+    pub proto_minor: Option<u16>,
 }
 
 impl Default for FakeClientConfig {
@@ -64,6 +74,9 @@ impl Default for FakeClientConfig {
             ping_interval: Duration::from_millis(500),
             max_duration: None,
             handshake_timeout: Duration::from_secs(10),
+            input_script: None,
+            stop_after_script: false,
+            proto_minor: None,
         }
     }
 }
@@ -154,6 +167,12 @@ pub struct ClientReport {
     pub e2e_us_p95: u32,
     /// Size in bytes of each received video frame, summed.
     pub video_bytes: u64,
+    /// Latest `InputStatus` from the host.
+    pub input_status: Option<InputStatus>,
+    /// Latest `ClientOptions` from the host.
+    pub client_options: Option<ClientOptions>,
+    /// Input messages sent to the host.
+    pub inputs_sent: u64,
 }
 
 impl ClientReport {
@@ -167,7 +186,8 @@ impl ClientReport {
              cursor: shapes {} states {} (missing shape: {}) last {:?}\n\
              clock: offset {:?} us, rtt {:?} us\n\
              decode: p50 {} us, p95 {} us\n\
-             e2e (host capture -> decoded): p50 {} us, p95 {} us",
+             e2e (host capture -> decoded): p50 {} us, p95 {} us\n\
+             input: status {:?}, options {:?}, sent {}",
             s.width,
             s.height,
             s.refresh_mhz as f64 / 1000.0,
@@ -191,6 +211,9 @@ impl ClientReport {
             self.decode_us_p95,
             self.e2e_us_p50,
             self.e2e_us_p95,
+            self.input_status,
+            self.client_options,
+            self.inputs_sent,
         )
     }
 }
@@ -232,6 +255,8 @@ struct Handler {
     have_keyframe: bool,
     keyframe_requested: bool,
     kf_request_sent: bool,
+    /// Fires the input script on the first received video frame.
+    start_script: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 fn boxed(e: impl Into<ClientError>) -> ezd_client_core::HandlerError {
@@ -311,6 +336,9 @@ impl ClientHandler for Handler {
     fn on_video_frame(&mut self, v: VideoFrame, _received_us: u64) -> HandlerResult {
         let report = &mut self.report;
         report.frames_received += 1;
+        if let Some(s) = self.start_script.take() {
+            let _ = s.send(());
+        }
         report.video_bytes += v.data.len() as u64;
         if report.frame_ids.len() < 100_000 {
             report.frame_ids.push(v.frame_id);
@@ -369,7 +397,30 @@ pub async fn run_fake_client(
     core_cfg.handshake_timeout = cfg.handshake_timeout;
     core_cfg.app_version = env!("CARGO_PKG_VERSION").into();
 
+    core_cfg.proto_minor = cfg.proto_minor;
+
     let handle = ClientHandle::new();
+    let (start_script, script_task) = match cfg.input_script {
+        Some(script) => {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let (handle, stop) = (handle.clone(), cfg.stop_after_script);
+            let task = tokio::spawn(async move {
+                // The sender is dropped without firing if the session ends first.
+                if rx.await.is_err() {
+                    return 0;
+                }
+                let sent = play_script(script, &handle).await;
+                // Let the host drain the input queue before a possible `Bye`.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                if stop {
+                    handle.stop();
+                }
+                sent
+            });
+            (Some(tx), Some(task))
+        }
+        None => (None, None),
+    };
     let mut h = Handler {
         cfg,
         handle: handle.clone(),
@@ -404,15 +455,23 @@ pub async fn run_fake_client(
             e2e_us_p50: 0,
             e2e_us_p95: 0,
             video_bytes: 0,
+            input_status: None,
+            client_options: None,
+            inputs_sent: 0,
         },
         all_decode: Vec::new(),
         all_e2e: Vec::new(),
         have_keyframe: false,
         keyframe_requested: false,
         kf_request_sent: false,
+        start_script,
     };
 
-    let outcome = match run_client(link, core_cfg, &handle, &mut h).await {
+    let result = run_client(link, core_cfg, &handle, &mut h).await;
+    if let Some(t) = script_task {
+        t.abort();
+    }
+    let outcome = match result {
         Ok(o) => o,
         Err(CoreError::Handler(e)) => {
             return Err(match e.downcast::<ClientError>() {
@@ -432,6 +491,10 @@ pub async fn run_fake_client(
     };
     report.clock_offset_us = outcome.clock_offset_us;
     report.rtt_us = outcome.rtt_us;
+    let snap = handle.snapshot();
+    report.input_status = snap.input_status;
+    report.client_options = snap.client_options;
+    report.inputs_sent = snap.inputs_sent;
     report.decode_us_p50 = percentile(&h.all_decode, 50);
     report.decode_us_p95 = percentile(&h.all_decode, 95);
     report.e2e_us_p50 = percentile(&h.all_e2e, 50);
