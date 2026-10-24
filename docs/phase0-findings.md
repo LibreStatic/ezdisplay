@@ -339,6 +339,12 @@ took 1.5-2 ms and the encode 1.7-2 ms per frame; on the UHD 630 they take 2-17 m
   again no longer leaks, and the last 8 mapped buffers (one per compute queue) stay referenced
   until later mappings reuse their command buffers. The leaked devices also made the tests flaky:
   a buffer filled through Vulkan sometimes read back as zeros.
+- Exiting the process while NVENC is being closed on another thread deadlocks: the exit handler
+  of `libnvcuvid` and `avcodec_free_context` on the video thread block each other inside the
+  driver. Ctrl-C used to drop the session and return from `main` with the video thread still
+  stopping the source, so the host hung after "capture stopped" (also with `nvenc-sysmem`). Ctrl-C
+  now ends the session through `SessionOptions::shutdown`, which sends `Bye` and waits for the
+  source to stop.
 
 ## Still to measure
 

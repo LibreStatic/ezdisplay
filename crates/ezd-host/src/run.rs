@@ -2,7 +2,9 @@
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use ezd_host_core::{SessionOptions, VideoSource, run_host_session_with};
+use ezd_host_core::{
+    SessionError, SessionOptions, SessionSummary, VideoSource, run_host_session_with,
+};
 use ezd_link::adb::{Adb, DeviceState};
 use ezd_link::{Link, VideoCredit};
 use ezd_proto::{DEFAULT_PORT, LinkKind, Prefs};
@@ -148,11 +150,13 @@ pub async fn run(args: RunArgs) -> Result<()> {
         output_name: args.output.clone(),
     };
 
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let session_opts = SessionOptions {
         video_credit: VideoCredit::OnAck {
             window: args.video_window,
             timeout: std::time::Duration::from_millis(500),
         },
+        shutdown: Some(shutdown_rx),
         ..SessionOptions::default()
     };
 
@@ -177,19 +181,31 @@ pub async fn run(args: RunArgs) -> Result<()> {
             },
         };
         let session = run_host_session_with(link, source, prefs.clone(), session_opts.clone());
+        tokio::pin!(session);
         tokio::select! {
-            r = session => match r {
-                Ok(s) => tracing::info!(
-                    end = ?s.end, frames = s.frames_sent, keyframes = s.keyframes_sent,
-                    seconds = s.duration.as_secs_f32(), "session finished"
-                ),
-                Err(e) => tracing::warn!("session failed: {e}"),
-            },
+            r = &mut session => log_session_end(r),
             _ = tokio::signal::ctrl_c() => {
-                tracing::info!("interrupted, shutting down");
+                // Let the session stop the source: exiting while it tears the encoder down can
+                // deadlock in the driver.
+                tracing::info!("interrupted, ending the session");
+                let _ = shutdown_tx.send(true);
+                tokio::select! {
+                    r = &mut session => log_session_end(r),
+                    _ = tokio::signal::ctrl_c() => tracing::warn!("interrupted again, exiting now"),
+                }
                 return Ok(());
             }
         }
+    }
+}
+
+fn log_session_end(r: Result<SessionSummary, SessionError>) {
+    match r {
+        Ok(s) => tracing::info!(
+            end = ?s.end, frames = s.frames_sent, keyframes = s.keyframes_sent,
+            seconds = s.duration.as_secs_f32(), "session finished"
+        ),
+        Err(e) => tracing::warn!("session failed: {e}"),
     }
 }
 

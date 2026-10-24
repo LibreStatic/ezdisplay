@@ -12,7 +12,8 @@
 //!   |<==== video / cursor ========|     Ping every 500 ms, RequestKeyframe on demand
 //!   |-- Bye / EOF --------------->|
 //! ```
-//! A rejected handshake is answered with `Reject` and returned as an error.
+//! A rejected handshake is answered with `Reject` and returned as an error. When the host shuts
+//! down ([`SessionOptions::shutdown`]) it sends `Bye` and stops the source before returning.
 
 use crate::source::{CursorSink, SourceError, VideoSource};
 use crate::time::now_us;
@@ -24,7 +25,7 @@ use ezd_proto::{
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::time::timeout;
 
 /// Tunables of a host session.
@@ -44,6 +45,10 @@ pub struct SessionOptions {
     pub app_version: String,
     /// Sent in `Hello.device_name`.
     pub device_name: String,
+    /// Ends the session once it holds `true` (default: none). The client is sent `Bye` and the
+    /// session returns after the source has stopped, so the process can exit safely: tearing a
+    /// hardware encoder down while the process exits can deadlock in the driver (NVENC).
+    pub shutdown: Option<watch::Receiver<bool>>,
 }
 
 impl Default for SessionOptions {
@@ -56,6 +61,7 @@ impl Default for SessionOptions {
             poll_interval: Duration::from_millis(100),
             app_version: env!("CARGO_PKG_VERSION").into(),
             device_name: std::env::var("HOSTNAME").unwrap_or_else(|_| "ezdisplay-host".into()),
+            shutdown: None,
         }
     }
 }
@@ -73,6 +79,8 @@ pub enum EndReason {
     SourceFailed(String),
     /// The video source stopped producing frames; the client was sent `Bye`.
     SourceStopped,
+    /// [`SessionOptions::shutdown`] was set; the client was sent `Bye`.
+    HostShutdown,
 }
 
 /// Result of a finished session.
@@ -164,8 +172,8 @@ impl Drop for StopOnDrop {
 /// Runs one host session over `link` with default [`SessionOptions`].
 ///
 /// See the module docs for the sequence. Returns when the client leaves, the
-/// link fails or the source stops. Dropping the future aborts the session and
-/// stops the video thread.
+/// link fails, the source stops or the host shuts down. Dropping the future
+/// aborts the session and tells the video thread to stop without waiting for it.
 pub async fn run_host_session(
     link: Link,
     source: Box<dyn VideoSource>,
@@ -223,6 +231,7 @@ pub async fn run_host_session_with(
                     Err(e) => Err(e),
                 };
                 source.stop();
+                drop(source);
                 let _ = done_tx.send(r);
             })?;
     }
@@ -239,6 +248,7 @@ pub async fn run_host_session_with(
     let mut video_done = false;
     let mut ping = tokio::time::interval(opts.ping_interval);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut shutdown = opts.shutdown;
     let end = loop {
         tokio::select! {
             msg = rx.recv() => match msg {
@@ -320,6 +330,7 @@ pub async fn run_host_session_with(
                     break EndReason::LinkError("mux closed".into());
                 }
             }
+            () = shutdown_requested(&mut shutdown) => break EndReason::HostShutdown,
             r = &mut done_rx => {
                 video_done = true;
                 break match r {
@@ -343,11 +354,16 @@ pub async fn run_host_session_with(
                 reason: "video source stopped".into(),
             }));
         }
+        EndReason::HostShutdown => {
+            let _ = tx.send_control(Message::Bye(Bye {
+                reason: "host shutting down".into(),
+            }));
+        }
         _ => {}
     }
     tx.close();
-    if !video_done {
-        let _ = timeout(Duration::from_secs(2), &mut done_rx).await;
+    if !video_done && timeout(Duration::from_secs(5), &mut done_rx).await.is_err() {
+        tracing::warn!("video source did not stop in time");
     }
     let ack_timeouts = tx.stats().ack_timeouts;
     drop(tx);
@@ -372,6 +388,16 @@ pub async fn run_host_session_with(
         clock_offset_us: clock.offset_us(),
         rtt_us: clock.rtt_us(),
     })
+}
+
+/// Resolves once `rx` holds `true`; never without a receiver or after its sender is gone.
+async fn shutdown_requested(rx: &mut Option<watch::Receiver<bool>>) {
+    if let Some(rx) = rx
+        && rx.wait_for(|v| *v).await.is_ok()
+    {
+        return;
+    }
+    std::future::pending().await
 }
 
 fn percentile(samples: &[u32], p: usize) -> u32 {
@@ -542,6 +568,7 @@ fn video_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::EncodedFrame;
     use crate::testing::ScriptedSource;
     use ezd_proto::{Codec, DecoderCaps, DisplayInfo};
 
@@ -746,6 +773,79 @@ mod tests {
         };
         let r = run_host_session_with(host_link, Box::new(src), Prefs::default(), opts).await;
         assert!(matches!(r, Err(SessionError::Timeout(_))));
+    }
+
+    /// A source whose `stop` is slow, like a hardware encoder's teardown, and records that it ran.
+    struct SlowStop(ScriptedSource, Arc<AtomicBool>);
+    impl VideoSource for SlowStop {
+        fn encoders(&self) -> Vec<ezd_proto::EncoderCaps> {
+            self.0.encoders()
+        }
+        fn start(&mut self, cfg: &StreamConfig, cursor: CursorSink) -> Result<(), SourceError> {
+            self.0.start(cfg, cursor)
+        }
+        fn next_frame(&mut self, t: Duration) -> Result<Option<EncodedFrame>, SourceError> {
+            self.0.next_frame(t)
+        }
+        fn request_keyframe(&mut self) {
+            self.0.request_keyframe()
+        }
+        fn stop(&mut self) {
+            self.0.stop();
+            std::thread::sleep(Duration::from_millis(300));
+            self.1.store(true, Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_says_bye_and_waits_for_the_source() {
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let src = SlowStop(
+            ScriptedSource::new(Duration::from_millis(5), 100),
+            stopped.clone(),
+        );
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let opts = SessionOptions {
+            shutdown: Some(shutdown_rx),
+            ..fast_opts()
+        };
+        let host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(src),
+            Prefs::default(),
+            opts,
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(1024);
+        tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "c")))
+            .unwrap();
+        tx.send_control(Message::ClientCaps(caps())).unwrap();
+        for _ in 0..3 {
+            recv(&mut rx).await;
+        }
+        tx.send_control(Message::ConfigAck).unwrap();
+        loop {
+            if matches!(recv(&mut rx).await, Message::VideoFrame(_)) {
+                break;
+            }
+        }
+        shutdown_tx.send(true).unwrap();
+        let bye = loop {
+            if let Message::Bye(b) = recv(&mut rx).await {
+                break b;
+            }
+        };
+        assert_eq!(bye.reason, "host shutting down");
+        let s = timeout(Duration::from_secs(5), host)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.end, EndReason::HostShutdown);
+        assert!(
+            stopped.load(Ordering::Acquire),
+            "the session returned before the source stopped"
+        );
     }
 
     #[tokio::test]
