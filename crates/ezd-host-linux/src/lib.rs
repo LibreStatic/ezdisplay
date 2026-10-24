@@ -23,7 +23,8 @@ mod source;
 mod vkdma;
 
 pub use ezd_host_core::PlatformOptions;
-use ezd_host_core::{PlatformError, VideoSource};
+use ezd_host_core::{InputBackend, PlatformError, VideoSource};
+use std::sync::Arc;
 
 /// Creates the capture + encode source for one client connection.
 pub fn create_virtual_source(
@@ -36,6 +37,11 @@ pub fn create_virtual_source(
         ));
     }
     Ok(Box::new(src))
+}
+
+/// Input injection backend (`None` = not available on this desktop).
+pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
+    None
 }
 
 /// Platform section of `ezd-host diag`.

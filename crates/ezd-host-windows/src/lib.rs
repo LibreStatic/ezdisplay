@@ -22,7 +22,8 @@ pub mod vdd_xml;
 mod win;
 
 pub use ezd_host_core::PlatformOptions;
-use ezd_host_core::{PlatformError, VideoSource};
+use ezd_host_core::{InputBackend, PlatformError, VideoSource};
+use std::sync::Arc;
 
 /// Creates the virtual display + capture + encode pipeline.
 pub fn create_virtual_source(
@@ -37,6 +38,11 @@ pub fn create_virtual_source(
         let _ = opts;
         Err(PlatformError::Unimplemented("non-Windows host"))
     }
+}
+
+/// Input injection backend (`None` = not available).
+pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
+    None
 }
 
 /// Platform-specific diagnostics for `ezd-host diag`.

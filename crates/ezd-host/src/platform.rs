@@ -24,8 +24,14 @@ pub fn create_virtual_source(opts: &PlatformOptions) -> Result<Box<dyn VideoSour
 
 /// Input injection backend of this platform, if it has one.
 pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
-    // The Linux (uinput) and Windows (SendInput) backends are not implemented yet.
-    None
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        imp::input_backend()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        None
+    }
 }
 
 /// Platform part of the diagnostics report.
