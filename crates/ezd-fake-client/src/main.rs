@@ -41,7 +41,8 @@ struct Args {
     /// Abort after this many seconds.
     #[arg(long)]
     max_seconds: Option<u64>,
-    /// Play a canned input sequence once, starting at the first video frame.
+    /// Play a canned input sequence once, starting at the first video frame: tap, drag, circle,
+    /// touch2, scroll, or keys (Ctrl+Space held during a pen stroke; needs a host with KEYS).
     #[arg(long, value_enum)]
     input_script: Option<ScriptArg>,
     /// Exit shortly after the input script finished.
@@ -59,6 +60,7 @@ enum ScriptArg {
     Circle,
     Touch2,
     Scroll,
+    Keys,
 }
 
 #[tokio::main]
@@ -91,6 +93,7 @@ async fn main() -> Result<()> {
             ScriptArg::Circle => InputScript::Circle,
             ScriptArg::Touch2 => InputScript::Touch2,
             ScriptArg::Scroll => InputScript::Scroll,
+            ScriptArg::Keys => InputScript::Keys,
         }),
         stop_after_script: a.exit_after_script,
         proto_minor: a.proto_minor,

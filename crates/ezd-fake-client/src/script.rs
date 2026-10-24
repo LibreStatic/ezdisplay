@@ -1,7 +1,9 @@
-//! Scripted input for the fake client: pen strokes, taps, two-finger drags and scrolling.
+//! Scripted input for the fake client: pen strokes, taps, two-finger drags, scrolling and keys.
 
 use ezd_client_core::{ClientHandle, now_us};
-use ezd_proto::{Message, NORM_MAX, PenSample, PointerButton, Scroll, TouchContact, TouchFrame};
+use ezd_proto::{
+    Key, Message, NORM_MAX, PenSample, PointerButton, Scroll, TouchContact, TouchFrame,
+};
 use std::time::Duration;
 
 /// A canned input sequence the fake client plays once per session.
@@ -17,6 +19,9 @@ pub enum InputScript {
     Touch2,
     /// Right click followed by wheel scrolling and Ctrl+wheel zoom.
     Scroll,
+    /// Pen hover, Ctrl+Space held (the graphics-tablet-style pen-button shortcut) while the pen draws a
+    /// short stroke, then released.
+    Keys,
 }
 
 fn norm(f: f64) -> u16 {
@@ -184,6 +189,39 @@ pub fn script_messages(script: InputScript) -> Vec<(Duration, Message)> {
                 v.push((ms(350.0 + 50.0 * f64::from(i)), scroll(-120, Scroll::CTRL)));
             }
         }
+        InputScript::Keys => {
+            let key = |usage, pressed| {
+                Message::Key(Key {
+                    t_us: 0,
+                    usage,
+                    pressed,
+                })
+            };
+            for i in 0..5 {
+                v.push((
+                    ms(f64::from(i) * hz240),
+                    pen(0.4, 0.5, 0.0, 0.0, 0.0, HOVER),
+                ));
+            }
+            v.push((ms(25.0), key(Key::LEFT_CTRL, true)));
+            v.push((ms(30.0), key(Key::SPACE, true)));
+            // Short pause so the shortcut is active before the pen touches down.
+            let t0 = 80.0;
+            let step = 1000.0 / 60.0;
+            let n = 18; // ~300 ms
+            for i in 0..=n {
+                let k = f64::from(i) / f64::from(n);
+                v.push((
+                    ms(t0 + f64::from(i) * step),
+                    pen(lerp(0.4, 0.6, k), 0.5, lerp(0.2, 0.8, k), 0.0, 0.0, DRAW),
+                ));
+            }
+            let t1 = t0 + f64::from(n + 1) * step;
+            v.push((ms(t1), pen(0.6, 0.5, 0.0, 0.0, 0.0, HOVER)));
+            v.push((ms(t1 + 10.0), key(Key::SPACE, false)));
+            v.push((ms(t1 + 15.0), key(Key::LEFT_CTRL, false)));
+            v.push((ms(t1 + 25.0), pen(0.6, 0.5, 0.0, 0.0, 0.0, 0)));
+        }
     }
     v
 }
@@ -194,6 +232,7 @@ fn stamp(msg: &mut Message, t: u64) {
         Message::Touch(m) => m.t_us = t,
         Message::PointerButton(m) => m.t_us = t,
         Message::Scroll(m) => m.t_us = t,
+        Message::Key(m) => m.t_us = t,
         _ => {}
     }
 }
@@ -210,4 +249,32 @@ pub async fn play_script(script: InputScript, handle: &ClientHandle) -> u64 {
         }
     }
     sent
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_script_wraps_the_stroke_in_ctrl_space() {
+        let v = script_messages(InputScript::Keys);
+        assert!(v.windows(2).all(|w| w[0].0 <= w[1].0), "offsets ascend");
+        let pos = |f: &dyn Fn(&Message) -> bool| v.iter().position(|(_, m)| f(m)).unwrap();
+        let key = |usage: u16, pressed: bool| move |m: &Message| matches!(m, Message::Key(k) if k.usage == usage && k.pressed == pressed);
+        let ctrl_down = pos(&key(Key::LEFT_CTRL, true));
+        let space_down = pos(&key(Key::SPACE, true));
+        let space_up = pos(&key(Key::SPACE, false));
+        let ctrl_up = pos(&key(Key::LEFT_CTRL, false));
+        let first_contact =
+            pos(&|m| matches!(m, Message::Pen(p) if p.flags & PenSample::CONTACT != 0));
+        let last_contact = v
+            .iter()
+            .rposition(|(_, m)| matches!(m, Message::Pen(p) if p.flags & PenSample::CONTACT != 0))
+            .unwrap();
+        assert!(ctrl_down < space_down && space_down < first_contact);
+        assert!(last_contact < space_up && space_up < ctrl_up);
+        // A pause between the shortcut and the first contact sample.
+        assert!(v[first_contact].0 - v[space_down].0 >= Duration::from_millis(40));
+        assert!(matches!(&v.last().unwrap().1, Message::Pen(p) if p.flags == 0));
+    }
 }

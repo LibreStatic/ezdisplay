@@ -4,7 +4,7 @@
 //!
 //! `win::input` converts these descriptions into Win32 structs and injects them.
 
-use ezd_proto::{PenSample, PointerButton, Scroll, TouchContact, TouchFrame};
+use ezd_proto::{Key, PenSample, PointerButton, Scroll, TouchContact, TouchFrame};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -454,6 +454,150 @@ pub enum MouseOrKey {
         /// Press (true) or release (false).
         down: bool,
     },
+    /// A keyboard key by PC/AT scancode (`KEYEVENTF_SCANCODE`, no virtual key): the layout is the
+    /// user's, like a real keyboard.
+    Scan {
+        /// Scancode (set 1, without the `E0` prefix).
+        scan: u16,
+        /// `E0`-prefixed key (`KEYEVENTF_EXTENDEDKEY`).
+        extended: bool,
+        /// Press (true) or release (false).
+        down: bool,
+    },
+}
+
+/// PC/AT scancode set 1 for a HID keyboard-page usage: `(scancode, extended)` where `extended`
+/// means the `E0` prefix. Positional (US layout), same usage set as the Linux host. `None` for
+/// unmapped usages: Pause (multi-byte sequence) and Power (not injected on purpose).
+pub fn hid_to_scancode(usage: u16) -> Option<(u16, bool)> {
+    const LETTERS: [u16; 26] = [
+        0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18,
+        0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+    ];
+    let plain = |s: u16| Some((s, false));
+    let ext = |s: u16| Some((s, true));
+    match usage {
+        0x04..=0x1D => plain(LETTERS[usize::from(usage - 0x04)]),
+        0x1E..=0x27 => plain(usage - 0x1E + 0x02), // 1..9, 0
+        0x28 => plain(0x1C),
+        0x29 => plain(0x01),
+        0x2A => plain(0x0E),
+        0x2B => plain(0x0F),
+        0x2C => plain(0x39),
+        0x2D => plain(0x0C),
+        0x2E => plain(0x0D),
+        0x2F => plain(0x1A),
+        0x30 => plain(0x1B),
+        0x31 | 0x32 => plain(0x2B),
+        0x33 => plain(0x27),
+        0x34 => plain(0x28),
+        0x35 => plain(0x29),
+        0x36 => plain(0x33),
+        0x37 => plain(0x34),
+        0x38 => plain(0x35),
+        0x39 => plain(0x3A),
+        0x3A..=0x43 => plain(usage - 0x3A + 0x3B), // F1..F10
+        0x44 => plain(0x57),
+        0x45 => plain(0x58),
+        0x46 => ext(0x37), // PrintScreen
+        0x47 => plain(0x46),
+        0x49 => ext(0x52),   // Insert
+        0x4A => ext(0x47),   // Home
+        0x4B => ext(0x49),   // PageUp
+        0x4C => ext(0x53),   // Delete
+        0x4D => ext(0x4F),   // End
+        0x4E => ext(0x51),   // PageDown
+        0x4F => ext(0x4D),   // Right
+        0x50 => ext(0x4B),   // Left
+        0x51 => ext(0x50),   // Down
+        0x52 => ext(0x48),   // Up
+        0x53 => plain(0x45), // NumLock
+        0x54 => ext(0x35),   // keypad /
+        0x55 => plain(0x37),
+        0x56 => plain(0x4A),
+        0x57 => plain(0x4E),
+        0x58 => ext(0x1C), // keypad Enter
+        0x59 => plain(0x4F),
+        0x5A => plain(0x50),
+        0x5B => plain(0x51),
+        0x5C => plain(0x4B),
+        0x5D => plain(0x4C),
+        0x5E => plain(0x4D),
+        0x5F => plain(0x47),
+        0x60 => plain(0x48),
+        0x61 => plain(0x49),
+        0x62 => plain(0x52),
+        0x63 => plain(0x53),
+        0x64 => plain(0x56),                       // Non-US \
+        0x65 => ext(0x5D),                         // Application
+        0x67 => plain(0x59),                       // keypad =
+        0x68..=0x72 => plain(usage - 0x68 + 0x64), // F13..F23
+        0x73 => plain(0x76),                       // F24
+        0xE0 => plain(0x1D),
+        0xE1 => plain(0x2A),
+        0xE2 => plain(0x38),
+        0xE3 => ext(0x5B),
+        0xE4 => ext(0x1D),
+        0xE5 => plain(0x36),
+        0xE6 => ext(0x38),
+        0xE7 => ext(0x5C),
+        _ => None,
+    }
+}
+
+/// Tracks the keys that are down; duplicate presses, releases of keys that are not down and
+/// unmapped usages produce nothing.
+#[derive(Debug, Default)]
+pub struct KeyTracker {
+    /// `(usage, scancode, extended)` in press order.
+    down: Vec<(u16, u16, bool)>,
+}
+
+impl KeyTracker {
+    /// A tracker with nothing pressed.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The entries for a key message.
+    pub fn key(&mut self, k: &Key) -> Vec<MouseOrKey> {
+        let Some((scan, extended)) = hid_to_scancode(k.usage) else {
+            return vec![];
+        };
+        let pos = self.down.iter().position(|d| d.0 == k.usage);
+        match (k.pressed, pos) {
+            (true, None) => {
+                self.down.push((k.usage, scan, extended));
+                vec![MouseOrKey::Scan {
+                    scan,
+                    extended,
+                    down: true,
+                }]
+            }
+            (false, Some(i)) => {
+                self.down.remove(i);
+                vec![MouseOrKey::Scan {
+                    scan,
+                    extended,
+                    down: false,
+                }]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Releases every key that is down, last pressed first.
+    pub fn release_all(&mut self) -> Vec<MouseOrKey> {
+        std::mem::take(&mut self.down)
+            .into_iter()
+            .rev()
+            .map(|(_, scan, extended)| MouseOrKey::Scan {
+                scan,
+                extended,
+                down: false,
+            })
+            .collect()
+    }
 }
 
 /// Entries for a protocol button event: move to the point, then press or release. Unknown
@@ -1113,5 +1257,68 @@ mod tests {
         assert_eq!(r.allow(t0 + Duration::from_secs(1)), None);
         assert_eq!(r.allow(t0 + Duration::from_secs(2)), None);
         assert_eq!(r.allow(t0 + Duration::from_secs(5)), Some(2));
+    }
+
+    #[test]
+    fn scancodes() {
+        assert_eq!(hid_to_scancode(0x04), Some((0x1E, false))); // A
+        assert_eq!(hid_to_scancode(0x1D), Some((0x2C, false))); // Z
+        assert_eq!(hid_to_scancode(0x1E), Some((0x02, false))); // 1
+        assert_eq!(hid_to_scancode(0x27), Some((0x0B, false))); // 0
+        assert_eq!(hid_to_scancode(Key::SPACE), Some((0x39, false)));
+        assert_eq!(hid_to_scancode(0x28), Some((0x1C, false))); // Enter
+        assert_eq!(hid_to_scancode(0x29), Some((0x01, false))); // Esc
+        assert_eq!(hid_to_scancode(0x3A), Some((0x3B, false))); // F1
+        assert_eq!(hid_to_scancode(0x43), Some((0x44, false))); // F10
+        assert_eq!(hid_to_scancode(0x44), Some((0x57, false))); // F11
+        assert_eq!(hid_to_scancode(0x45), Some((0x58, false))); // F12
+        assert_eq!(hid_to_scancode(0x68), Some((0x64, false))); // F13
+        assert_eq!(hid_to_scancode(0x73), Some((0x76, false))); // F24
+        assert_eq!(hid_to_scancode(Key::LEFT_CTRL), Some((0x1D, false)));
+        assert_eq!(hid_to_scancode(Key::LEFT_SHIFT), Some((0x2A, false)));
+        assert_eq!(hid_to_scancode(Key::LEFT_ALT), Some((0x38, false)));
+        assert_eq!(hid_to_scancode(Key::LEFT_GUI), Some((0x5B, true)));
+        assert_eq!(hid_to_scancode(0xE4), Some((0x1D, true))); // Right Ctrl
+        assert_eq!(hid_to_scancode(0xE5), Some((0x36, false))); // Right Shift
+        assert_eq!(hid_to_scancode(0xE6), Some((0x38, true))); // Right Alt
+        assert_eq!(hid_to_scancode(0xE7), Some((0x5C, true)));
+        assert_eq!(hid_to_scancode(0x52), Some((0x48, true))); // Up
+        assert_eq!(hid_to_scancode(0x4C), Some((0x53, true))); // Delete
+        assert_eq!(hid_to_scancode(0x58), Some((0x1C, true))); // keypad Enter
+        assert_eq!(hid_to_scancode(0x62), Some((0x52, false))); // keypad 0 (not Insert)
+        assert_eq!(hid_to_scancode(0x65), Some((0x5D, true))); // Application
+        for u in [0x00, 0x03, 0x48, 0x66, 0x74, 0xDF, 0xE8, 0xFFFF] {
+            assert_eq!(hid_to_scancode(u), None, "{u:#x}");
+        }
+    }
+
+    #[test]
+    fn key_tracker_rules() {
+        let k = |usage, pressed| Key {
+            t_us: 0,
+            usage,
+            pressed,
+        };
+        let scan = |scan, extended, down| MouseOrKey::Scan {
+            scan,
+            extended,
+            down,
+        };
+        let mut t = KeyTracker::new();
+        assert!(t.key(&k(Key::SPACE, false)).is_empty());
+        assert_eq!(
+            t.key(&k(Key::LEFT_CTRL, true)),
+            vec![scan(0x1D, false, true)]
+        );
+        assert_eq!(t.key(&k(Key::LEFT_GUI, true)), vec![scan(0x5B, true, true)]);
+        assert!(t.key(&k(Key::LEFT_GUI, true)).is_empty(), "duplicate press");
+        assert!(t.key(&k(0x03, true)).is_empty(), "unmapped");
+        assert_eq!(t.key(&k(Key::SPACE, true)), vec![scan(0x39, false, true)]);
+        assert_eq!(t.key(&k(Key::SPACE, false)), vec![scan(0x39, false, false)]);
+        assert_eq!(
+            t.release_all(),
+            vec![scan(0x5B, true, false), scan(0x1D, false, false)]
+        );
+        assert!(t.release_all().is_empty());
     }
 }

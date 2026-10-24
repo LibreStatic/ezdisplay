@@ -8,7 +8,7 @@ use ezd_host_core::{
     DisplayMode, EndReason, OutputInfo, SessionOptions, SessionSummary, run_host_session_with,
 };
 use ezd_link::Link;
-use ezd_proto::{ClientOptions, InputStatus, Message, PenSample, Prefs};
+use ezd_proto::{ClientOptions, InputStatus, Key, Message, PenSample, Prefs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::timeout;
@@ -100,6 +100,7 @@ fn injected(rec: &Mutex<Recording>) -> (Vec<Message>, bool) {
                     Message::PointerButton(ezd_proto::PointerButton { t_us: 0, ..*b })
                 }
                 InputCall::Scroll(s) => Message::Scroll(ezd_proto::Scroll { t_us: 0, ..*s }),
+                InputCall::Key(k) => Message::Key(Key { t_us: 0, ..*k }),
                 InputCall::ReleaseAll => return None,
             })
         })
@@ -219,4 +220,37 @@ async fn old_client_gets_no_input_messages() {
     assert_eq!(summary.input_events, 0);
     assert!(backend.recording.lock().unwrap().target.is_none());
     assert_eq!(summary.end, EndReason::ClientBye("client done".into()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keys_reach_the_sink_in_order_when_announced() {
+    let st = InputStatus {
+        caps: InputStatus::PEN | InputStatus::KEYS,
+        note: String::new(),
+    };
+    let backend = RecordingBackend::new(st.clone());
+    let (report, summary) = run(client_cfg(InputScript::Keys), opts_with(&backend)).await;
+    assert_eq!(report.input_status, Some(st));
+    let want = expected(InputScript::Keys);
+    let (got, released) = injected(&backend.recording);
+    assert_eq!(got, want, "keys and pen samples arrive intact and in order");
+    assert_eq!(report.inputs_sent, want.len() as u64);
+    assert_eq!(summary.input_events, want.len() as u64);
+    assert!(released);
+    let ctrl_down = got
+        .iter()
+        .position(|m| matches!(m, Message::Key(k) if k.usage == Key::LEFT_CTRL && k.pressed));
+    let contact = got
+        .iter()
+        .position(|m| matches!(m, Message::Pen(p) if p.flags & PenSample::CONTACT != 0));
+    assert!(ctrl_down.unwrap() < contact.unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keys_are_dropped_when_the_host_lacks_the_capability() {
+    let backend = RecordingBackend::new(status()); // PEN | TOUCH, no KEYS
+    let (_report, _summary) = run(client_cfg(InputScript::Keys), opts_with(&backend)).await;
+    let (got, _) = injected(&backend.recording);
+    assert!(!got.is_empty());
+    assert!(got.iter().all(|m| !matches!(m, Message::Key(_))));
 }

@@ -6,8 +6,8 @@ use crate::source::{
 };
 use crate::time::now_us;
 use ezd_proto::{
-    Codec, CursorShape, CursorState, EncoderCaps, InputStatus, PenSample, PointerButton, Scroll,
-    StreamConfig, TouchFrame,
+    Codec, CursorShape, CursorState, EncoderCaps, InputStatus, Key, PenSample, PointerButton,
+    Scroll, StreamConfig, TouchFrame,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -170,6 +170,8 @@ pub enum InputCall {
     Button(PointerButton),
     /// `InputSink::scroll`.
     Scroll(Scroll),
+    /// `InputSink::key`.
+    Key(Key),
     /// `InputSink::release_all`.
     ReleaseAll,
 }
@@ -252,6 +254,9 @@ impl InputSink for RecordingSink {
     }
     fn scroll(&mut self, s: &Scroll) {
         self.push(InputCall::Scroll(*s));
+    }
+    fn key(&mut self, k: &Key) {
+        self.push(InputCall::Key(*k));
     }
     fn tick(&mut self) {
         self.recording

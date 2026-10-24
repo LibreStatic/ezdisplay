@@ -389,7 +389,8 @@ pub async fn run_host_session_with(
                     m @ (Message::Pen(_)
                     | Message::Touch(_)
                     | Message::PointerButton(_)
-                    | Message::Scroll(_)),
+                    | Message::Scroll(_)
+                    | Message::Key(_)),
                 )) => match &input_tx {
                     Some(t) => {
                         let _ = t.send(InputCmd::Msg(m));

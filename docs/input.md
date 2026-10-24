@@ -1,6 +1,6 @@
 # Input injection
 
-The tablet sends pen, touch, button and scroll events; the host injects them into the desktop.
+The tablet sends pen, touch, button, scroll and key events; the host injects them into the desktop.
 `ezd-host run` does this by default; `--no-input` turns it off. Without a working backend the
 stream still runs and the tablet is told why (`InputStatus.note`).
 
@@ -12,11 +12,39 @@ stream still runs and the tablet is told why (`InputStatus.note`).
 - `--pen-mode tablet|mouse`: inject the pen as a pen (default) or as an absolute mouse, for apps
   without pen support (see each platform below).
 
+## Keyboard shortcuts on the pen button
+
+Like a graphics-tablet driver, the tablet can send a key combination from the S Pen button (protocol 0.4,
+`Key` messages). In the app's input settings:
+
+- **Graphics tablet profile.** Holding the button keeps the combination pressed (Ctrl + Space by
+  default) while the tip and hover reach the app as usual, so "hold the button and drag" works
+  like on a graphics tablet. A quick click in the air is a right click and a double click toggles the local
+  zoom. Ctrl + Space is a common drag-zoom shortcut in drawing apps; the combination can be changed in
+  the app.
+- **Custom profile.** Click, double click and hold can each tap or hold their own combination.
+  With hold = shortcut, the two drag triggers are ignored.
+
+The hold is resolved at the first of: the hold time, the tip touching, or the pen moving in hover.
+The keys are released when the button is released, when the pen leaves range and when the session
+ends, so a key cannot stay stuck on the PC.
+
+Keys are physical positions (USB HID usages of a US keyboard); the PC applies its own layout, as
+with a real USB keyboard. The host announces the `KEYS` capability; an older host does not, and
+the tablet then drops the keys and says the host needs an update.
+
+Because the keyboard and the pen are separate devices, the host waits up to 8 ms after a key press
+before injecting the next pen or pointer event, so the app sees the keys first. `EZD_KEY_SETTLE_MS`
+changes the wait (0 turns it off).
+
+**Drawing apps on Windows:** some read pressure only through Windows Ink; pick the Windows Ink
+(Windows API) option instead of Wintab in their tablet settings.
+
 ## Linux (KDE Plasma 6)
 
 ### What the host creates
 
-Three uinput devices per session, all with vendor `0x1209` and fixed names, so KWin can remember
+Four uinput devices per session, all with vendor `0x1209` and fixed names, so KWin can remember
 their settings:
 
 | Device | Product | Kind | Used for |
@@ -24,9 +52,11 @@ their settings:
 | `ezdisplay touch` | `0xEDD1` | multi-touch screen (type B, up to 10 contacts, `INPUT_PROP_DIRECT`) | finger touch |
 | `ezdisplay pen` | `0xEDD2` | graphics tablet (pressure, tilt, eraser, barrel button) | stylus |
 | `ezdisplay pointer` | `0xEDD3` | absolute pointer with buttons, wheel and Ctrl / Shift | mouse-style buttons, scrolling, pinch (Ctrl + wheel) |
+| `ezdisplay keyboard` | `0xEDD4` | keyboard (letters, digits, function, navigation and modifier keys) | keyboard shortcuts of the pen button |
 
 The ranges are the protocol's 0..65535, with the resolution derived from the tablet's pixel size
-and dpi. The devices disappear when the session ends.
+and dpi. Keyboards are global in KWin, so the keyboard is not mapped to an output. The devices
+disappear when the session ends.
 
 ### Permissions
 
@@ -86,6 +116,7 @@ The Windows host injects the pen and touch through synthetic pointer devices (`C
 - **Coordinates.** Normalized coordinates are mapped onto the pixel rectangle of the virtual display, read from its GDI name (`dmPosition` plus current size). The rectangle is re-read when the pen enters range and at most once per second otherwise. The process is per-monitor-v2 DPI aware, so these are physical pixels.
 - **Pen.** Hover is INRANGE|UPDATE, DOWN and UP are injected as separate frames, and leaving range is an UPDATE without INRANGE. Pressure is scaled to 0..1024 and tilt to -90..90 degrees. The barrel button sets `PEN_FLAG_BARREL`. The eraser end sets `PEN_FLAG_INVERTED` while in range, plus `PEN_FLAG_ERASER` while in contact. Changing between pen and eraser leaves range and enters again.
 - **Touch.** Every injection lists all active contacts. Stationary contacts are re-injected as UPDATE after 100 ms without any touch injection, and a contact missing from a frame is lifted.
+- **Keys.** Keyboard shortcuts are injected with `SendInput` as scancodes (`KEYEVENTF_SCANCODE`, plus `KEYEVENTF_EXTENDEDKEY` for arrows, navigation keys and the Windows keys), so they behave like a physical keyboard under the user's layout. Held keys are released when the session ends.
 - **Mouse pen mode** (`--pen-mode mouse`). No pen device is created. The pen moves the mouse, contact is the left button, the barrel button is the right button, and leaving range releases them.
 - **Limits.** Windows blocks injected input to windows of an elevated (administrator) process (UIPI) unless the host also runs elevated. The host logs a rate-limited warning when `SendInput` injects fewer events than requested.
-- **Status.** `InputStatus` carries TOUCH and PEN only when their device was created. If a device cannot be created (Windows older than 1809), the note says so. Without a known virtual display, input is unavailable. `ezd-host diag` has an `input` section that reports whether both devices can be created.
+- **Status.** `InputStatus` always carries ACTIONS and KEYS, and TOUCH and PEN only when their device was created. If a device cannot be created (Windows older than 1809), the note says so. Without a known virtual display, input is unavailable. `ezd-host diag` has an `input` section that reports whether both devices can be created.

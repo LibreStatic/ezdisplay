@@ -176,10 +176,31 @@ scrollBox.addEventListener("scroll", () => {
   log({ type: "scroll", t: wall(performance.now()), top: Math.round(scrollBox.scrollTop) });
 }, { passive: true });
 
+// Keyboard: logged like the pointer events (the host injects keys for the pen button shortcut).
+// Keys held with Ctrl / Alt / Meta are not acted on by the browser (Ctrl+Space etc.) and do not
+// trigger the page's own C / L keys.
+const held = new Map(); // code -> key
+function keyRecord(e) {
+  log({
+    type: e.type, t: wall(e.timeStamp), lag: +(performance.now() - e.timeStamp).toFixed(2),
+    code: e.code, key: e.key, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey,
+    metaKey: e.metaKey, repeat: e.repeat,
+  });
+}
 addEventListener("keydown", e => {
+  const mod = e.ctrlKey || e.altKey || e.metaKey;
+  if (mod) e.preventDefault();
+  held.set(e.code, e.key);
+  keyRecord(e);
+  if (mod) return;
   if (e.key === "c" || e.key === "C") ctx.clearRect(0, 0, innerWidth, innerHeight);
   if ((e.key === "l" || e.key === "L") && location.protocol.startsWith("http")) logOn = !logOn;
 });
+addEventListener("keyup", e => {
+  held.delete(e.code);
+  keyRecord(e);
+});
+addEventListener("blur", () => held.clear());
 
 function fmt(r) {
   if (!r) return "-";
@@ -197,6 +218,7 @@ function render() {
     `touches now ${touches}, max ${maxTouches}`,
     `wheel  ${wheel.n} events, dx ${wheel.dx.toFixed(0)}, dy ${wheel.dy.toFixed(0)}, with ctrl ${wheel.ctrl}`,
     `context menus ${menus}`,
+    `keys   ${held.size ? [...held.keys()].join(" + ") : "-"}`,
   ].join("\n");
   requestAnimationFrame(render);
 }

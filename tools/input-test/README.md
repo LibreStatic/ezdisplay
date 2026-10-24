@@ -2,8 +2,11 @@
 
 Shows what the browser receives from the injected input and logs every event to a JSONL file, so
 the values can be checked as text: pointer type, pressure, tilt, twist, buttons, simultaneous
-touch contacts, wheel events (with Ctrl for zoom) and context menus. Pen and touch strokes are
-drawn on the page, with the pen's width following the pressure.
+touch contacts, wheel events (with Ctrl for zoom), context menus and keyboard events
+(`keydown` / `keyup` with `code`, `key`, the modifier flags and `repeat`, for checking the keys
+the host injects for the pen button shortcut, e.g. Ctrl+Space; the keys currently held are shown
+in the readout, and keys held with Ctrl / Alt / Meta are not acted on by the browser). Pen and
+touch strokes are drawn on the page, with the pen's width following the pressure.
 
 ## Running
 

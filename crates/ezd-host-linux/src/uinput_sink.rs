@@ -1,8 +1,8 @@
 //! uinput devices and the [`InputSink`] / [`InputBackend`] built on the encoders in `input.rs`.
 
 use crate::input::{
-    Frame, MAX_SLOTS, Mapper, PRESSURE_MAX, PenButton, PenEncoder, PointerEncoder, TouchEncoder,
-    physical_mm, resolution,
+    Frame, KeyboardEncoder, MAX_SLOTS, Mapper, PRESSURE_MAX, PenButton, PenEncoder, PointerEncoder,
+    TouchEncoder, keyboard_keys, physical_mm, resolution,
 };
 use crate::{kscreen, kwin_input};
 use evdev::uinput::VirtualDevice;
@@ -11,7 +11,7 @@ use evdev::{
     PropType, RelativeAxisCode as Rel, UinputAbsSetup,
 };
 use ezd_host_core::{InputBackend, InputSink, InputTarget, PenMode};
-use ezd_proto::{InputStatus, PenSample, PointerButton, Scroll, TouchFrame};
+use ezd_proto::{InputStatus, Key as HidKey, PenSample, PointerButton, Scroll, TouchFrame};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,18 +21,22 @@ use tokio::runtime::Handle;
 
 /// pid.codes test vendor id.
 pub const VENDOR: u16 = 0x1209;
-/// Product ids and names of the three devices.
+/// Product ids and names of the four devices.
 pub const TOUCH_PRODUCT: u16 = 0xEDD1;
 /// See [`TOUCH_PRODUCT`].
 pub const PEN_PRODUCT: u16 = 0xEDD2;
 /// See [`TOUCH_PRODUCT`].
 pub const POINTER_PRODUCT: u16 = 0xEDD3;
+/// See [`TOUCH_PRODUCT`].
+pub const KEYBOARD_PRODUCT: u16 = 0xEDD4;
 /// Device names (KWin persists the output mapping by vendor / product / name).
 pub const TOUCH_NAME: &str = "ezdisplay touch";
 /// See [`TOUCH_NAME`].
 pub const PEN_NAME: &str = "ezdisplay pen";
 /// See [`TOUCH_NAME`].
 pub const POINTER_NAME: &str = "ezdisplay pointer";
+/// See [`TOUCH_NAME`].
+pub const KEYBOARD_NAME: &str = "ezdisplay keyboard";
 
 const UDEV_HINT: &str = "Install packaging/linux/70-ezdisplay-uinput.rules, see docs/input.md";
 
@@ -121,6 +125,16 @@ pub fn create_pointer() -> io::Result<VirtualDevice> {
         .build()
 }
 
+/// The keyboard for key messages (every key of the HID table). Keyboards are global in KWin, so
+/// there is no output mapping.
+pub fn create_keyboard() -> io::Result<VirtualDevice> {
+    VirtualDevice::builder()?
+        .name(KEYBOARD_NAME)
+        .input_id(id(KEYBOARD_PRODUCT))
+        .with_keys(&AttributeSet::from_iter(keyboard_keys()))?
+        .build()
+}
+
 /// `eventN` names of a freshly created device (the nodes can show up a moment later).
 fn event_name(dev: &mut VirtualDevice) -> Option<String> {
     for _ in 0..40 {
@@ -197,12 +211,17 @@ struct Tablet {
     dev: VirtualDevice,
 }
 
+struct Keyboard {
+    enc: KeyboardEncoder,
+    dev: VirtualDevice,
+}
+
 struct Touchscreen {
     enc: TouchEncoder,
     dev: VirtualDevice,
 }
 
-/// The sink of one session: three uinput devices and their encoders.
+/// The sink of one session: up to four uinput devices and their encoders.
 pub struct UinputSink {
     // Drop order: the refresh thread first, then the devices (uinput removes them).
     _refresh: Option<GeometryRefresh>,
@@ -213,6 +232,8 @@ pub struct UinputSink {
     /// `None` = not created (mouse mode), or not mapped to the output.
     touch: Option<Touchscreen>,
     pen: Option<Tablet>,
+    /// `None` = the keyboard could not be created.
+    keyboard: Option<Keyboard>,
     pen_mode: PenMode,
     caps: u32,
     note: String,
@@ -268,7 +289,18 @@ impl InputSink for UinputSink {
         self.pointer_write(frames);
     }
 
+    fn key(&mut self, k: &HidKey) {
+        if let Some(kb) = &mut self.keyboard {
+            let frames = kb.enc.key(k);
+            write(&mut kb.dev, frames, &mut self.write_failed);
+        }
+    }
+
     fn release_all(&mut self) {
+        if let Some(kb) = &mut self.keyboard {
+            let frames = kb.enc.release_all();
+            write(&mut kb.dev, frames, &mut self.write_failed);
+        }
         let frames = self.pointer_enc.release_all();
         self.pointer_write(frames);
         if let Some(t) = &mut self.touch {
@@ -362,6 +394,21 @@ impl InputBackend for KdeInputBackend {
             }
         }
 
+        // Keys are optional: without the keyboard the session still works, minus shortcuts.
+        let keyboard = match create_keyboard() {
+            Ok(dev) => Some(Keyboard {
+                enc: KeyboardEncoder::new(),
+                dev,
+            }),
+            Err(e) => {
+                notes.push(format!(
+                    "keyboard shortcuts unavailable: {}",
+                    open_error(&e)
+                ));
+                None
+            }
+        };
+
         // Output geometry for the pointer (one blocking call here, then a helper thread).
         let mut mapper = Mapper::identity();
         let mut refresh = None;
@@ -392,6 +439,9 @@ impl InputBackend for KdeInputBackend {
         if mouse || pen_ok {
             caps |= InputStatus::PEN;
         }
+        if keyboard.is_some() {
+            caps |= InputStatus::KEYS;
+        }
         Ok(Box::new(UinputSink {
             _refresh: refresh,
             mapper: shared,
@@ -410,6 +460,7 @@ impl InputBackend for KdeInputBackend {
             } else {
                 None
             },
+            keyboard,
             pen_mode: target.pen_mode,
             caps,
             note: notes.join("; "),
@@ -443,18 +494,23 @@ mod tests {
         let mut touch = create_touch(mm).unwrap();
         let mut pen = create_pen(mm).unwrap();
         let mut pointer = create_pointer().unwrap();
+        let mut keyboard = create_keyboard().unwrap();
 
         let node = |dev: &mut VirtualDevice| event_name(dev).expect("event node");
         let (tn, pn, qn) = (node(&mut touch), node(&mut pen), node(&mut pointer));
+        let kn = node(&mut keyboard);
         let (t, p, q) = (SysDev::new(&tn), SysDev::new(&pn), SysDev::new(&qn));
+        let k = SysDev::new(&kn);
 
         assert_eq!(t.read("name"), TOUCH_NAME);
         assert_eq!(p.read("name"), PEN_NAME);
         assert_eq!(q.read("name"), POINTER_NAME);
+        assert_eq!(k.read("name"), KEYBOARD_NAME);
         for (d, product) in [
             (&t, TOUCH_PRODUCT),
             (&p, PEN_PRODUCT),
             (&q, POINTER_PRODUCT),
+            (&k, KEYBOARD_PRODUCT),
         ] {
             assert_eq!(d.read("id/vendor"), format!("{VENDOR:04x}"));
             assert_eq!(d.read("id/product"), format!("{product:04x}"));
@@ -471,6 +527,9 @@ mod tests {
         assert!(q.has("capabilities/key", Key::BTN_LEFT.code()));
         assert!(q.has("capabilities/rel", Rel::REL_WHEEL_HI_RES.0));
         assert!(q.has("capabilities/rel", Rel::REL_WHEEL.0));
+        assert!(k.has("capabilities/key", Key::KEY_SPACE.code()));
+        assert!(k.has("capabilities/key", Key::KEY_LEFTCTRL.code()));
+        assert!(!k.has("capabilities/key", Key::BTN_LEFT.code()));
 
         // Reading the events back needs the `input` group, which the host itself does not need.
         let mut reader = (0..40).find_map(|_| {

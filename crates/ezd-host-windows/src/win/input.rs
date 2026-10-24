@@ -8,11 +8,11 @@
 use super::display;
 use super::util::err_str;
 use crate::input_map::{
-    self, Modifier, MouseButton, MouseOrKey, MousePenTracker, PenFrame, PenTracker, RateLimit,
-    Rect, TouchContactOut, TouchTracker, mask,
+    self, KeyTracker, Modifier, MouseButton, MouseOrKey, MousePenTracker, PenFrame, PenTracker,
+    RateLimit, Rect, TouchContactOut, TouchTracker, mask,
 };
 use ezd_host_core::{InputBackend, InputSink, InputTarget, PenMode};
-use ezd_proto::{InputStatus, PenSample, PointerButton, Scroll, TouchFrame};
+use ezd_proto::{InputStatus, Key, PenSample, PointerButton, Scroll, TouchFrame};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{E_INVALIDARG, POINT, RECT};
@@ -22,11 +22,12 @@ use windows::Win32::UI::Controls::{
     POINTER_TYPE_INFO_0,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-    MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
-    MOUSEINPUT, SendInput, VK_CONTROL, VK_SHIFT,
+    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSE_EVENT_FLAGS,
+    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+    VIRTUAL_KEY, VK_CONTROL, VK_SHIFT,
 };
 use windows::Win32::UI::Input::Pointer::{
     InjectSyntheticPointerInput, POINTER_FLAGS, POINTER_INFO, POINTER_PEN_INFO, POINTER_TOUCH_INFO,
@@ -210,6 +211,28 @@ fn key_input(key: Modifier, down: bool) -> INPUT {
     }
 }
 
+fn scan_input(scan: u16, extended: bool, down: bool) -> INPUT {
+    let mut flags = KEYEVENTF_SCANCODE;
+    if extended {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    if !down {
+        flags |= KEYEVENTF_KEYUP;
+    }
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
 fn to_input(ev: &MouseOrKey, virt: Rect) -> INPUT {
     match *ev {
         MouseOrKey::Move { x, y } => {
@@ -235,6 +258,11 @@ fn to_input(ev: &MouseOrKey, virt: Rect) -> INPUT {
         MouseOrKey::Wheel(d) => mouse_input(0, 0, d as u32, MOUSEEVENTF_WHEEL),
         MouseOrKey::HWheel(d) => mouse_input(0, 0, d as u32, MOUSEEVENTF_HWHEEL),
         MouseOrKey::Key { key, down } => key_input(key, down),
+        MouseOrKey::Scan {
+            scan,
+            extended,
+            down,
+        } => scan_input(scan, extended, down),
     }
 }
 
@@ -321,6 +349,7 @@ impl InputBackend for WinInputBackend {
             pen: PenTracker::default(),
             mouse_pen: MousePenTracker::default(),
             touch: TouchTracker::default(),
+            keys: KeyTracker::new(),
             notes,
             warn_inject: RateLimit::new(WARN_EVERY),
             warn_send: RateLimit::new(WARN_EVERY),
@@ -340,6 +369,7 @@ struct WinInputSink {
     pen: PenTracker,
     mouse_pen: MousePenTracker,
     touch: TouchTracker,
+    keys: KeyTracker,
     notes: Vec<String>,
     warn_inject: RateLimit,
     warn_send: RateLimit,
@@ -486,6 +516,11 @@ impl InputSink for WinInputSink {
         self.send(&events);
     }
 
+    fn key(&mut self, k: &Key) {
+        let events = self.keys.key(k);
+        self.send(&events);
+    }
+
     fn tick(&mut self) {
         if let Some(contacts) = self.touch.refresh(Instant::now()) {
             self.inject_touch_contacts(&contacts);
@@ -499,10 +534,12 @@ impl InputSink for WinInputSink {
         self.send(&events);
         let contacts = self.touch.release_all();
         self.inject_touch_contacts(&contacts);
+        let events = self.keys.release_all();
+        self.send(&events);
     }
 
     fn status(&self) -> InputStatus {
-        let mut caps = InputStatus::ACTIONS;
+        let mut caps = InputStatus::ACTIONS | InputStatus::KEYS;
         if self.touch_dev.is_some() {
             caps |= InputStatus::TOUCH;
         }

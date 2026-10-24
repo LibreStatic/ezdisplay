@@ -8,8 +8,8 @@
 use crate::source::OutputInfo;
 use crate::time::now_us;
 use ezd_proto::{
-    ClientCaps, InputStatus, Message, PenSample, PointerButton, Scroll, StreamConfig, TouchContact,
-    TouchFrame,
+    ClientCaps, InputStatus, Key, Message, PenSample, PointerButton, Scroll, StreamConfig,
+    TouchContact, TouchFrame,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -27,6 +27,9 @@ pub trait InputSink: Send {
     fn button(&mut self, b: &PointerButton);
     /// A scroll / zoom event.
     fn scroll(&mut self, s: &Scroll);
+    /// A key press or release (HID usage). Sinks without key support ignore it (they do not
+    /// announce `InputStatus::KEYS`, so well-behaved clients do not send keys to them).
+    fn key(&mut self, _k: &Key) {}
     /// Called at least every 50 ms while the session runs (e.g. to refresh stationary touches).
     fn tick(&mut self) {}
     /// Releases everything that is down (pen out, touches up, buttons up). Called at session end.
@@ -175,7 +178,57 @@ fn msg_time(m: &Message) -> Option<u64> {
         Message::Touch(f) => Some(f.t_us),
         Message::PointerButton(b) => Some(b.t_us),
         Message::Scroll(s) => Some(s.t_us),
+        Message::Key(k) => Some(k.t_us),
         _ => None,
+    }
+}
+
+/// Default for [`KeySettle`]; override with `EZD_KEY_SETTLE_MS` (0 disables).
+const DEFAULT_KEY_SETTLE: Duration = Duration::from_millis(8);
+
+/// Cross-device ordering guard. Keys and pointer / pen input reach the OS through different
+/// devices or paths (separate evdev devices on Linux, `SendInput` keyboard vs synthetic pointer
+/// injection on Windows), and the OS does not order events between them. So after a key *press*
+/// the next non-key message waits until `settle` has elapsed since that press, which makes the
+/// modifier visible to the OS before the pen / pointer event that depends on it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct KeySettle {
+    settle: Duration,
+    pressed_at: Option<Instant>,
+}
+
+impl KeySettle {
+    pub(crate) fn new(settle: Duration) -> Self {
+        KeySettle {
+            settle,
+            pressed_at: None,
+        }
+    }
+
+    /// Reads `EZD_KEY_SETTLE_MS`, falling back to the default.
+    pub(crate) fn from_env() -> Self {
+        let settle = std::env::var("EZD_KEY_SETTLE_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map_or(DEFAULT_KEY_SETTLE, Duration::from_millis);
+        Self::new(settle)
+    }
+
+    /// A key press was just injected at `now`.
+    pub(crate) fn key_pressed(&mut self, now: Instant) {
+        if !self.settle.is_zero() {
+            self.pressed_at = Some(now);
+        }
+    }
+
+    /// How long a non-key message at `now` must wait; clears the pending press.
+    pub(crate) fn take_wait(&mut self, now: Instant) -> Duration {
+        match self.pressed_at.take() {
+            Some(at) => self
+                .settle
+                .saturating_sub(now.saturating_duration_since(at)),
+            None => Duration::ZERO,
+        }
     }
 }
 
@@ -188,7 +241,7 @@ fn touch_ids(f: &TouchFrame) -> Vec<u8> {
 /// Compacts the messages that queued up while the sink was being created: keeps every transition
 /// (any button, any scroll, a pen sample whose flags differ from the previous one, a touch frame
 /// with a non-MOVE contact or a different id set than the previous one) and the last pen sample
-/// and touch frame; drops the other pure moves.
+/// and touch frame, and every key press / release; drops the other pure moves.
 pub(crate) fn compact_backlog(msgs: Vec<Message>) -> Vec<Message> {
     let last_pen = msgs.iter().rposition(|m| matches!(m, Message::Pen(_)));
     let last_touch = msgs.iter().rposition(|m| matches!(m, Message::Touch(_)));
@@ -209,7 +262,7 @@ pub(crate) fn compact_backlog(msgs: Vec<Message>) -> Vec<Message> {
                 prev_ids = Some(ids);
                 transition || last_touch == Some(i)
             }
-            Message::PointerButton(_) | Message::Scroll(_) => true,
+            Message::PointerButton(_) | Message::Scroll(_) | Message::Key(_) => true,
             _ => false,
         };
         if keep {
@@ -225,6 +278,7 @@ fn inject(sink: &mut dyn InputSink, m: &Message) {
         Message::Touch(f) => sink.touch(f),
         Message::PointerButton(b) => sink.button(b),
         Message::Scroll(s) => sink.scroll(s),
+        Message::Key(k) => sink.key(k),
         _ => {}
     }
 }
@@ -290,8 +344,23 @@ pub(crate) fn input_thread(rx: Receiver<InputCmd>, ctx: InputContext) -> InputSt
     };
     let mut last_log = Instant::now();
     let mut last_tick = Instant::now();
-    let record = |st: &mut Recorder, sink: &mut dyn InputSink, m: &Message| {
-        inject(sink, m);
+    let mut settle = KeySettle::from_env();
+    let mut record = |st: &mut Recorder, sink: &mut dyn InputSink, m: &Message| {
+        match m {
+            Message::Key(k) => {
+                inject(sink, m);
+                if k.pressed {
+                    settle.key_pressed(Instant::now());
+                }
+            }
+            _ => {
+                let wait = settle.take_wait(Instant::now());
+                if !wait.is_zero() {
+                    std::thread::sleep(wait);
+                }
+                inject(sink, m);
+            }
+        }
         st.events += 1;
         if let (Some(t), Some(off)) = (msg_time(m), ctx.offset.get()) {
             // offset = client - host, so client time maps to host time as t - offset.
@@ -409,6 +478,49 @@ mod tests {
         ];
         let out = compact_backlog(msgs);
         assert_eq!(times(&out), vec![1, 4, 7, 8, 9, 10, 11, 14, 16]);
+    }
+
+    #[test]
+    fn compaction_keeps_every_key() {
+        let key = |t: u64, usage: u16, pressed: bool| {
+            Message::Key(Key {
+                t_us: t,
+                usage,
+                pressed,
+            })
+        };
+        let msgs = vec![
+            key(1, Key::LEFT_CTRL, true),
+            pen(2, 0),
+            pen(3, 0), // pure move: dropped
+            key(4, Key::SPACE, true),
+            pen(5, 0), // last pen
+            key(6, Key::SPACE, false),
+            key(7, Key::LEFT_CTRL, false),
+        ];
+        let out = compact_backlog(msgs);
+        assert_eq!(times(&out), vec![1, 2, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn key_settle_waits_remainder_once() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut s = KeySettle::new(ms(8));
+        assert_eq!(s.take_wait(t0), Duration::ZERO); // nothing pending
+        s.key_pressed(t0);
+        assert_eq!(s.take_wait(t0 + ms(3)), ms(5));
+        assert_eq!(s.take_wait(t0 + ms(3)), Duration::ZERO); // cleared
+        s.key_pressed(t0);
+        assert_eq!(s.take_wait(t0 + ms(20)), Duration::ZERO); // already elapsed
+    }
+
+    #[test]
+    fn key_settle_zero_disables() {
+        let t0 = Instant::now();
+        let mut s = KeySettle::new(Duration::ZERO);
+        s.key_pressed(t0);
+        assert_eq!(s.take_wait(t0), Duration::ZERO);
     }
 
     #[test]

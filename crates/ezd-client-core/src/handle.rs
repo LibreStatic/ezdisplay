@@ -187,17 +187,28 @@ impl ClientHandle {
         lock(&self.0.cursor).shapes.get(&shape_id).cloned()
     }
 
-    /// Sends an input message (`Pen`, `Touch`, `PointerButton`, `Scroll`) to the host.
+    /// Sends an input message (`Pen`, `Touch`, `PointerButton`, `Scroll`, `Key`) to the host.
     ///
     /// Returns false, dropping the message, if the session is not connected, the host speaks
-    /// protocol older than 0.3, `msg` is not an input message or the link is closed. Callable
-    /// from any thread; never blocks.
+    /// protocol older than 0.3, `msg` is not an input message, the link is closed or `msg` is a
+    /// `Key` and the host has not announced [`InputStatus::KEYS`]. Callable from any thread;
+    /// never blocks.
     pub fn send_input(&self, msg: &Message) -> bool {
-        if !matches!(
-            msg,
-            Message::Pen(_) | Message::Touch(_) | Message::PointerButton(_) | Message::Scroll(_)
-        ) {
-            return false;
+        match msg {
+            Message::Pen(_)
+            | Message::Touch(_)
+            | Message::PointerButton(_)
+            | Message::Scroll(_) => {}
+            Message::Key(_) => {
+                let keys = lock(&self.0.snapshot)
+                    .input_status
+                    .as_ref()
+                    .is_some_and(|s| s.caps & InputStatus::KEYS != 0);
+                if !keys {
+                    return false;
+                }
+            }
+            _ => return false,
         }
         let Some(tx) = lock(&self.0.input_tx).clone() else {
             return false;
@@ -289,5 +300,52 @@ impl ClientHandle {
         s.total_decoded += w.decoded as u64;
         s.total_dropped += w.dropped as u64;
         st
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ezd_link::MuxOptions;
+    use ezd_proto::{Key, PenSample};
+
+    fn key() -> Message {
+        Message::Key(Key {
+            t_us: 1,
+            usage: Key::SPACE,
+            pressed: true,
+        })
+    }
+
+    fn status(caps: u32) -> InputStatus {
+        InputStatus {
+            caps,
+            note: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn keys_are_sent_only_when_the_host_announced_them() {
+        let h = ClientHandle::new();
+        let (tx, _task) =
+            ezd_link::mux::spawn_mux(Box::new(tokio::io::sink()), MuxOptions::default());
+        h.set_input_sender(Some(tx));
+        let pen = Message::Pen(PenSample {
+            t_us: 1,
+            x: 0,
+            y: 0,
+            pressure: 0,
+            tilt_x: 0,
+            tilt_y: 0,
+            flags: 0,
+        });
+        assert!(h.send_input(&pen));
+        assert!(!h.send_input(&key()), "no InputStatus yet");
+        h.store_input_status(status(InputStatus::PEN | InputStatus::TOUCH));
+        assert!(!h.send_input(&key()), "host without KEYS");
+        h.store_input_status(status(InputStatus::PEN | InputStatus::KEYS));
+        assert!(h.send_input(&key()));
+        assert!(h.send_input(&pen));
+        assert_eq!(h.snapshot().inputs_sent, 3);
     }
 }

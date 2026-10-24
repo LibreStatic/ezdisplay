@@ -93,7 +93,7 @@ al cambiar la resolucion o bloquear/desbloquear la sesion el video se recupera s
 ## Entrada (lapiz y tacto)
 
 El host inyecta el lapiz y el tacto de la tablet con dispositivos de puntero sinteticos de
-Windows (Windows 10 1809 o posterior), y los clics y el scroll con `SendInput`.
+Windows (Windows 10 1809 o posterior), y los clics, el scroll y las teclas con `SendInput`.
 
 1. **Diagnostico.** En `diag.json`, la seccion `input` debe decir `"pen": "ok"` y `"touch": "ok"`.
    Si no, copiar el error (HRESULT) tal cual.
@@ -101,16 +101,23 @@ Windows (Windows 10 1809 o posterior), y los clics y el scroll con `SendInput`.
    `.\ezd-fake-client.exe` con `--input-script drag`, `touch2` y `scroll` (uno por vez; ver
    `.\ezd-fake-client.exe --help` por las demas opciones) y mirar el cursor y la tinta en Paint o
    en Pizarra (Whiteboard) en el monitor virtual. `drag` dibuja un trazo, `touch2` hace dos dedos,
-   `scroll` rueda y zoom con Ctrl.
+   `scroll` rueda y zoom con Ctrl, `keys` mantiene Ctrl+Espacio mientras dibuja un trazo.
 3. **Presion.** Con la tablet y un lapiz: en Paint o Pizarra el grosor del trazo debe seguir la
    presion; el borrador (si el lapiz tiene) debe borrar.
 4. **Tacto.** En Edge: arrastrar con un dedo desplaza la pagina, pellizcar con dos dedos hace zoom.
    Un dedo quieto no debe soltarse solo (el host lo refresca cada 100 ms; si se suelta, anotarlo).
 5. **Boton del lapiz.** Boton lateral apretado + toque = clic derecho (menu contextual).
-6. **Ventanas elevadas.** Con el Administrador de tareas abierto (elevado): Windows bloquea la
+6. **Atajos de teclado (perfil Tableta gráfica).** En la app de la tablet elegir el perfil
+   "Tableta gráfica". En Krita (Settings > Configure Krita > Tablet settings) elegir Windows Ink
+   para que haya presion. Mantener apretado el boton del lapiz y arrastrar
+   con la punta debe hacer zoom (atajo por defecto: Ctrl+Espacio). Sin tablet,
+   `.\ezd-fake-client.exe --input-script keys` reproduce lo mismo. En la pagina de prueba
+   (`tools/input-test`) las teclas aparecen como `keydown` / `keyup`, con Ctrl mantenido durante
+   el trazo. Anotar si alguna tecla queda "pegada" al soltar el boton o al cortar la sesion.
+7. **Ventanas elevadas.** Con el Administrador de tareas abierto (elevado): Windows bloquea la
    entrada hacia el, salvo que el host tambien corra como administrador. Anotar si en el log de
    `ezd-host run` aparece el aviso de UIPI y si el lapiz/tacto no tienen efecto ahi.
-7. Anotar el campo `note` del estado de entrada que muestra la tablet y cualquier linea
+8. Anotar el campo `note` del estado de entrada que muestra la tablet y cualquier linea
    `input:` del log (con `RUST_LOG=debug`).
 
 ## Que enviar de vuelta
