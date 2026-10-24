@@ -813,6 +813,19 @@ pub fn default_intel_modifiers() -> Vec<u64> {
     ]
 }
 
+/// Modifiers offered for NVIDIA, most preferred first: block-linear layouts of Turing and newer
+/// GPUs (`DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D`, generic page kind, block heights 32 down to 1
+/// GOBs, as modetest lists them for a GTX 1650), then linear. Older GPUs use other layouts; KWin
+/// then finds no common modifier and the stream falls back to shared memory.
+pub fn default_nvidia_modifiers() -> Vec<u64> {
+    let mut v: Vec<u64> = (0..=5u64)
+        .rev()
+        .map(|h| 0x0300_0000_0060_6010 | h)
+        .collect();
+    v.push(DRM_MOD_LINEAR);
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,6 +850,14 @@ mod tests {
             ..p
         };
         assert_eq!(enum_formats(&shm_only, true).len(), OFFERED_FORMATS.len());
+    }
+
+    #[test]
+    fn nvidia_modifiers_block_linear_first() {
+        let m = default_nvidia_modifiers();
+        assert_eq!(m.first(), Some(&0x0300_0000_0060_6015));
+        assert_eq!(m[5], 0x0300_0000_0060_6010);
+        assert_eq!(m.last(), Some(&DRM_MOD_LINEAR));
     }
 
     #[test]

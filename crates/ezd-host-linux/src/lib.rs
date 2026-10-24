@@ -13,6 +13,8 @@ mod cursor_meta;
 mod diag;
 mod encode;
 mod frame;
+#[cfg(test)]
+mod gbm_test;
 mod kscreen;
 mod pod;
 mod portal;

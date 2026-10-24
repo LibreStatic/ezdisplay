@@ -43,7 +43,8 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 
 - KDE Plasma: the ScreenCast portal source type `VIRTUAL` creates a KWin virtual output. The user picks its size in the portal dialog, default 1920×1080, and `restore_token` skips the dialog afterwards. KWin virtual outputs start at 60 Hz but support custom modes, so the host adds the stream-size mode (the tablet's native size, or the `--scale`d one) with `kscreen-doctor output.<name>.addCustomMode.<w>.<h>.<mHz>.reduced` and switches to it.
 - GNOME: portal `VIRTUAL` (Mutter `RecordVirtual`). wlroots: a headless output created over IPC, captured as a monitor.
-- Capture: PipeWire with DMA-BUF. Encoding uses VAAPI on Intel/AMD, and NVENC on NVIDIA through CUDA/EGL interop, with a copy fallback.
+- Capture: PipeWire with DMA-BUF. Encoding uses VAAPI on Intel/AMD. On NVIDIA, the DMA-BUF is imported into Vulkan, converted to NV12 with `scale_vulkan`, copied into CUDA memory on the same GPU and encoded with NVENC. Shared memory is the fallback.
+- The zero-copy paths need the encoder GPU to be the one KWin renders on. The host takes KWin's primary GPU from `KWIN_DRM_DEVICES` (its first entry) when it is set, and otherwise the GPU driving the internal panel.
 - Input (Phase 2): uinput devices mapped to the virtual output (KWin `org.kde.KWin.InputDevice.outputName`, GNOME settings, Sway/Hyprland config).
 
 ### Android

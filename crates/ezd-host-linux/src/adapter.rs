@@ -1,5 +1,5 @@
-//! GPU discovery through sysfs: render nodes, their vendor/driver, and which one drives the
-//! compositor's primary display (the default for zero-copy capture + encode).
+//! GPU discovery through sysfs: render nodes, their vendor/driver, and which one the compositor
+//! renders on (the default for zero-copy capture + encode).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,8 @@ pub struct RenderNode {
     pub driver: String,
     /// PCI bus id (`0000:00:02.0`).
     pub pci: String,
-    /// True if a connected panel/primary connector is driven by this GPU.
+    /// True if the compositor renders on this GPU: KWin's primary GPU when `KWIN_DRM_DEVICES`
+    /// names one, otherwise the GPU driving the internal panel or primary connector.
     pub compositor: bool,
 }
 
@@ -84,9 +85,28 @@ pub fn compositor_card(drm_root: &Path) -> Option<String> {
     conns.into_iter().next().map(|(_, _, card)| card)
 }
 
+/// The `cardN` that KWin uses as its primary GPU, from `KWIN_DRM_DEVICES`: a colon-separated list
+/// of `/dev/dri/cardN` paths whose first entry renders every output (the others get a copy).
+/// Symlinks such as `/dev/dri/by-path/...` are resolved.
+pub fn kwin_primary_card(kwin_drm_devices: &str) -> Option<String> {
+    let first = Path::new(kwin_drm_devices.split(':').next()?.trim());
+    let resolved = fs::canonicalize(first).unwrap_or_else(|_| first.to_path_buf());
+    let name = resolved.file_name()?.to_str()?;
+    (name.starts_with("card") && name.len() > 4 && name[4..].chars().all(|c| c.is_ascii_digit()))
+        .then(|| name.to_string())
+}
+
 /// Lists render nodes using `drm_root` (normally `/sys/class/drm`) and `dev_root` (`/dev/dri`).
-pub fn list_render_nodes_in(drm_root: &Path, dev_root: &Path) -> Vec<RenderNode> {
-    let comp_dev: Option<PathBuf> = compositor_card(drm_root)
+/// `kwin_drm_devices` is the value of `KWIN_DRM_DEVICES`, if set.
+pub fn list_render_nodes_in(
+    drm_root: &Path,
+    dev_root: &Path,
+    kwin_drm_devices: Option<&str>,
+) -> Vec<RenderNode> {
+    let comp_dev: Option<PathBuf> = kwin_drm_devices
+        .and_then(kwin_primary_card)
+        .filter(|c| drm_root.join(c).exists())
+        .or_else(|| compositor_card(drm_root))
         .and_then(|c| fs::canonicalize(drm_root.join(c).join("device")).ok());
     let mut nodes: Vec<RenderNode> = fs::read_dir(drm_root)
         .into_iter()
@@ -125,7 +145,11 @@ pub fn list_render_nodes_in(drm_root: &Path, dev_root: &Path) -> Vec<RenderNode>
 
 /// Lists render nodes of this machine.
 pub fn list_render_nodes() -> Vec<RenderNode> {
-    list_render_nodes_in(Path::new("/sys/class/drm"), Path::new("/dev/dri"))
+    list_render_nodes_in(
+        Path::new("/sys/class/drm"),
+        Path::new("/dev/dri"),
+        std::env::var("KWIN_DRM_DEVICES").ok().as_deref(),
+    )
 }
 
 /// Why an adapter was chosen.
@@ -286,7 +310,7 @@ mod tests {
             fs::write(drm.join(c).join("status"), format!("{st}\n")).unwrap();
         }
         assert_eq!(compositor_card(&drm).as_deref(), Some("card2"));
-        let nodes = list_render_nodes_in(&drm, Path::new("/dev/dri"));
+        let nodes = list_render_nodes_in(&drm, Path::new("/dev/dri"), None);
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].path, "/dev/dri/renderD128");
         assert_eq!(nodes[0].driver, "nvidia");
@@ -295,7 +319,32 @@ mod tests {
         assert_eq!(nodes[1].vendor_name(), "Intel");
         assert!(nodes[1].compositor);
         assert_eq!(nodes[1].pci, "0000:00:02.0");
+        // KWin composing on the NVIDIA GPU while the panel stays on the Intel one.
+        let nodes = list_render_nodes_in(
+            &drm,
+            Path::new("/dev/dri"),
+            Some("/dev/dri/card1:/dev/dri/card2"),
+        );
+        assert!(nodes[0].compositor && !nodes[1].compositor);
+        // A card that does not exist falls back to the panel.
+        let nodes = list_render_nodes_in(&drm, Path::new("/dev/dri"), Some("/dev/dri/card7"));
+        assert!(!nodes[0].compositor && nodes[1].compositor);
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn kwin_drm_devices_first_entry() {
+        assert_eq!(
+            kwin_primary_card("/dev/dri/card1:/dev/dri/card2").as_deref(),
+            Some("card1")
+        );
+        assert_eq!(
+            kwin_primary_card("/dev/dri/card2").as_deref(),
+            Some("card2")
+        );
+        assert_eq!(kwin_primary_card(""), None);
+        assert_eq!(kwin_primary_card("/dev/dri/renderD128"), None);
+        assert_eq!(kwin_primary_card("/dev/dri/card"), None);
     }
 
     #[test]

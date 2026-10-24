@@ -1,6 +1,7 @@
-//! Encode paths: VAAPI (DMA-BUF zero-copy or shared-memory upload), NVENC (system-memory BGR0) and
-//! libx264, built on raw FFmpeg (`ezd_ffmpeg::sys`) so that DRM-PRIME frames and filter graphs can
-//! be used. Option presets come from `ezd_ffmpeg::option_sets`.
+//! Encode paths: VAAPI (DMA-BUF zero-copy or shared-memory upload), NVENC (DMA-BUF through Vulkan
+//! and CUDA, or system-memory BGR0) and libx264, built on raw FFmpeg (`ezd_ffmpeg::sys`) so that
+//! DRM-PRIME frames and filter graphs can be used. Option presets come from
+//! `ezd_ffmpeg::option_sets`.
 
 use crate::adapter::RenderNode;
 use crate::frame::{DmaBuf, Frame, Pixels, ShmBuf, av_pix_fmt_name, drm_fourcc};
@@ -11,13 +12,14 @@ use ezd_host_core::now_us;
 use std::ffi::{CStr, CString, c_void};
 use std::os::fd::IntoRawFd;
 use std::ptr;
+use std::sync::{Arc, Mutex};
 
 /// The family of an encode path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// h264_vaapi on a render node.
     Vaapi,
-    /// h264_nvenc, system-memory input.
+    /// h264_nvenc: DMA-BUF imported through Vulkan and copied to CUDA, or system-memory input.
     Nvenc,
     /// libx264.
     X264,
@@ -97,6 +99,14 @@ impl BufRef {
         // SAFETY: self.0 is a valid buffer ref.
         unsafe { ff::av_buffer_ref(self.0) }
     }
+
+    fn try_clone(&self) -> Result<BufRef, String> {
+        let r = self.new_ref();
+        if r.is_null() {
+            return Err("av_buffer_ref failed".into());
+        }
+        Ok(BufRef(r))
+    }
 }
 
 impl Drop for BufRef {
@@ -154,10 +164,12 @@ struct GraphInput {
 }
 
 impl Graph {
+    /// Builds the chain `desc` (comma separated filters). `devices[i]` is the hardware device given
+    /// to the i-th filter; filters beyond the slice's end get none.
     fn build(
         input: &GraphInput,
         desc: &str,
-        hw_device: Option<*mut ff::AVBufferRef>,
+        devices: &[Option<*mut ff::AVBufferRef>],
     ) -> Result<Graph, String> {
         // SAFETY: standard libavfilter construction sequence; every pointer is checked and the
         // Graph's Drop frees the graph on any early return.
@@ -229,8 +241,8 @@ impl Graph {
                 if f.is_null() {
                     return Err(format!("cannot allocate filter {name}"));
                 }
-                if let Some(dev) = hw_device {
-                    (*f).hw_device_ctx = ff::av_buffer_ref(dev);
+                if let Some(Some(dev)) = devices.get(i) {
+                    (*f).hw_device_ctx = ff::av_buffer_ref(*dev);
                 }
                 let cargs = CString::new(args).map_err(|_| "bad filter args")?;
                 let r = ff::avfilter_init_str(
@@ -585,7 +597,9 @@ struct Conv {
     key: InputKey,
     graph: Option<Graph>,
     drm_frames: Option<BufRef>,
-    /// Keeps the VAAPI/DRM devices alive as long as the graph.
+    /// Maps DMA-BUFs into Vulkan before the graph (NVENC).
+    vk_import: Option<Arc<VkImport>>,
+    /// Keeps the hardware devices alive as long as the graph.
     _devices: Vec<BufRef>,
     _vaapi: Option<HwDevice>,
     /// Encoder input format and (even) size.
@@ -593,6 +607,8 @@ struct Conv {
     width: u32,
     height: u32,
     path: &'static str,
+    /// Mark input frames BT.709 full range (scale_vulkan rejects unspecified colorspaces).
+    tag_colorspace: bool,
 }
 
 /// A frame converted for the encoder.
@@ -723,7 +739,7 @@ impl Converter {
                     for color in [true, false] {
                         let desc =
                             format!("hwmap=derive_device=vaapi,{}", scale_vaapi(w, h, color));
-                        match Graph::build(&input, &desc, None) {
+                        match Graph::build(&input, &desc, &[]) {
                             Ok(x) => {
                                 g = Some(x);
                                 break;
@@ -751,7 +767,7 @@ impl Converter {
                             "scale=w={w}:h={h}:out_color_matrix=bt709:out_range=tv,format=nv12,hwupload"
                         ),
                     ] {
-                        match Graph::build(&input, &desc, Some(vaapi.as_ptr())) {
+                        match Graph::build(&input, &desc, &[Some(vaapi.as_ptr()); 3]) {
                             Ok(x) => {
                                 g = Some(x);
                                 break;
@@ -769,28 +785,63 @@ impl Converter {
                     key,
                     graph: Some(graph),
                     drm_frames,
+                    vk_import: None,
                     _devices: devices,
                     _vaapi: Some(vaapi),
                     pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_VAAPI,
                     width: w,
                     height: h,
                     path,
+                    tag_colorspace: false,
                 })
             }
             Kind::Nvenc => {
                 if dma {
-                    return Err("NVENC path takes shared-memory frames".into());
+                    // Buffers are mapped into Vulkan by the shared import (see VkImport), then
+                    // scale_vulkan converts them and hwupload copies them to CUDA.
+                    let import = VkImport::get(&node, in_fmt, frame.width, frame.height)?;
+                    let cu =
+                        derive_device(&import.vk, ff::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, None)?;
+                    let input = GraphInput {
+                        pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_VULKAN,
+                        width: frame.width,
+                        height: frame.height,
+                        fps_mhz: self.fps_mhz,
+                        hw_frames: Some(import.vk_frames.0),
+                    };
+                    let desc =
+                        format!("scale_vulkan=w={w}:h={h}:format=nv12:out_range=tv,hwupload");
+                    let graph = Graph::build(&input, &desc, &[Some(import.vk.0), Some(cu.0)])?;
+                    let (gw, gh) = graph.sink_size();
+                    if (gw, gh) != (w, h) {
+                        return Err(format!("filter output is {gw}x{gh}, expected {w}x{h}"));
+                    }
+                    return Ok(Conv {
+                        key,
+                        graph: Some(graph),
+                        drm_frames: Some(import.drm_frames.try_clone()?),
+                        vk_import: Some(import),
+                        _devices: vec![cu],
+                        _vaapi: None,
+                        pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_CUDA,
+                        width: w,
+                        height: h,
+                        path: "nvenc-dmabuf",
+                        tag_colorspace: true,
+                    });
                 }
                 Ok(Conv {
                     key,
                     graph: None,
                     drm_frames: None,
+                    vk_import: None,
                     _devices: Vec::new(),
                     _vaapi: None,
                     pix_fmt: in_fmt,
                     width: w,
                     height: h,
                     path: "nvenc-sysmem",
+                    tag_colorspace: false,
                 })
             }
             Kind::X264 => {
@@ -807,17 +858,19 @@ impl Converter {
                 let desc = format!(
                     "scale=w={w}:h={h}:flags=fast_bilinear:out_color_matrix=bt709:out_range=tv,format=yuv420p"
                 );
-                let graph = Graph::build(&input, &desc, None)?;
+                let graph = Graph::build(&input, &desc, &[])?;
                 Ok(Conv {
                     key,
                     graph: Some(graph),
                     drm_frames: None,
+                    vk_import: None,
                     _devices: Vec::new(),
                     _vaapi: None,
                     pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_YUV420P,
                     width: w,
                     height: h,
                     path: "x264-swscale",
+                    tag_colorspace: false,
                 })
             }
         }
@@ -867,6 +920,17 @@ impl Converter {
             Pixels::Dma(d) => {
                 let frames = a.drm_frames.as_ref().ok_or("no DRM frames context")?;
                 let (f, rel) = drm_frame(w, h, d, frames)?;
+                let f = match &a.vk_import {
+                    Some(i) => i.map(&f, ff::AV_HWFRAME_MAP_READ as i32)?,
+                    None => f,
+                };
+                if a.tag_colorspace {
+                    // SAFETY: the frame is exclusively ours.
+                    unsafe {
+                        (*f.0).colorspace = ff::AVColorSpace::AVCOL_SPC_BT709;
+                        (*f.0).color_range = ff::AVColorRange::AVCOL_RANGE_JPEG;
+                    }
+                }
                 (f, Some(rel))
             }
             Pixels::Shm(s) => (shm_frame(w, h, s)?, None),
@@ -885,7 +949,10 @@ impl Converter {
             None => av,
         };
         let t_sync = now_us();
-        let release = if sync {
+        // CUDA output: the Vulkan->CUDA copy waits on scale_vulkan's semaphore and NVENC runs on
+        // the same CUDA stream, but nothing here waits for them, so the GPU may still be reading
+        // the DMA-BUF. Keep the buffer until the packet is out, as without `sync`.
+        let release = if sync && a.pix_fmt != ff::AVPixelFormat::AV_PIX_FMT_CUDA {
             sync_vaapi(&out)?;
             // The GPU is done reading the capture buffer.
             drop(release);
@@ -1056,6 +1123,29 @@ impl Pipeline {
     }
 }
 
+/// Device of `kind` derived from `src`, with an optional `key=1` option (e.g. Vulkan's
+/// `disable_multiplane`).
+fn derive_device(
+    src: &BufRef,
+    kind: ff::AVHWDeviceType,
+    flag: Option<&CStr>,
+) -> Result<BufRef, String> {
+    // SAFETY: the options dictionary is freed on every path; the result is wrapped in BufRef.
+    unsafe {
+        let mut opts: *mut ff::AVDictionary = ptr::null_mut();
+        if let Some(k) = flag {
+            ff::av_dict_set(&mut opts, k.as_ptr(), c"1".as_ptr(), 0);
+        }
+        let mut dev = ptr::null_mut();
+        let r = ff::av_hwdevice_ctx_create_derived_opts(&mut dev, kind, src.0, opts, 0);
+        ff::av_dict_free(&mut opts);
+        if r < 0 {
+            return Err(averr(&format!("derive {kind:?} device"), r));
+        }
+        Ok(BufRef(dev))
+    }
+}
+
 /// DRM device and a `DRM_PRIME` frames context for imported buffers.
 fn drm_context(
     node: &str,
@@ -1063,8 +1153,14 @@ fn drm_context(
     w: u32,
     h: u32,
 ) -> Result<(BufRef, BufRef), String> {
+    let dev = drm_device(node)?;
+    let frames = drm_frames(&dev, pix_fmt, w, h)?;
+    Ok((dev, frames))
+}
+
+fn drm_device(node: &str) -> Result<BufRef, String> {
     let cnode = CString::new(node).map_err(|_| "bad device path")?;
-    // SAFETY: standard hwdevice/hwframes construction; refs are wrapped in BufRef immediately.
+    // SAFETY: standard hwdevice construction; the ref is wrapped in BufRef immediately.
     unsafe {
         let mut dev = ptr::null_mut();
         let r = ff::av_hwdevice_ctx_create(
@@ -1077,7 +1173,13 @@ fn drm_context(
         if r < 0 {
             return Err(averr(&format!("create DRM device {node}"), r));
         }
-        let dev = BufRef(dev);
+        Ok(BufRef(dev))
+    }
+}
+
+fn drm_frames(dev: &BufRef, pix_fmt: ff::AVPixelFormat, w: u32, h: u32) -> Result<BufRef, String> {
+    // SAFETY: standard hwframes construction; the ref is wrapped in BufRef immediately.
+    unsafe {
         let frames = ff::av_hwframe_ctx_alloc(dev.0);
         if frames.is_null() {
             return Err("av_hwframe_ctx_alloc failed".into());
@@ -1094,7 +1196,120 @@ fn drm_context(
             frames.0 = ptr::null_mut();
             return Err(averr("av_hwframe_ctx_init(DRM)", r));
         }
-        Ok((dev, frames))
+        Ok(frames)
+    }
+}
+
+/// Imports DMA-BUFs of one node, format and size into Vulkan. Shared by every converter in the
+/// process and never freed.
+///
+/// FFmpeg (n8.1, and master as of October 2026) never frees a Vulkan frames context that a DRM
+/// frame was mapped into. `vulkan_map_from_drm_frame_sync` leaves the mapped frame as a dependency
+/// of a command buffer in the context's own pool, that pool is only released with the context, and
+/// the frame references the context. The Vulkan device goes with it: about 40 fds and 65 MB per
+/// converter on NVIDIA, and vkCreateDevice crashed after about 16. One shared context per format
+/// bounds that to the formats a process sees. Until their command buffers are reused, the last few
+/// mapped buffers stay referenced.
+struct VkImport {
+    /// Vulkan device derived from the node's DRM device, with single-plane images.
+    vk: BufRef,
+    /// `DRM_PRIME` frames context that captured buffers are described with.
+    drm_frames: BufRef,
+    /// Vulkan frames context the buffers are mapped into.
+    vk_frames: BufRef,
+    /// The command buffers of `vk_frames` are shared by all its users.
+    map_lock: Mutex<()>,
+}
+
+// SAFETY: the references are only cloned (atomic refcounts) and `vk_frames` is only mapped into
+// under `map_lock`; FFmpeg's Vulkan device locks its queues itself.
+unsafe impl Sync for VkImport {}
+
+impl VkImport {
+    /// The import for frames of `pix_fmt` at `w`x`h` on `node`, created on first use. All imports
+    /// of a node share one Vulkan device.
+    fn get(
+        node: &str,
+        pix_fmt: ff::AVPixelFormat,
+        w: u32,
+        h: u32,
+    ) -> Result<Arc<VkImport>, String> {
+        type Key = (String, i32, u32, u32);
+        struct Cache {
+            /// Node, its DRM device, the Vulkan device derived from it.
+            devices: Vec<(String, BufRef, BufRef)>,
+            imports: Vec<(Key, Arc<VkImport>)>,
+        }
+        static CACHE: Mutex<Cache> = Mutex::new(Cache {
+            devices: Vec::new(),
+            imports: Vec::new(),
+        });
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (node.to_string(), pix_fmt as i32, w, h);
+        if let Some((_, i)) = cache.imports.iter().find(|(k, _)| *k == key) {
+            return Ok(i.clone());
+        }
+        if !cache.devices.iter().any(|(n, ..)| n == node) {
+            let dev = drm_device(node)?;
+            let vk = derive_device(
+                &dev,
+                ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN,
+                Some(c"disable_multiplane"),
+            )?;
+            cache.devices.push((node.to_string(), dev, vk));
+        }
+        let (_, dev, vk) = cache
+            .devices
+            .iter()
+            .find(|(n, ..)| n == node)
+            .expect("added above");
+        let drm = drm_frames(dev, pix_fmt, w, h)?;
+        let mut vk_frames = ptr::null_mut();
+        // SAFETY: valid device and frames refs; the result is wrapped in BufRef.
+        let r = unsafe {
+            ff::av_hwframe_ctx_create_derived(
+                &mut vk_frames,
+                ff::AVPixelFormat::AV_PIX_FMT_VULKAN,
+                vk.0,
+                drm.0,
+                ff::AV_HWFRAME_MAP_READ as i32 | ff::AV_HWFRAME_MAP_WRITE as i32,
+            )
+        };
+        if r < 0 {
+            return Err(averr("derive Vulkan frames", r));
+        }
+        let import = Arc::new(VkImport {
+            vk: vk.try_clone()?,
+            drm_frames: drm,
+            vk_frames: BufRef(vk_frames),
+            map_lock: Mutex::new(()),
+        });
+        cache.imports.push((key, import.clone()));
+        Ok(import)
+    }
+
+    /// Maps `src`, a frame of `drm_frames`, onto a Vulkan image with `flags` (`AV_HWFRAME_MAP_*`)
+    /// and copies its properties. The result keeps `src`'s buffer referenced.
+    fn map(&self, src: &OwnedFrame, flags: i32) -> Result<OwnedFrame, String> {
+        let dst = OwnedFrame::alloc()?;
+        let _guard = self.map_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: `dst` is a fresh frame we own, `src` a valid DRM_PRIME frame of `drm_frames`.
+        unsafe {
+            (*dst.0).format = ff::AVPixelFormat::AV_PIX_FMT_VULKAN as i32;
+            (*dst.0).hw_frames_ctx = self.vk_frames.new_ref();
+            if (*dst.0).hw_frames_ctx.is_null() {
+                return Err("av_buffer_ref failed".into());
+            }
+            let r = ff::av_hwframe_map(dst.0, src.0, flags);
+            if r < 0 {
+                return Err(averr("map DMA-BUF into Vulkan", r));
+            }
+            let r = ff::av_frame_copy_props(dst.0, src.0);
+            if r < 0 {
+                return Err(averr("av_frame_copy_props", r));
+            }
+        }
+        Ok(dst)
     }
 }
 
@@ -1259,8 +1474,10 @@ pub fn probe_plan(plan: &Plan) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::adapter::RenderNode;
+    use crate::gbm_test::{Bo, DRM_FORMAT_MOD_LINEAR, Gbm};
     use ezd_ffmpeg::Decoder;
     use ezd_proto::Codec;
+    use std::os::fd::OwnedFd;
 
     fn node(path: &str, vendor: u16) -> RenderNode {
         RenderNode {
@@ -1463,6 +1680,243 @@ mod tests {
         assert!(p.release.is_none());
         let out = std::thread::spawn(move || {
             let mut enc = Encoder::new("h264_vaapi", 60_000, 8_000);
+            enc.encode(p, false).expect("encode").expect("packet")
+        })
+        .join()
+        .unwrap();
+        assert!(out.keyframe && out.codec_config.is_some());
+        check_colors(&decode_first(&out));
+    }
+
+    fn fill_quadrants(base: *mut u8, stride: usize, w: u32, h: u32) {
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let q = (y >= h as usize / 2) as usize * 2 + (x >= w as usize / 2) as usize;
+                let (r, g, b) = Q[q];
+                // SAFETY: callers pass a mapping of at least `stride * h` bytes.
+                unsafe {
+                    base.add(y * stride + x * 4)
+                        .copy_from_nonoverlapping([b, g, r, 0].as_ptr(), 4)
+                };
+            }
+        }
+    }
+
+    /// Fills a (possibly block-linear) DMA-BUF through a Vulkan image mapped onto it.
+    fn fill_via_vulkan(
+        node: &str,
+        fd: &OwnedFd,
+        w: u32,
+        h: u32,
+        bo: &Bo<'_>,
+    ) -> Result<(), String> {
+        use std::os::fd::AsRawFd;
+        let import = VkImport::get(node, ff::AVPixelFormat::AV_PIX_FMT_BGR0, w, h)?;
+        // SAFETY: lseek on a valid fd; dup'd fd is moved into the DRM frame below.
+        let (size, dup) = unsafe {
+            (
+                libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_END),
+                libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0),
+            )
+        };
+        if size <= 0 || dup < 0 {
+            return Err("cannot size/dup the dma-buf".into());
+        }
+        let dma = DmaBuf {
+            spa_format: crate::frame::spa_fmt::BGRX,
+            modifier: bo.modifier(),
+            planes: vec![crate::frame::Plane {
+                // SAFETY: fresh fd from fcntl.
+                fd: unsafe { std::os::fd::FromRawFd::from_raw_fd(dup) },
+                size: size as u64,
+                offset: bo.offset(),
+                pitch: bo.stride(),
+            }],
+            release: crate::frame::Release(None),
+        };
+        let (df, _rel) = drm_frame(w, h, dma, &import.drm_frames)?;
+        let vf = import.map(&df, ff::AV_HWFRAME_MAP_WRITE as i32)?;
+        // SAFETY: a software upload into the mapped frame and a download back; every frame is owned
+        // by a wrapper that frees it.
+        unsafe {
+            let sw = OwnedFrame::alloc()?;
+            (*sw.0).format = ff::AVPixelFormat::AV_PIX_FMT_BGR0 as i32;
+            (*sw.0).width = w as i32;
+            (*sw.0).height = h as i32;
+            let r = ff::av_frame_get_buffer(sw.0, 0);
+            if r < 0 {
+                return Err(averr("av_frame_get_buffer", r));
+            }
+            fill_quadrants((*sw.0).data[0], (*sw.0).linesize[0] as usize, w, h);
+            let r = ff::av_hwframe_transfer_data(vf.0, sw.0, 0);
+            if r < 0 {
+                return Err(averr("upload into mapped DMA-BUF", r));
+            }
+            // The upload is only submitted. Reading it back waits for it, so the pipeline's
+            // mapping, which knows nothing of this one's semaphores, sees the pixels.
+            let back = OwnedFrame::alloc()?;
+            (*back.0).format = ff::AVPixelFormat::AV_PIX_FMT_BGR0 as i32;
+            let r = ff::av_hwframe_transfer_data(back.0, vf.0, 0);
+            if r < 0 {
+                return Err(averr("read back mapped DMA-BUF", r));
+            }
+            let px = (*back.0).data[0]
+                .add((h as usize / 4) * (*back.0).linesize[0] as usize + w as usize);
+            let (r, g, b) = Q[0];
+            if std::slice::from_raw_parts(px, 3) != [b, g, r] {
+                return Err("read-back of the Vulkan fill differs".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// NVIDIA render node, GBM on it, and the FFmpeg pieces the path needs; `Err` is a skip reason.
+    fn nvenc_env() -> Result<(String, Gbm), String> {
+        let node = crate::adapter::list_render_nodes()
+            .into_iter()
+            .find(|n| n.is_nvidia())
+            .ok_or("no NVIDIA render node")?;
+        // SAFETY: lookups by static names.
+        unsafe {
+            if ff::avcodec_find_encoder_by_name(c"h264_nvenc".as_ptr()).is_null() {
+                return Err("FFmpeg has no h264_nvenc".into());
+            }
+            if ff::avfilter_get_by_name(c"scale_vulkan".as_ptr()).is_null() {
+                return Err("FFmpeg has no scale_vulkan".into());
+            }
+        }
+        let gbm = Gbm::open(&node.path)?;
+        Ok((node.path, gbm))
+    }
+
+    const NV_MODS: std::ops::RangeInclusive<u64> = 0x0300_0000_0060_6010..=0x0300_0000_0060_6015;
+    const NV_W: u32 = 1280;
+    const NV_H: u32 = 720;
+
+    /// A GBM buffer filled with `Q`, as a captured frame (the bo must outlive the frame's use).
+    fn nvenc_frame(node: &str, bo: &Bo<'_>, vulkan_fill: bool) -> Result<Frame, String> {
+        use std::os::fd::AsRawFd;
+        let fd = bo.fd()?;
+        if vulkan_fill {
+            fill_via_vulkan(node, &fd, NV_W, NV_H, bo)?;
+        } else {
+            bo.write_mapped(NV_W, NV_H, |p, stride| {
+                fill_quadrants(p, stride, NV_W, NV_H)
+            })?;
+        }
+        // SAFETY: lseek on a valid fd.
+        let size = unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_END) };
+        if size <= 0 {
+            return Err("cannot size the dma-buf".into());
+        }
+        Ok(Frame {
+            width: NV_W,
+            height: NV_H,
+            capture_us: now_us(),
+            seq: 0,
+            pixels: Pixels::Dma(DmaBuf {
+                spa_format: crate::frame::spa_fmt::BGRX,
+                modifier: bo.modifier(),
+                planes: vec![crate::frame::Plane {
+                    fd,
+                    size: size as u64,
+                    offset: bo.offset(),
+                    pitch: bo.stride(),
+                }],
+                release: crate::frame::Release(None),
+            }),
+        })
+    }
+
+    #[test]
+    fn vulkan_import_is_shared_per_format() {
+        let (node, _gbm) = match nvenc_env() {
+            Ok(x) => x,
+            Err(e) => return eprintln!("skip: {e}"),
+        };
+        let bgr0 = ff::AVPixelFormat::AV_PIX_FMT_BGR0;
+        let a = VkImport::get(&node, bgr0, 640, 360).expect("import");
+        let b = VkImport::get(&node, bgr0, 640, 360).expect("import");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "FFmpeg cannot free an import, so it must be reused"
+        );
+        let c = VkImport::get(&node, bgr0, 320, 180).expect("import");
+        assert!(!Arc::ptr_eq(&a, &c));
+        // SAFETY: valid buffer refs.
+        assert_eq!(
+            unsafe { (*a.vk.0).data },
+            unsafe { (*c.vk.0).data },
+            "one device per node"
+        );
+    }
+
+    fn nvenc_plan(node: String) -> Plan {
+        Plan {
+            name: "h264_nvenc",
+            kind: Kind::Nvenc,
+            node: Some(node),
+        }
+    }
+
+    fn nvenc_dmabuf_roundtrip(mods: &[u64], vulkan_fill: bool, linear: bool) {
+        let (node, gbm) = match nvenc_env() {
+            Ok(x) => x,
+            Err(e) => return eprintln!("skip: {e}"),
+        };
+        let bo = match gbm.create_bo(NV_W, NV_H, mods) {
+            Ok(b) => b,
+            Err(e) => return eprintln!("skip: {e} (GBM backend {})", gbm.backend()),
+        };
+        eprintln!(
+            "GBM backend {}, modifier {:#x}, stride {}",
+            gbm.backend(),
+            bo.modifier(),
+            bo.stride()
+        );
+        assert_eq!(bo.modifier() == DRM_FORMAT_MOD_LINEAR, linear);
+        let frame = nvenc_frame(&node, &bo, vulkan_fill).expect("fill buffer");
+        let mut p = Pipeline::new(nvenc_plan(node), 60_000, 8_000);
+        let out = p
+            .encode(frame, false)
+            .expect("dma-buf import + encode")
+            .expect("packet");
+        assert_eq!(p.path(), Some("nvenc-dmabuf"));
+        assert!(out.keyframe && out.codec_config.is_some());
+        check_colors(&decode_first(&out));
+    }
+
+    #[test]
+    fn nvenc_dmabuf_linear_if_available() {
+        nvenc_dmabuf_roundtrip(&[DRM_FORMAT_MOD_LINEAR], false, true);
+    }
+
+    #[test]
+    fn nvenc_dmabuf_block_linear_if_available() {
+        nvenc_dmabuf_roundtrip(&NV_MODS.collect::<Vec<_>>(), true, false);
+    }
+
+    #[test]
+    fn nvenc_dmabuf_synced_conversion_encodes_on_another_thread() {
+        let (node, gbm) = match nvenc_env() {
+            Ok(x) => x,
+            Err(e) => return eprintln!("skip: {e}"),
+        };
+        let bo = match gbm.create_bo(NV_W, NV_H, &[DRM_FORMAT_MOD_LINEAR]) {
+            Ok(b) => b,
+            Err(e) => return eprintln!("skip: {e}"),
+        };
+        let frame = nvenc_frame(&node, &bo, false).expect("fill buffer");
+        let mut conv = Converter::new(nvenc_plan(node), 60_000);
+        let p = conv
+            .convert(frame, true)
+            .expect("dma-buf import + convert")
+            .expect("converted frame");
+        assert_eq!(conv.path(), Some("nvenc-dmabuf"));
+        // CUDA output: the capture buffer stays held until the packet is out.
+        assert!(p.release.is_some());
+        let out = std::thread::spawn(move || {
+            let mut enc = Encoder::new("h264_nvenc", 60_000, 8_000);
             enc.encode(p, false).expect("encode").expect("packet")
         })
         .join()

@@ -309,6 +309,37 @@ Next options:
 - A higher GPU priority for the conversion needs `CAP_SYS_NICE`. It would also take render time
   from KWin, which is already the limit at 60 Hz.
 
+### Zero-copy NVENC
+
+A test program allocated buffers on the GTX 1650 with GBM (the `nvidia-drm` backend), linear and
+block-linear (`0x0300000000606014`), and ran them through FFmpeg 8.1:
+
+1. A `DRM_PRIME` frame on `/dev/dri/renderD128`.
+2. `hwmap` to a Vulkan device derived from that DRM device with `disable_multiplane=1`.
+3. `scale_vulkan=format=nv12:out_range=tv`.
+4. `hwupload` to a CUDA device derived from the Vulkan one, which is a copy inside the GPU.
+5. `h264_nvenc`.
+
+Both layouts decoded to the exact colors with BT.709 limited range. At 2960x1848 the conversion
+took 1.5-2 ms and the encode 1.7-2 ms per frame; on the UHD 630 they take 2-17 ms and 7-9 ms.
+
+- `scale_vulkan` needs the colorspace set on the input frame. Without it, it fails with
+  "Unsupported colorspace".
+- Mapping Vulkan frames to CUDA with `hwmap` fails with `ENOSYS`, so the chain uploads instead.
+- The `ffmpeg` command line cannot pass `disable_multiplane` to a Vulkan device derived from a
+  DRM device, so the chain only works through the API.
+- GBM on NVIDIA refuses the linear modifier through `gbm_bo_create_with_modifiers2` (plain
+  `gbm_bo_create` with `GBM_BO_USE_LINEAR` works) and cannot map block-linear buffers.
+- FFmpeg never frees a Vulkan frames context that a DRM frame was mapped into, with `hwmap` or
+  `av_hwframe_map`. The mapping leaves the mapped frame in a command buffer of the context's own
+  pool, and the frame references the context. The context's Vulkan device leaks with it: about
+  43 fds and 65 MB per filter graph on NVIDIA, 13 fds and 14 MB on Intel, and vkCreateDevice
+  crashed after about 16. The same code is in FFmpeg master. The host maps into one Vulkan
+  frames context per buffer format and size, shared by the whole process. Opening a converter
+  again no longer leaks, and the last 8 mapped buffers (one per compute queue) stay referenced
+  until later mappings reuse their command buffers. The leaked devices also made the tests flaky:
+  a buffer filled through Vulkan sometimes read back as zeros.
+
 ## Still to measure
 
 - The table runs above with a USB 3 cable. A drag over USB 3 did not change the link transfer.

@@ -5,7 +5,7 @@ use crate::ahead::{ConvertAhead, Item, Start};
 use crate::encode::{Converter, Encoder, Kind, Pipeline, Plan, plan_encoders, probe_plan};
 use crate::kscreen;
 use crate::portal::{PortalCapture, SourceKind};
-use crate::pw::{PwCapture, PwParams, Target, default_intel_modifiers};
+use crate::pw::{PwCapture, PwParams, Target, default_intel_modifiers, default_nvidia_modifiers};
 use ezd_host_core::{CursorSink, EncodedFrame, PlatformOptions, SourceError, VideoSource};
 use ezd_proto::{Codec, EncoderCaps, StreamConfig};
 use std::collections::HashMap;
@@ -129,8 +129,13 @@ impl KdeVirtualSource {
         }
         let node = self.node.as_ref()?;
         // Zero-copy only works when the encoder GPU also renders the compositor output.
-        (plan.kind == Kind::Vaapi && (node.compositor || self.output_name.is_none()))
-            .then(default_intel_modifiers)
+        match plan.kind {
+            Kind::Vaapi => {
+                (node.compositor || self.output_name.is_none()).then(default_intel_modifiers)
+            }
+            Kind::Nvenc => node.compositor.then(default_nvidia_modifiers),
+            Kind::X264 => None,
+        }
     }
 }
 
