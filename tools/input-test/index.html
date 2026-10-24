@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ezdisplay input test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; overflow: hidden; user-select: none; }
+  #pad { position: fixed; inset: 0; touch-action: none; }
+  #info { position: fixed; left: 1em; top: 1em; font-size: 14px; line-height: 1.5; pointer-events: none; white-space: pre; }
+  #scroll { position: fixed; right: 1em; top: 1em; bottom: 3em; width: 22em; overflow: auto; background: #1a1a1a; border: 1px solid #333; touch-action: auto; }
+  #scroll p { margin: 0; padding: 0.7em 1em; border-bottom: 1px solid #262626; }
+  #help { position: fixed; left: 1em; bottom: 1em; font-size: 13px; color: #777; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="pad"></canvas>
+<div id="info"></div>
+<div id="scroll"></div>
+<div id="help">Draw anywhere · the right panel scrolls natively · C: clear · L: logging on/off</div>
+<script>
+"use strict";
+const pad = document.getElementById("pad");
+const ctx = pad.getContext("2d");
+const info = document.getElementById("info");
+const scrollBox = document.getElementById("scroll");
+for (let i = 1; i <= 200; i++) {
+  const p = document.createElement("p");
+  p.textContent = `Row ${i}`;
+  scrollBox.appendChild(p);
+}
+
+// Logging: events are batched and posted to serve.py, which appends them to a JSONL file. Opened
+// from file:// (or without the server) the page still works, it just logs nothing.
+let logOn = location.protocol.startsWith("http");
+let queue = [];
+let logErrors = 0;
+function log(rec) {
+  if (logOn) queue.push(rec);
+}
+setInterval(() => {
+  if (!queue.length) return;
+  const body = queue.map(r => JSON.stringify(r)).join("\n");
+  queue = [];
+  fetch("/log", { method: "POST", body, keepalive: true }).catch(() => logErrors++);
+}, 200);
+
+function wall(ts) {
+  return performance.timeOrigin + ts;
+}
+function geometry() {
+  log({
+    type: "geometry", t: wall(performance.now()),
+    screenX: window.screenX, screenY: window.screenY,
+    innerWidth, innerHeight, dpr: devicePixelRatio,
+    screenW: screen.width, screenH: screen.height,
+    availLeft: screen.availLeft, availTop: screen.availTop,
+    ua: navigator.userAgent,
+  });
+}
+
+function resize() {
+  pad.width = Math.round(innerWidth * devicePixelRatio);
+  pad.height = Math.round(innerHeight * devicePixelRatio);
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ctx.lineCap = "round";
+  geometry();
+}
+addEventListener("resize", resize);
+resize();
+
+const COLORS = ["#4cf", "#f84", "#8f4", "#f4c", "#ff4", "#4fc", "#c8f", "#f44", "#48f", "#fff"];
+const active = new Map(); // pointerId -> { x, y, kind }
+let maxTouches = 0;
+const last = {};          // pointerType -> last record
+const rate = {};          // pointerType -> { n, since, perSec }
+let wheel = { n: 0, dx: 0, dy: 0, ctrl: 0 };
+let menus = 0;
+
+function record(e, extra) {
+  const rec = {
+    type: e.type, t: wall(e.timeStamp), lag: +(performance.now() - e.timeStamp).toFixed(2),
+    id: e.pointerId, kind: e.pointerType, primary: e.isPrimary,
+    x: +e.clientX.toFixed(2), y: +e.clientY.toFixed(2),
+    nx: +(e.clientX / innerWidth).toFixed(5), ny: +(e.clientY / innerHeight).toFixed(5),
+    sx: e.screenX, sy: e.screenY,
+    pressure: +(e.pressure ?? 0).toFixed(4), tiltX: e.tiltX, tiltY: e.tiltY, twist: e.twist,
+    w: e.width, h: e.height, button: e.button, buttons: e.buttons,
+    ctrl: e.ctrlKey, shift: e.shiftKey,
+    ...extra,
+  };
+  log(rec);
+  return rec;
+}
+
+function count(kind) {
+  const r = rate[kind] ??= { n: 0, since: performance.now(), perSec: 0 };
+  r.n++;
+  const dt = performance.now() - r.since;
+  if (dt >= 1000) {
+    r.perSec = Math.round(r.n * 1000 / dt);
+    r.n = 0;
+    r.since = performance.now();
+  }
+}
+
+function strokeTo(p, e) {
+  const color = p.kind === "touch" ? COLORS[active.size % COLORS.length] : (e.buttons & 32 ? "#f44" : "#4cf");
+  ctx.strokeStyle = p.color ?? color;
+  ctx.lineWidth = p.kind === "touch" ? 6 : 1 + 24 * (e.pressure ?? 0);
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y);
+  ctx.lineTo(e.clientX, e.clientY);
+  ctx.stroke();
+  p.x = e.clientX;
+  p.y = e.clientY;
+}
+
+pad.addEventListener("pointerdown", e => {
+  try { pad.setPointerCapture(e.pointerId); } catch { /* synthetic or already released pointer */ }
+  const p = { x: e.clientX, y: e.clientY, kind: e.pointerType };
+  if (e.pointerType === "touch") p.color = COLORS[(e.pointerId >>> 0) % COLORS.length];
+  active.set(e.pointerId, p);
+  if (e.pointerType === "touch") {
+    const touches = [...active.values()].filter(q => q.kind === "touch").length;
+    maxTouches = Math.max(maxTouches, touches);
+  }
+  last[e.pointerType] = record(e, { touches: active.size });
+  count(e.pointerType);
+});
+
+pad.addEventListener("pointermove", e => {
+  const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  const samples = events.length ? events : [e];
+  const p = active.get(e.pointerId);
+  for (const s of samples) {
+    if (p && s.buttons) strokeTo(p, s);
+    else if (p) { p.x = s.clientX; p.y = s.clientY; }
+  }
+  last[e.pointerType] = record(e, { coalesced: samples.length });
+  count(e.pointerType);
+});
+
+for (const type of ["pointerup", "pointercancel"]) {
+  pad.addEventListener(type, e => {
+    active.delete(e.pointerId);
+    last[e.pointerType] = record(e);
+  });
+}
+for (const type of ["pointerover", "pointerout"]) {
+  pad.addEventListener(type, e => { last[e.pointerType] = record(e); });
+}
+
+pad.addEventListener("wheel", e => {
+  e.preventDefault();
+  wheel.n++;
+  wheel.dx += e.deltaX;
+  wheel.dy += e.deltaY;
+  if (e.ctrlKey) wheel.ctrl++;
+  log({
+    type: "wheel", t: wall(e.timeStamp), x: e.clientX, y: e.clientY,
+    nx: +(e.clientX / innerWidth).toFixed(5), ny: +(e.clientY / innerHeight).toFixed(5),
+    dx: e.deltaX, dy: e.deltaY, mode: e.deltaMode, ctrl: e.ctrlKey, shift: e.shiftKey,
+  });
+}, { passive: false });
+
+pad.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  menus++;
+  log({ type: "contextmenu", t: wall(e.timeStamp), x: e.clientX, y: e.clientY, button: e.button });
+});
+pad.addEventListener("auxclick", e => {
+  log({ type: "auxclick", t: wall(e.timeStamp), x: e.clientX, y: e.clientY, button: e.button });
+});
+scrollBox.addEventListener("scroll", () => {
+  log({ type: "scroll", t: wall(performance.now()), top: Math.round(scrollBox.scrollTop) });
+}, { passive: true });
+
+addEventListener("keydown", e => {
+  if (e.key === "c" || e.key === "C") ctx.clearRect(0, 0, innerWidth, innerHeight);
+  if ((e.key === "l" || e.key === "L") && location.protocol.startsWith("http")) logOn = !logOn;
+});
+
+function fmt(r) {
+  if (!r) return "-";
+  return `${r.type.padEnd(13)} (${r.x.toFixed(0)}, ${r.y.toFixed(0)})  p=${r.pressure.toFixed(3)}  ` +
+    `tilt=${r.tiltX},${r.tiltY}  twist=${r.twist}  buttons=${r.buttons}  lag=${r.lag}ms`;
+}
+function render() {
+  const touches = [...active.values()].filter(q => q.kind === "touch").length;
+  info.textContent = [
+    `log: ${logOn ? "on" : "off"}${logErrors ? ` (${logErrors} failed posts)` : ""}` +
+      `   window ${innerWidth}x${innerHeight} @${devicePixelRatio} at (${window.screenX}, ${window.screenY})`,
+    `pen    ${fmt(last.pen)}  ${rate.pen?.perSec ?? 0}/s`,
+    `touch  ${fmt(last.touch)}  ${rate.touch?.perSec ?? 0}/s`,
+    `mouse  ${fmt(last.mouse)}  ${rate.mouse?.perSec ?? 0}/s`,
+    `touches now ${touches}, max ${maxTouches}`,
+    `wheel  ${wheel.n} events, dx ${wheel.dx.toFixed(0)}, dy ${wheel.dy.toFixed(0)}, with ctrl ${wheel.ctrl}`,
+    `context menus ${menus}`,
+  ].join("\n");
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

@@ -28,6 +28,7 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 | `crates/ezd-host-windows` | Windows backends (Phase 1d): Virtual Display Driver, DXGI adapter policy, Desktop Duplication, D3D11 encoders. |
 | `crates/ezd-android` + `android/` | Android client: Kotlin UI, Rust native lib with AMediaCodec decode to a SurfaceView. |
 | `tools/latency` | Web page for glass-to-glass measurements with a slow-motion camera. |
+| `tools/input-test` | Web page and logger to check injected pen, touch, buttons and scroll as text. |
 
 ## Platform notes
 
