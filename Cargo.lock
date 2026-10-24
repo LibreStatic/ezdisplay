@@ -589,10 +589,9 @@ dependencies = [
  "clap",
  "ezd-ffmpeg",
  "ezd-host-core",
- "ezd-host-linux",
+ "ezd-host-service",
  "ezd-host-windows",
  "ezd-link",
- "ezd-proto",
  "i18n-embed",
  "i18n-embed-fl",
  "rust-embed",
@@ -629,6 +628,23 @@ dependencies = [
  "tokio",
  "tracing",
  "zbus",
+]
+
+[[package]]
+name = "ezd-host-service"
+version = "0.1.0"
+dependencies = [
+ "ezd-ffmpeg",
+ "ezd-host-core",
+ "ezd-host-linux",
+ "ezd-host-windows",
+ "ezd-link",
+ "ezd-proto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

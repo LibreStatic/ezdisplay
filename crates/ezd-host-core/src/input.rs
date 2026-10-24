@@ -122,6 +122,26 @@ pub(crate) struct InputStats {
     pub latency_p95_us: Option<u32>,
 }
 
+/// Input latency of the current live window; the input thread adds, the session takes.
+#[derive(Default)]
+pub(crate) struct LiveLatency(std::sync::Mutex<Option<Hist>>);
+
+impl LiveLatency {
+    fn add(&self, us: u64) {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        g.get_or_insert_with(Hist::new).add(us);
+    }
+
+    /// `(p50, p95)` of the samples since the last call; restarts the window.
+    pub(crate) fn take(&self) -> (Option<u32>, Option<u32>) {
+        let h = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        match h {
+            Some(h) => (h.percentile(50), h.percentile(95)),
+            None => (None, None),
+        }
+    }
+}
+
 const BUCKET_US: u32 = 250;
 const BUCKETS: usize = 1000; // 0..250 ms, plus one overflow bucket
 
@@ -290,6 +310,7 @@ pub(crate) struct InputContext {
     pub stream: StreamConfig,
     pub pen_mode: PenMode,
     pub offset: Arc<SharedOffset>,
+    pub live_latency: Arc<LiveLatency>,
     pub status_tx: tokio::sync::mpsc::UnboundedSender<InputStatus>,
 }
 
@@ -367,6 +388,7 @@ pub(crate) fn input_thread(rx: Receiver<InputCmd>, ctx: InputContext) -> InputSt
             let us = (now_us() as i64 - (t as i64 - off)).max(0) as u64;
             st.total.add(us);
             st.window.add(us);
+            ctx.live_latency.add(us);
         }
     };
     for m in compact_backlog(backlog) {

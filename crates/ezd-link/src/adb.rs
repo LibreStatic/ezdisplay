@@ -139,6 +139,7 @@ pub fn adb_candidates(
     sdk_root: Option<&OsString>,
     home: Option<&OsString>,
     local_app_data: Option<&OsString>,
+    exe_dir: Option<&Path>,
 ) -> Vec<PathBuf> {
     let exe = if cfg!(windows) { "adb.exe" } else { "adb" };
     let mut v = Vec::new();
@@ -166,23 +167,46 @@ pub fn adb_candidates(
                 .join(exe),
         );
     }
+    // Bundled copy (installer layout), last so an SDK adb server of another version is not
+    // fought over.
+    if let Some(d) = exe_dir {
+        v.push(d.join("adb").join(exe));
+    }
     v
 }
 
-/// Finds adb in `PATH`, `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, `~/Android/Sdk/platform-tools`
-/// and `%LOCALAPPDATA%\Android\Sdk\platform-tools`.
+/// Finds adb in `PATH`, `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, `~/Android/Sdk/platform-tools`,
+/// `%LOCALAPPDATA%\Android\Sdk\platform-tools` and, last, `adb/adb(.exe)` next to the running
+/// executable.
 pub fn find_adb() -> Option<PathBuf> {
     let var = |k: &str| std::env::var_os(k);
     let home = var("HOME").or_else(|| var("USERPROFILE"));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
     adb_candidates(
         var("PATH").as_ref(),
         var("ANDROID_HOME").as_ref(),
         var("ANDROID_SDK_ROOT").as_ref(),
         home.as_ref(),
         var("LOCALAPPDATA").as_ref(),
+        exe_dir.as_deref(),
     )
     .into_iter()
     .find(|p| p.is_file())
+}
+
+/// Every adb process is spawned through here: on Windows it must not flash a console window when
+/// the caller is a GUI-subsystem process (`CREATE_NO_WINDOW`).
+fn command(path: &Path) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
 }
 
 /// Handle to an adb binary.
@@ -208,7 +232,7 @@ impl Adb {
     }
 
     fn run(&self, args: &[&str]) -> Result<String, AdbError> {
-        let out = Command::new(&self.path).args(args).output()?;
+        let out = command(&self.path).args(args).output()?;
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         if !out.status.success() {
             let mut stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -315,7 +339,14 @@ adb-RZ8N-abc._adb-tls-connect._tcp device product:x model:Pixel_8 device:shiba t
             OsString::from("/home/u"),
             OsString::from("/lad"),
         );
-        let c = adb_candidates(Some(&path), Some(&ah), Some(&sr), Some(&home), Some(&lad));
+        let c = adb_candidates(
+            Some(&path),
+            Some(&ah),
+            Some(&sr),
+            Some(&home),
+            Some(&lad),
+            Some(Path::new("/opt/ezd")),
+        );
         let exe = if cfg!(windows) { "adb.exe" } else { "adb" };
         let want: Vec<PathBuf> = vec![
             Path::new("/a").join(exe),
@@ -324,8 +355,9 @@ adb-RZ8N-abc._adb-tls-connect._tcp device product:x model:Pixel_8 device:shiba t
             Path::new("/sr/platform-tools").join(exe),
             Path::new("/home/u/Android/Sdk/platform-tools").join(exe),
             Path::new("/lad/Android/Sdk/platform-tools").join(exe),
+            Path::new("/opt/ezd/adb").join(exe),
         ];
         assert_eq!(c, want);
-        assert!(adb_candidates(None, None, None, None, None).is_empty());
+        assert!(adb_candidates(None, None, None, None, None, None).is_empty());
     }
 }

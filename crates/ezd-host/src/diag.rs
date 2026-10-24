@@ -5,6 +5,7 @@
 //! the parent adapter of the virtual display output); Linux backends can add
 //! KDE/KWin and PipeWire details. Sections must never fail: errors are data.
 
+#[cfg(feature = "ffmpeg")]
 use ezd_ffmpeg::{HwKind, probe_encoder_with};
 use ezd_link::adb::{Adb, find_adb};
 use serde_json::{Value, json};
@@ -143,7 +144,7 @@ impl Section for Platform {
         "platform"
     }
     fn collect(&self) -> Value {
-        crate::platform::diag_section()
+        ezd_host_service::platform::diag_section()
     }
 }
 
@@ -152,6 +153,11 @@ impl Section for Encoders {
     fn name(&self) -> &'static str {
         "encoders"
     }
+    #[cfg(not(feature = "ffmpeg"))]
+    fn collect(&self) -> Value {
+        json!({ "error": "built without the ffmpeg feature" })
+    }
+    #[cfg(feature = "ffmpeg")]
     fn collect(&self) -> Value {
         let probe = |name: &str, hw: Option<(HwKind, Option<&str>)>| {
             let r = probe_encoder_with(name, 1280, 720, hw);

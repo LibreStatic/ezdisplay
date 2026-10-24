@@ -1,0 +1,36 @@
+[package]
+name = "ezd-host-service"
+description = "ezdisplay host service: accepts the tablet, runs sessions and exposes live status to the CLI and the tray"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["ffmpeg"]
+# The software (synthetic) source and the Windows hardware encode go through FFmpeg, which needs
+# its headers/libs at build time. `--no-default-features` builds on a machine without them (the
+# Windows cross-check in CI); the synthetic source then reports "built without ffmpeg".
+ffmpeg = ["dep:ezd-ffmpeg", "ezd-host-windows/ffmpeg"]
+
+[dependencies]
+ezd-ffmpeg = { workspace = true, optional = true }
+ezd-host-core.workspace = true
+ezd-link.workspace = true
+ezd-proto.workspace = true
+serde = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ezd-host-linux.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+ezd-host-windows.workspace = true
+
+[lints]
+workspace = true

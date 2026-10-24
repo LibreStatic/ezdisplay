@@ -21,8 +21,8 @@ pub mod time;
 pub use input::{InputBackend, InputSink, InputTarget, PenMode, UnavailableBackend};
 pub use platform::{PlatformError, PlatformOptions};
 pub use session::{
-    EndReason, SessionError, SessionOptions, SessionSummary, run_host_session,
-    run_host_session_with,
+    EndReason, LiveStats, SessionError, SessionEvent, SessionOptions, SessionSummary,
+    run_host_session, run_host_session_with,
 };
 pub use source::{
     CursorSink, DisplayMode, EncodedFrame, OutputInfo, SourceError, VideoSource, VirtualDisplay,

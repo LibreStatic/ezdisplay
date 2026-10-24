@@ -5,7 +5,6 @@
 
 mod diag;
 mod i18n;
-mod platform;
 mod run;
 #[cfg(windows)]
 mod vdd;

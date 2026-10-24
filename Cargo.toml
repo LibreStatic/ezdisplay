@@ -15,9 +15,12 @@ ezd-proto = { path = "crates/ezd-proto" }
 ezd-input = { path = "crates/ezd-input" }
 ezd-link = { path = "crates/ezd-link" }
 ezd-host-core = { path = "crates/ezd-host-core" }
+# Without default features: members enable `ffmpeg` themselves (see their `ffmpeg` feature), so the
+# Windows cross-check can build them without FFmpeg headers.
+ezd-host-service = { path = "crates/ezd-host-service", default-features = false }
 ezd-ffmpeg = { path = "crates/ezd-ffmpeg" }
 ezd-host-linux = { path = "crates/ezd-host-linux" }
-ezd-host-windows = { path = "crates/ezd-host-windows" }
+ezd-host-windows = { path = "crates/ezd-host-windows", default-features = false }
 ezd-fake-client = { path = "crates/ezd-fake-client" }
 
 anyhow = "1"

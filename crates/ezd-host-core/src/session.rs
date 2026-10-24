@@ -16,7 +16,8 @@
 //! down ([`SessionOptions::shutdown`]) it sends `Bye` and stops the source before returning.
 
 use crate::input::{
-    InputBackend, InputCmd, InputContext, InputStats, PenMode, SharedOffset, input_thread,
+    InputBackend, InputCmd, InputContext, InputStats, LiveLatency, PenMode, SharedOffset,
+    input_thread,
 };
 use crate::source::{CursorSink, SourceError, VideoSource};
 use crate::time::now_us;
@@ -59,6 +60,52 @@ pub struct SessionOptions {
     pub pen_mode: PenMode,
     /// Ask the client to show its telemetry overlay (`ClientOptions::TELEMETRY`).
     pub telemetry: bool,
+    /// Receives live [`SessionEvent`]s (default: none). Send errors are ignored.
+    pub events: Option<tokio::sync::mpsc::UnboundedSender<SessionEvent>>,
+}
+
+/// How often [`SessionEvent::Stats`] is emitted.
+const STATS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Progress of a running session, see [`SessionOptions::events`].
+#[derive(Debug, Clone)]
+pub enum SessionEvent {
+    /// The handshake finished; the stream is about to start.
+    Configured {
+        /// The client's `Hello`.
+        client_hello: Hello,
+        /// Negotiated stream configuration.
+        stream: StreamConfig,
+    },
+    /// Measurements of the last window, once per second.
+    Stats(LiveStats),
+    /// The input backend reported its status (sent to the client as well).
+    Input(InputStatus),
+}
+
+/// Measurements over the last [`window`](Self::window) of a session.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LiveStats {
+    /// Length of the window the counters below cover.
+    pub window: Duration,
+    /// Video frames sent in the window (excluding codec-config frames).
+    pub frames: u64,
+    /// Video payload bytes handed to the mux in the window.
+    pub bytes: u64,
+    /// Latest `ClientStats` received, if any.
+    pub client: Option<ClientStats>,
+    /// Median link transfer time of the frames acked in the window, microseconds.
+    pub transfer_us_p50: Option<u32>,
+    /// 95th percentile of the link transfer time in the window.
+    pub transfer_us_p95: Option<u32>,
+    /// Median client-send to host-injected input latency in the window (0.25 ms resolution).
+    pub input_latency_p50_us: Option<u32>,
+    /// 95th percentile of the input latency in the window.
+    pub input_latency_p95_us: Option<u32>,
+    /// Video frames whose ack timed out, since the session started.
+    pub ack_timeouts: u64,
+    /// Best RTT in microseconds.
+    pub rtt_us: Option<i64>,
 }
 
 impl Default for SessionOptions {
@@ -75,6 +122,7 @@ impl Default for SessionOptions {
             input: None,
             pen_mode: PenMode::default(),
             telemetry: false,
+            events: None,
         }
     }
 }
@@ -231,6 +279,13 @@ pub async fn run_host_session_with(
         }
     };
     tracing::info!(?cfg, client = %client_hello.device_name, "stream configured");
+    emit(
+        &opts.events,
+        SessionEvent::Configured {
+            client_hello: client_hello.clone(),
+            stream: cfg.clone(),
+        },
+    );
 
     // Video thread.
     let shared = Arc::new(VideoShared::default());
@@ -240,6 +295,7 @@ pub async fn run_host_session_with(
     // Input thread.
     let supports_input = client_hello.supports_input();
     let offset = Arc::new(SharedOffset::default());
+    let live_latency = Arc::new(LiveLatency::default());
     let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<InputStatus>();
     let mut status_rx = Some(status_rx);
     let mut input_tx: Option<std::sync::mpsc::Sender<InputCmd>> = None;
@@ -259,6 +315,7 @@ pub async fn run_host_session_with(
                     stream: cfg.clone(),
                     pen_mode: opts.pen_mode,
                     offset: offset.clone(),
+                    live_latency: live_latency.clone(),
                     status_tx,
                 };
                 input_join = Some(
@@ -313,6 +370,12 @@ pub async fn run_host_session_with(
     let mut video_done = false;
     let mut ping = tokio::time::interval(opts.ping_interval);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Live measurements: the window restarts at every `Stats` event.
+    let mut stats_tick =
+        tokio::time::interval_at(tokio::time::Instant::now() + STATS_INTERVAL, STATS_INTERVAL);
+    stats_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut live_transfer: Vec<u32> = Vec::new();
+    let (mut live_frames, mut live_bytes, mut live_since) = (0u64, 0u64, Instant::now());
     let mut shutdown = opts.shutdown;
     let end = loop {
         tokio::select! {
@@ -364,6 +427,9 @@ pub async fn run_host_session_with(
                             transfer_all.push(t);
                         }
                         transfer_win.push(t);
+                        if live_transfer.len() < 100_000 {
+                            live_transfer.push(t);
+                        }
                     }
                 }
                 Ok(Some(Message::ClientStats(s))) => {
@@ -415,7 +481,32 @@ pub async fn run_host_session_with(
                     break EndReason::LinkError("mux closed".into());
                 }
             }
+            _ = stats_tick.tick() => {
+                let (frames, bytes) = (
+                    shared.frames.load(Ordering::Relaxed),
+                    shared.bytes.load(Ordering::Relaxed),
+                );
+                let (input_p50, input_p95) = live_latency.take();
+                let stats = LiveStats {
+                    window: live_since.elapsed(),
+                    frames: frames - live_frames,
+                    bytes: bytes - live_bytes,
+                    client: last_stats,
+                    transfer_us_p50: (!live_transfer.is_empty())
+                        .then(|| percentile(&live_transfer, 50)),
+                    transfer_us_p95: (!live_transfer.is_empty())
+                        .then(|| percentile(&live_transfer, 95)),
+                    input_latency_p50_us: input_p50,
+                    input_latency_p95_us: input_p95,
+                    ack_timeouts: tx.stats().ack_timeouts,
+                    rtt_us: clock.rtt_us(),
+                };
+                (live_frames, live_bytes, live_since) = (frames, bytes, Instant::now());
+                live_transfer.clear();
+                emit(&opts.events, SessionEvent::Stats(stats));
+            }
             Some(st) = next_status(&mut status_rx) => {
+                emit(&opts.events, SessionEvent::Input(st.clone()));
                 if tx.send_control(Message::InputStatus(st)).is_err() {
                     break EndReason::LinkError("mux closed".into());
                 }
@@ -504,6 +595,12 @@ pub async fn run_host_session_with(
         input_latency_p50_us: input_stats.latency_p50_us,
         input_latency_p95_us: input_stats.latency_p95_us,
     })
+}
+
+fn emit(events: &Option<tokio::sync::mpsc::UnboundedSender<SessionEvent>>, ev: SessionEvent) {
+    if let Some(tx) = events {
+        let _ = tx.send(ev);
+    }
 }
 
 /// Next status from the input thread; never resolves without a receiver or once it is gone.
@@ -1040,5 +1137,89 @@ mod tests {
             "{:?}",
             s.end
         );
+    }
+
+    #[tokio::test]
+    async fn live_events_report_configuration_then_stats() {
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel();
+        let host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(ScriptedSource::new(Duration::from_millis(5), 100)),
+            Prefs::default(),
+            SessionOptions {
+                events: Some(ev_tx),
+                ..fast_opts()
+            },
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(DEFAULT_CHUNK_LEN);
+        tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "tablet")))
+            .unwrap();
+        tx.send_control(Message::ClientCaps(caps())).unwrap();
+        for _ in 0..3 {
+            recv(&mut rx).await;
+        }
+        tx.send_control(Message::ConfigAck).unwrap();
+        // Keep the client side flowing: ack frames and answer pings.
+        let acker = tx.clone();
+        tokio::spawn(async move {
+            while let Ok(Some(m)) = rx.recv().await {
+                match m {
+                    Message::VideoFrame(v) => {
+                        let _ = acker.send_control(Message::FrameAck(ezd_proto::FrameAck {
+                            frame_id: v.frame_id,
+                            received_us: now_us(),
+                        }));
+                    }
+                    Message::Ping(p) => {
+                        let t = now_us();
+                        let _ = acker.send_control(Message::Pong(Pong {
+                            seq: p.seq,
+                            t0_us: p.t0_us,
+                            t1_us: t,
+                            t2_us: t,
+                        }));
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let first = timeout(Duration::from_secs(10), ev_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match first {
+            SessionEvent::Configured {
+                client_hello,
+                stream,
+            } => {
+                assert_eq!(client_hello.device_name, "tablet");
+                assert_eq!(stream.width, 1280);
+            }
+            e => panic!("{e:?}"),
+        }
+        let stats = loop {
+            match timeout(Duration::from_secs(10), ev_rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                SessionEvent::Stats(s) => break s,
+                SessionEvent::Input(_) => {}
+                e => panic!("{e:?}"),
+            }
+        };
+        assert!(stats.frames > 0 && stats.bytes > 0, "{stats:?}");
+        assert!(stats.window >= Duration::from_millis(500), "{stats:?}");
+        tx.send_control(Message::Bye(Bye {
+            reason: "test over".into(),
+        }))
+        .unwrap();
+        let s = timeout(Duration::from_secs(5), host)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.end, EndReason::ClientBye("test over".into()));
     }
 }

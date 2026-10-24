@@ -12,13 +12,19 @@ rust-version.workspace = true
 name = "ezd-host"
 path = "src/main.rs"
 
+[features]
+default = ["ffmpeg"]
+# Encoder probing in `diag` and the service's FFmpeg paths. `--no-default-features` builds without
+# FFmpeg headers (the Windows cross-check in CI).
+ffmpeg = ["dep:ezd-ffmpeg", "ezd-host-service/ffmpeg", "ezd-host-windows/ffmpeg"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-ezd-ffmpeg.workspace = true
+ezd-ffmpeg = { workspace = true, optional = true }
 ezd-host-core.workspace = true
+ezd-host-service.workspace = true
 ezd-link.workspace = true
-ezd-proto.workspace = true
 i18n-embed.workspace = true
 i18n-embed-fl.workspace = true
 rust-embed.workspace = true
@@ -26,9 +32,6 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-ezd-host-linux.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 ezd-host-windows.workspace = true

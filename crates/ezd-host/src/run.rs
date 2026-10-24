@@ -1,18 +1,15 @@
 //! The `run` subcommand.
 
 use crate::i18n::fl;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, anyhow};
 use clap::{Args, Command, ValueEnum};
-use ezd_host_core::{
-    InputBackend, PenMode, SessionError, SessionOptions, SessionSummary, UnavailableBackend,
-    VideoSource, run_host_session_with,
+use ezd_host_core::SessionSummary;
+use ezd_host_service::{
+    AdbMode, HostEvent, HostService, HostStatus, LinkChoice, PenChoice, ServiceConfig,
+    ServiceError, SourceKind,
 };
-use ezd_link::adb::{Adb, DeviceState};
-use ezd_link::{Link, VideoCredit};
-use ezd_proto::{DEFAULT_PORT, LinkKind, Prefs};
 use i18n_embed::fluent::FluentLanguageLoader;
-use std::sync::Arc;
-use tokio::net::TcpListener;
+use std::net::ToSocketAddrs;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Source {
@@ -67,23 +64,6 @@ pub struct RunArgs {
     pen_mode: PenModeArg,
 }
 
-/// Removes the adb reverse forwards when dropped.
-struct ReverseGuard {
-    adb: Adb,
-    serials: Vec<String>,
-}
-
-impl Drop for ReverseGuard {
-    fn drop(&mut self) {
-        for s in &self.serials {
-            match self.adb.remove_reverse(s, DEFAULT_PORT) {
-                Ok(()) => tracing::info!(serial = %s, "removed adb reverse"),
-                Err(e) => tracing::warn!(serial = %s, "could not remove adb reverse: {e}"),
-            }
-        }
-    }
-}
-
 /// Applies the localized help of every `run` option.
 pub fn localize(cmd: Command, l: &FluentLanguageLoader) -> Command {
     use i18n_embed_fl::fl;
@@ -104,35 +84,6 @@ pub fn localize(cmd: Command, l: &FluentLanguageLoader) -> Command {
         .mut_arg("pen_mode", |a| a.help(fl!(l, "run-pen-mode")))
 }
 
-fn setup_adb(serial: Option<&str>, host_port: u16) -> Result<ReverseGuard> {
-    let adb = Adb::locate()?;
-    let serials: Vec<String> = match serial {
-        Some(s) => vec![s.to_string()],
-        None => adb
-            .devices()?
-            .into_iter()
-            .filter(|d| d.state == DeviceState::Device)
-            .map(|d| d.serial)
-            .collect(),
-    };
-    if serials.is_empty() {
-        bail!(fl!("err-no-adb-device"));
-    }
-    let mut guard = ReverseGuard {
-        adb,
-        serials: Vec::new(),
-    };
-    for s in serials {
-        guard
-            .adb
-            .reverse(&s, DEFAULT_PORT, host_port)
-            .with_context(|| fl!("err-adb-reverse", serial = s.as_str()))?;
-        tracing::info!(serial = %s, "adb reverse tcp:{DEFAULT_PORT} -> tcp:{host_port}");
-        guard.serials.push(s);
-    }
-    Ok(guard)
-}
-
 fn parse_scale(s: &str) -> Result<f32, String> {
     let v: f32 = s.parse().map_err(|_| fl!("err-scale-nan", value = s))?;
     if (0.25..=1.0).contains(&v) {
@@ -142,99 +93,139 @@ fn parse_scale(s: &str) -> Result<f32, String> {
     }
 }
 
-pub async fn run(args: RunArgs) -> Result<()> {
-    let listener = TcpListener::bind(&args.listen)
-        .await
-        .with_context(|| fl!("err-binding", addr = args.listen.as_str()))?;
-    let local = listener.local_addr()?;
-    tracing::info!("listening on {local}");
-    let _reverse = match &args.adb {
-        Some(serial) => Some(setup_adb(serial.as_deref(), local.port())?),
-        None => None,
-    };
-    let prefs = Prefs {
-        max_refresh_mhz: args.max_refresh_mhz,
-        link: match args.link {
-            LinkArg::Usb => LinkKind::Usb,
-            LinkArg::Network => LinkKind::Network,
+/// The service configuration the command line describes.
+fn config(args: &RunArgs) -> Result<ServiceConfig> {
+    let listen = args
+        .listen
+        .to_socket_addrs()
+        .and_then(|mut a| a.next().ok_or_else(|| std::io::Error::other("no address")))
+        .map_err(|e| {
+            anyhow!(fl!(
+                "err-binding",
+                addr = args.listen.as_str(),
+                reason = e.to_string()
+            ))
+        })?;
+    Ok(ServiceConfig {
+        listen,
+        source: match args.source {
+            Source::Synthetic => SourceKind::Synthetic,
+            Source::Virtual => SourceKind::Virtual,
         },
+        // Without `--adb` the host leaves adb alone.
+        adb: match &args.adb {
+            None => AdbMode::Off,
+            Some(None) => AdbMode::Auto,
+            Some(Some(serial)) => AdbMode::Serial(serial.clone()),
+        },
+        link: match args.link {
+            LinkArg::Usb => LinkChoice::Usb,
+            LinkArg::Network => LinkChoice::Network,
+        },
+        max_refresh_mhz: args.max_refresh_mhz,
         bitrate_kbps: args.bitrate_kbps,
         encoder: args.encoder.clone(),
         scale_permille: (args.scale * 1000.0).round() as u16,
-        ..Prefs::default()
-    };
-
-    let platform_opts = ezd_host_core::PlatformOptions {
         adapter: args.adapter.clone(),
         prefer_dgpu: args.prefer_dgpu,
         output_name: args.output.clone(),
-    };
-
-    let input: Option<Arc<dyn InputBackend>> = if args.no_input {
-        None
-    } else {
-        Some(crate::platform::input_backend().unwrap_or_else(|| {
-            Arc::new(UnavailableBackend(
-                "input injection is not implemented on this platform yet".into(),
-            ))
-        }))
-    };
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let session_opts = SessionOptions {
-        video_credit: VideoCredit::OnAck {
-            window: args.video_window,
-            timeout: std::time::Duration::from_millis(500),
-        },
-        shutdown: Some(shutdown_rx),
-        input,
-        pen_mode: match args.pen_mode {
-            PenModeArg::Tablet => PenMode::Tablet,
-            PenModeArg::Mouse => PenMode::Mouse,
-        },
+        video_window: args.video_window,
         telemetry: args.telemetry,
-        ..SessionOptions::default()
-    };
+        input: !args.no_input,
+        pen_mode: match args.pen_mode {
+            PenModeArg::Tablet => PenChoice::Tablet,
+            PenModeArg::Mouse => PenChoice::Mouse,
+        },
+        // The command line never starts the app: that is the tray's convenience.
+        open_app_on_connect: false,
+    })
+}
 
+/// User-facing text of a service error.
+pub fn localize_error(e: &ServiceError) -> String {
+    match e {
+        ServiceError::Bind { addr, reason } => {
+            fl!(
+                "err-binding",
+                addr = addr.to_string(),
+                reason = reason.as_str()
+            )
+        }
+        ServiceError::AdbNotFound => fl!("err-adb-not-found"),
+        ServiceError::AdbReverse { serial, reason } => {
+            fl!(
+                "err-adb-reverse",
+                serial = serial.as_str(),
+                reason = reason.as_str()
+            )
+        }
+        ServiceError::UnsupportedPlatform => fl!("err-no-backend"),
+        ServiceError::Source(reason) => fl!("err-source", reason = reason.as_str()),
+    }
+}
+
+pub async fn run(args: RunArgs) -> Result<()> {
+    let service = HostService::start(&tokio::runtime::Handle::current(), config(&args)?)
+        .map_err(|e| anyhow!(localize_error(&e)))?;
+    let mut events = service.events();
+    let reporter = tokio::spawn(report_errors(service.status()));
+
+    // The service owns the event sender, so the channel stays open until `stop`.
     loop {
-        let (sock, peer) = tokio::select! {
-            r = listener.accept() => r?,
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("interrupted, shutting down");
-                return Ok(());
-            }
-        };
-        tracing::info!(%peer, "client connected");
-        let link = Link::from_tcp(sock)?;
-        let source: Box<dyn VideoSource> = match args.source {
-            Source::Synthetic => Box::new(ezd_ffmpeg::SwVideoSource::new()),
-            Source::Virtual => match crate::platform::create_virtual_source(&platform_opts) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("cannot create virtual source: {e}");
-                    continue;
-                }
-            },
-        };
-        let session = run_host_session_with(link, source, prefs.clone(), session_opts.clone());
-        tokio::pin!(session);
         tokio::select! {
-            r = &mut session => log_session_end(r),
+            ev = events.recv() => log_event(ev),
+            _ = tokio::signal::ctrl_c() => break,
+        }
+    }
+    // Let the session stop the source: exiting while it tears the encoder down can deadlock in
+    // the driver.
+    tracing::info!("interrupted, shutting down");
+    let stop = service.stop();
+    tokio::pin!(stop);
+    loop {
+        tokio::select! {
+            () = &mut stop => break,
+            ev = events.recv() => log_event(ev),
             _ = tokio::signal::ctrl_c() => {
-                // Let the session stop the source: exiting while it tears the encoder down can
-                // deadlock in the driver.
-                tracing::info!("interrupted, ending the session");
-                let _ = shutdown_tx.send(true);
-                tokio::select! {
-                    r = &mut session => log_session_end(r),
-                    _ = tokio::signal::ctrl_c() => tracing::warn!("interrupted again, exiting now"),
-                }
+                tracing::warn!("interrupted again, exiting now");
                 return Ok(());
             }
         }
     }
+    // Whatever the session reported while stopping.
+    while let Ok(ev) = events.try_recv() {
+        log_event(Ok(ev));
+    }
+    reporter.abort();
+    Ok(())
 }
 
-fn log_session_end(r: Result<SessionSummary, SessionError>) {
+fn log_event(ev: Result<HostEvent, tokio::sync::broadcast::error::RecvError>) {
+    match ev {
+        Ok(HostEvent::SessionEnded(r)) => log_session_end(r),
+        Ok(_) => {}
+        Err(e) => tracing::debug!("missed service events: {e}"),
+    }
+}
+
+/// Tells the user, in their language, about problems that need attention (adb missing, ...).
+async fn report_errors(mut status: tokio::sync::watch::Receiver<HostStatus>) {
+    let mut last = None;
+    while status.changed().await.is_ok() {
+        let err = match &*status.borrow_and_update() {
+            HostStatus::Error(e) => Some(e.clone()),
+            _ => None,
+        };
+        if err != last {
+            if let Some(e) = &err {
+                eprintln!("{}", localize_error(e));
+            }
+            last = err;
+        }
+    }
+}
+
+fn log_session_end(r: Result<SessionSummary, String>) {
     match r {
         Ok(s) => tracing::info!(
             end = ?s.end, frames = s.frames_sent, keyframes = s.keyframes_sent,

@@ -1,6 +1,6 @@
 //! Thin dispatch to the platform crate of the current target.
 
-use anyhow::Result;
+use crate::error::ServiceError;
 use ezd_host_core::{InputBackend, PlatformOptions, VideoSource};
 use std::sync::Arc;
 
@@ -10,15 +10,15 @@ use ezd_host_linux as imp;
 use ezd_host_windows as imp;
 
 /// Builds the virtual-display source of this platform.
-pub fn create_virtual_source(opts: &PlatformOptions) -> Result<Box<dyn VideoSource>> {
+pub fn create_virtual_source(opts: &PlatformOptions) -> Result<Box<dyn VideoSource>, ServiceError> {
     #[cfg(any(target_os = "linux", windows))]
     {
-        Ok(imp::create_virtual_source(opts)?)
+        imp::create_virtual_source(opts).map_err(|e| ServiceError::Source(e.to_string()))
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = opts;
-        anyhow::bail!(crate::i18n::fl!("err-no-backend"))
+        Err(ServiceError::UnsupportedPlatform)
     }
 }
 
