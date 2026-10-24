@@ -16,6 +16,7 @@ pub mod ident;
 pub mod input_map;
 pub mod pipe_proto;
 pub mod policy;
+pub mod vdd_install;
 pub mod vdd_xml;
 
 #[cfg(windows)]
@@ -90,6 +91,24 @@ pub fn vdd_setup(gpu: Option<&str>, modes: &[vdd_xml::Mode]) -> Result<Vec<Strin
 #[cfg(windows)]
 pub fn vdd_revert() -> Result<Vec<String>, String> {
     win::vdd::revert()
+}
+
+/// `ezd-host vdd install`: installs the bundled VDD from `driver_dir` and records ownership.
+/// Needs elevation.
+#[cfg(windows)]
+pub fn vdd_install(
+    driver_dir: &std::path::Path,
+) -> Result<vdd_install::InstallOutcome, vdd_install::InstallError> {
+    win::vdd_install::install(driver_dir)
+}
+
+/// `ezd-host vdd uninstall`: removes a VDD installed by `vdd_install`. The `nefconw.exe` comes
+/// from `driver_dir`, or from the location recorded at install time when `None`. Needs elevation.
+#[cfg(windows)]
+pub fn vdd_uninstall(
+    driver_dir: Option<&std::path::Path>,
+) -> Result<vdd_install::UninstallOutcome, vdd_install::InstallError> {
+    win::vdd_install::uninstall(driver_dir)
 }
 
 #[cfg(test)]

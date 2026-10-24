@@ -16,5 +16,6 @@ pub mod input;
 pub mod source;
 pub mod util;
 pub mod vdd;
+pub mod vdd_install;
 
 pub use source::create_virtual_source;

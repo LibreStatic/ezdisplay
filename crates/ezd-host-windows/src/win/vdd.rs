@@ -9,7 +9,7 @@ use crate::pipe_proto::{self, Command, PIPE_NAME};
 use crate::policy::{self, AdapterInfo};
 use crate::vdd_xml::{self, Mode, Summary};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_PIPE_BUSY,
@@ -32,7 +32,7 @@ pub const DEFAULT_DIR: &str = r"C:\VirtualDisplayDriver";
 /// SID of BUILTIN\Users.
 pub const USERS_SID: &str = "*S-1-5-32-545";
 /// Install hint used in error messages.
-pub const INSTALL_HINT: &str = "winget install --id=VirtualDrivers.Virtual-Display-Driver -e";
+pub const INSTALL_HINT: &str = "reinstall ezdisplay or use Repair in the app settings";
 
 /// Where the config dir comes from.
 pub fn config_dir() -> (PathBuf, &'static str) {
@@ -266,6 +266,8 @@ pub fn status_json() -> Value {
     };
     json!({
         "install_hint": INSTALL_HINT,
+        "owned": super::vdd_install::owned(),
+        "driver_dir": super::vdd_install::stored_driver_dir(),
         "elevated": is_elevated(),
         "config_dir": dir.display().to_string(),
         "config_dir_source": dir_src,
@@ -285,6 +287,15 @@ pub fn status_json() -> Value {
 }
 
 // ------------------------------------------------------------------ setup/revert
+
+/// Grants BUILTIN\Users Modify on one file (not its directory: the directory may hold tools an
+/// administrator runs later, and a writable directory would let any user replace them).
+pub fn grant_users_modify(path: &Path) -> Result<String, String> {
+    let file_s = path.display().to_string();
+    let grant = format!("{USERS_SID}:M");
+    run_icacls(&[&file_s, "/grant", &grant])?;
+    Ok(grant)
+}
 
 fn run_icacls(args: &[&str]) -> Result<String, String> {
     let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
@@ -349,18 +360,16 @@ pub fn setup(gpu: Option<&str>, modes: &[Mode]) -> Result<Vec<String>, String> {
     let path = settings_path();
     if !dir.is_dir() || !path.is_file() {
         return Err(format!(
-            "VDD config not found ({} does not exist). Install the driver first: {INSTALL_HINT}",
+            "VDD config not found ({} does not exist). To install the driver: {INSTALL_HINT}",
             path.display()
         ));
     }
     let mut out = vec![format!("VDD config dir: {} ({src})", dir.display())];
     let gpu_name = gpu.map(resolve_gpu).transpose()?;
 
-    // Only the settings file: the directory may hold tools an administrator runs later, and a
-    // writable directory would let any user replace them.
+    // Only the settings file, see `grant_users_modify`.
     let file_s = path.display().to_string();
-    let grant = format!("{USERS_SID}:M");
-    run_icacls(&[&file_s, "/grant", &grant])?;
+    let grant = grant_users_modify(&path)?;
     out.push(format!(
         "changed: granted BUILTIN\\Users (S-1-5-32-545) Modify on {file_s} \
          (icacls \"{file_s}\" /grant {grant}). Undo with `ezd-host vdd revert`."
@@ -497,7 +506,7 @@ fn wait_for_vdd(
 pub fn prepare(chosen: &AdapterInfo, mode: Mode) -> Result<Prepared, String> {
     let mut notes = Vec::new();
     let (_, summary) = read_settings().map_err(|e| {
-        format!("{e}. Is the Virtual Display Driver installed? Install it with: {INSTALL_HINT}")
+        format!("{e}. Is the Virtual Display Driver installed? To install it: {INSTALL_HINT}")
     })?;
     match ping() {
         Ok(true) => {}
@@ -587,7 +596,7 @@ pub fn prepare(chosen: &AdapterInfo, mode: Mode) -> Result<Prepared, String> {
     let Some(mon) = monitors.first().cloned() else {
         return Err(format!(
             "no virtual monitor found. The driver pipe answers but Windows lists no VDD monitor; check \
-             Device Manager and `ezd-host vdd status` (<monitors><count> must be at least 1). Install: {INSTALL_HINT}"
+             Device Manager and `ezd-host vdd status` (<monitors><count> must be at least 1). To install the driver: {INSTALL_HINT}"
         ));
     };
     let existing = find_vdd_output(&adapters, &monitors).map(|(ai, oi)| &adapters[ai].outputs[oi]);
