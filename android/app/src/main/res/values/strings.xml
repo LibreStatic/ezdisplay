@@ -35,9 +35,7 @@
     <string name="action_scroll">Scroll</string>
     <string name="action_pc_zoom">Zoom on the PC</string>
     <string name="action_none">Nothing</string>
-    <string name="settings_zoom_factor">Local zoom level</string>
-    <string name="settings_double_click">Double click time: %1$d ms</string>
-    <string name="settings_palm_rejection">Palm rejection (ignore fingers while the pen is near)</string>
+    <string name="settings_zoom_factor">Zoom level</string>
     <string name="settings_air_actions_on">Samsung Air actions are on. They may react to button presses that start with the pen tip down. Turn them off in Settings → Advanced features → S Pen → Air actions.</string>
     <string name="settings_air_actions_unknown">If the pen button triggers Samsung Air actions, turn them off in Settings → Advanced features → S Pen → Air actions.</string>
     <string name="profile_graphics_tablet">Graphics tablet</string>
@@ -46,8 +44,6 @@
     <string name="keys_title_hold">Shortcut on hold</string>
     <string name="keys_title_click">Shortcut on click</string>
     <string name="keys_title_double_click">Shortcut on double click</string>
-    <string name="keys_current">Current: %1$s</string>
-    <string name="keys_preset_custom">Custom</string>
     <string name="keys_preset_ctrl_space">Ctrl + Space</string>
     <string name="keys_preset_space">Space</string>
     <string name="keys_preset_alt_space">Alt + Space</string>
@@ -68,4 +64,25 @@
     <string name="key_delete">Delete</string>
     <string name="key_meta">Win</string>
     <string name="status_keys_unsupported">The PC host doesn\'t support keyboard shortcuts; update it.</string>
+    <string name="settings_screen_title">Input</string>
+    <string name="section_zoom">Local zoom</string>
+    <string name="section_touch">Touch</string>
+    <string name="section_air_actions">Air actions</string>
+    <string name="section_air_actions_value">Samsung S Pen notice</string>
+    <string name="profile_selected">Selected</string>
+    <string name="settings_double_click_title">Double click time</string>
+    <string name="settings_ms">%1$d ms</string>
+    <string name="settings_zoom_value">%1$s×</string>
+    <string name="settings_zoom_summary">%1$s× · %2$d ms</string>
+    <string name="settings_palm_title">Palm rejection</string>
+    <string name="settings_palm_desc">Ignores fingers while the pen is near</string>
+    <string name="settings_on">On</string>
+    <string name="settings_off">Off</string>
+    <string name="keys_current_combination">Current combination</string>
+    <string name="keys_presets_title">Preset shortcuts</string>
+    <string name="keys_modifiers_title">Modifiers</string>
+    <string name="keys_key_title">Key</string>
+    <string name="cd_back">Back</string>
+    <string name="cd_edit_shortcut">Edit shortcut</string>
+    <string name="cd_choose_action">Choose action</string>
 </resources>

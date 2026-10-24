@@ -35,9 +35,7 @@
     <string name="action_scroll">Desplazar</string>
     <string name="action_pc_zoom">Zoom en la PC</string>
     <string name="action_none">Nada</string>
-    <string name="settings_zoom_factor">Nivel de zoom local</string>
-    <string name="settings_double_click">Tiempo de doble clic: %1$d ms</string>
-    <string name="settings_palm_rejection">Rechazo de palma (ignorar los dedos mientras el lápiz está cerca)</string>
+    <string name="settings_zoom_factor">Nivel de zoom</string>
     <string name="settings_air_actions_on">Las acciones aéreas de Samsung están activadas. Pueden reaccionar a pulsaciones del botón que empiezan con la punta apoyada. Desactivalas en Ajustes → Funciones avanzadas → S Pen → Acciones aéreas.</string>
     <string name="settings_air_actions_unknown">Si el botón del lápiz dispara las acciones aéreas de Samsung, desactivalas en Ajustes → Funciones avanzadas → S Pen → Acciones aéreas.</string>
     <string name="profile_graphics_tablet">Tableta gráfica</string>
@@ -46,8 +44,6 @@
     <string name="keys_title_hold">Atajo al mantener</string>
     <string name="keys_title_click">Atajo al hacer clic</string>
     <string name="keys_title_double_click">Atajo al hacer doble clic</string>
-    <string name="keys_current">Actual: %1$s</string>
-    <string name="keys_preset_custom">Personalizada</string>
     <string name="keys_preset_ctrl_space">Ctrl + Espacio</string>
     <string name="keys_preset_space">Espacio</string>
     <string name="keys_preset_alt_space">Alt + Espacio</string>
@@ -68,4 +64,25 @@
     <string name="key_delete">Supr</string>
     <string name="key_meta">Win</string>
     <string name="status_keys_unsupported">El host de la PC no soporta atajos de teclado; actualizalo.</string>
+    <string name="settings_screen_title">Entrada</string>
+    <string name="section_zoom">Zoom local</string>
+    <string name="section_touch">Toque</string>
+    <string name="section_air_actions">Acciones aéreas</string>
+    <string name="section_air_actions_value">Aviso de Samsung S Pen</string>
+    <string name="profile_selected">Elegido</string>
+    <string name="settings_double_click_title">Tiempo de doble clic</string>
+    <string name="settings_ms">%1$d ms</string>
+    <string name="settings_zoom_value">%1$s×</string>
+    <string name="settings_zoom_summary">%1$s× · %2$d ms</string>
+    <string name="settings_palm_title">Rechazo de palma</string>
+    <string name="settings_palm_desc">Ignora los dedos mientras el lápiz está cerca</string>
+    <string name="settings_on">Activado</string>
+    <string name="settings_off">Desactivado</string>
+    <string name="keys_current_combination">Combinación actual</string>
+    <string name="keys_presets_title">Atajos predefinidos</string>
+    <string name="keys_modifiers_title">Modificadores</string>
+    <string name="keys_key_title">Tecla</string>
+    <string name="cd_back">Volver</string>
+    <string name="cd_edit_shortcut">Editar atajo</string>
+    <string name="cd_choose_action">Elegir acción</string>
 </resources>

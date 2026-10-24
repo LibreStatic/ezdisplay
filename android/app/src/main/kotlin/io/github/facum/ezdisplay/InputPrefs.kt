@@ -30,6 +30,10 @@ object InputPrefs {
     const val DOUBLE_CLICK_STEP = 10
 
     val PROFILES = listOf("raw", "desktop", "drawing", "graphics_tablet", "custom")
+    /** The stored profile, or "raw" when missing or not one of [PROFILES] (no migration of retired values). */
+    fun profile(p: SharedPreferences): String =
+        p.getString(PROFILE, "raw")?.takeIf { it in PROFILES } ?: "raw"
+
     val ZOOM_FACTORS = listOf(1.5f, 2f, 3f)
 
     /** A key combination: [mods] bit set (CTRL=1, SHIFT=2, ALT=4, META=8) and a USB HID keyboard [usage] (0 = none). */
@@ -105,7 +109,7 @@ object InputPrefs {
     /** True when the active profile can inject keyboard shortcuts (graphics-tablet profile, or Custom with a "keys" action). */
     fun usesKeys(context: Context): Boolean {
         val p = prefs(context)
-        return when (p.getString(PROFILE, "raw")) {
+        return when (profile(p)) {
             "graphics_tablet" -> true
             "custom" -> p.getString(CUSTOM_CLICK, "raw") == "keys" ||
                 p.getString(CUSTOM_DOUBLE_CLICK, "local_zoom") == "keys" ||
@@ -134,7 +138,7 @@ object InputPrefs {
             .put("double_click", combo(KEYS_DOUBLE_CLICK))
             .put("hold", combo(KEYS_HOLD))
         return JSONObject()
-            .put("profile", p.getString(PROFILE, "raw"))
+            .put("profile", profile(p))
             .put("custom", custom)
             .put("keys", keys)
             .put("zoom_factor", p.getFloat(ZOOM_FACTOR, 2f).toDouble())

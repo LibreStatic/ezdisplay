@@ -1,0 +1,220 @@
+package io.github.facum.ezdisplay.settings
+
+import android.content.Context
+import android.content.SharedPreferences
+import android.os.Build
+import android.provider.Settings
+import androidx.core.content.edit
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableStateOf
+import io.github.facum.ezdisplay.InputPrefs
+import io.github.facum.ezdisplay.InputPrefs.KeyCombo
+import io.github.facum.ezdisplay.R
+import kotlin.math.roundToInt
+
+/** State of the Samsung S Pen "Air actions" system setting. */
+enum class AirActions { NotSamsung, Off, On, Unknown }
+
+/** A custom-profile trigger: its pref [key], [label], [default] action and the [actions] it accepts. */
+class Trigger(val key: String, val label: Int, val default: String, val actions: List<String>)
+
+/** One key-combo editor: where it is stored ([prefKey]), its [title] and the trigger that enables it. */
+class KeyEditorSpec(val prefKey: String, val title: Int, val triggerKey: String)
+
+/** A profile choice: pref [value], [title] and [desc] string resources and its [icon] drawable. */
+data class ProfileSpec(val value: String, val title: Int, val desc: Int, val icon: Int)
+
+/** A key-combo preset with its [label] string resource. */
+data class KeyPreset(val label: Int, val combo: KeyCombo)
+
+val ActionLabels = mapOf(
+    "raw" to R.string.action_raw,
+    "right_click" to R.string.action_right_click,
+    "middle_click" to R.string.action_middle_click,
+    "local_zoom" to R.string.action_local_zoom,
+    "eraser" to R.string.action_eraser,
+    "scroll" to R.string.action_scroll,
+    "pc_zoom" to R.string.action_pc_zoom,
+    "none" to R.string.action_none,
+    "keys" to R.string.action_keys,
+)
+
+val Profiles = listOf(
+    ProfileSpec("raw", R.string.profile_raw, R.string.profile_raw_desc, R.drawable.ic_ads_click),
+    ProfileSpec("desktop", R.string.profile_desktop, R.string.profile_desktop_desc, R.drawable.ic_desktop_windows),
+    ProfileSpec("drawing", R.string.profile_drawing, R.string.profile_drawing_desc, R.drawable.ic_draw),
+    ProfileSpec("graphics_tablet", R.string.profile_graphics_tablet, R.string.profile_graphics_tablet_desc, R.drawable.ic_stylus),
+    ProfileSpec("custom", R.string.profile_custom, R.string.profile_custom_desc, R.drawable.ic_tune),
+)
+
+val Triggers = listOf(
+    Trigger(InputPrefs.CUSTOM_CLICK, R.string.trigger_click, "raw",
+        listOf("raw", "right_click", "middle_click", "local_zoom", "keys", "none")),
+    Trigger(InputPrefs.CUSTOM_DOUBLE_CLICK, R.string.trigger_double_click, "local_zoom",
+        listOf("right_click", "middle_click", "local_zoom", "keys", "none")),
+    Trigger(InputPrefs.CUSTOM_HOLD, R.string.trigger_hold, "raw",
+        listOf("raw", "right_click", "middle_click", "local_zoom", "eraser", "keys", "none")),
+    Trigger(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, R.string.trigger_hold_drag_contact, "raw",
+        listOf("raw", "scroll", "pc_zoom", "none")),
+    Trigger(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, R.string.trigger_hold_drag_hover, "raw",
+        listOf("raw", "scroll", "pc_zoom", "none")),
+)
+
+/** In display order: click, double click, hold. */
+val KeyEditors = listOf(
+    KeyEditorSpec(InputPrefs.KEYS_CLICK, R.string.keys_title_click, InputPrefs.CUSTOM_CLICK),
+    KeyEditorSpec(InputPrefs.KEYS_DOUBLE_CLICK, R.string.keys_title_double_click, InputPrefs.CUSTOM_DOUBLE_CLICK),
+    KeyEditorSpec(InputPrefs.KEYS_HOLD, R.string.keys_title_hold, InputPrefs.CUSTOM_HOLD),
+)
+
+val KeyPresets = listOf(
+    KeyPreset(R.string.keys_preset_ctrl_space, KeyCombo(InputPrefs.MOD_CTRL, 0x2C)),
+    KeyPreset(R.string.keys_preset_space, KeyCombo(0, 0x2C)),
+    KeyPreset(R.string.keys_preset_alt_space, KeyCombo(InputPrefs.MOD_ALT, 0x2C)),
+    KeyPreset(R.string.keys_preset_ctrl_z, KeyCombo(InputPrefs.MOD_CTRL, 0x1D)),
+    KeyPreset(R.string.keys_preset_ctrl_shift_z, KeyCombo(InputPrefs.MOD_CTRL or InputPrefs.MOD_SHIFT, 0x1D)),
+)
+
+/** Everything the settings screen shows. Defaults match what [InputPrefs.toJson] uses for unset prefs. */
+data class SettingsState(
+    val profile: String = "raw",
+    /** Trigger pref key (`InputPrefs.CUSTOM_*`) to action. */
+    val custom: Map<String, String> = Triggers.associate { it.key to it.default },
+    /** Key editor pref key (`InputPrefs.KEYS_*`) to combo. */
+    val keys: Map<String, KeyCombo> = defaultKeys(),
+    val zoomFactor: Float = 2f,
+    val doubleClickMs: Int = 300,
+    val palmRejection: Boolean = true,
+    val airActions: AirActions = AirActions.NotSamsung,
+)
+
+private fun defaultKeys(): Map<String, KeyCombo> = mapOf(
+    InputPrefs.KEYS_CLICK to InputPrefs.DEFAULT_KEYS_CLICK,
+    InputPrefs.KEYS_DOUBLE_CLICK to InputPrefs.DEFAULT_KEYS_DOUBLE_CLICK,
+    InputPrefs.KEYS_HOLD to InputPrefs.DEFAULT_KEYS_HOLD,
+)
+
+/** KEYS_* pref keys whose editor is shown: graphics tablet shows hold; Custom shows those whose trigger action is `keys`. */
+fun visibleKeyEditors(state: SettingsState): List<String> = when (state.profile) {
+    "graphics_tablet" -> listOf(InputPrefs.KEYS_HOLD)
+    "custom" -> KeyEditors.filter { state.custom[it.triggerKey] == "keys" }.map { it.prefKey }
+    else -> emptyList()
+}
+
+/** The hold-drag triggers are unused while Custom hold sends keys. */
+fun dragsDisabled(state: SettingsState): Boolean =
+    state.profile == "custom" && state.custom[InputPrefs.CUSTOM_HOLD] == "keys"
+
+/** Index into [KeyPresets] matching [combo], or -1. */
+fun presetIndex(combo: KeyCombo): Int = KeyPresets.indexOfFirst { it.combo == combo }
+
+/** Rounds [raw] to the nearest [InputPrefs.DOUBLE_CLICK_STEP], clamped to the allowed range. */
+fun roundDoubleClickMs(raw: Float): Int {
+    val step = InputPrefs.DOUBLE_CLICK_STEP
+    return ((raw / step).roundToInt() * step).coerceIn(InputPrefs.DOUBLE_CLICK_MIN, InputPrefs.DOUBLE_CLICK_MAX)
+}
+
+/** A stored zoom factor that is not one of [InputPrefs.ZOOM_FACTORS] counts as 2x. */
+fun normalizeZoomFactor(f: Float): Float = if (f in InputPrefs.ZOOM_FACTORS) f else 2f
+
+/** Reads the Samsung S Pen "Air actions" system setting. */
+fun readAirActions(context: Context): AirActions {
+    if (!Build.MANUFACTURER.equals("samsung", ignoreCase = true)) return AirActions.NotSamsung
+    val v = try {
+        Settings.System.getInt(context.contentResolver, "spen_air_action", -1)
+    } catch (e: Exception) {
+        -1
+    }
+    return when (v) {
+        0 -> AirActions.Off
+        1 -> AirActions.On
+        else -> AirActions.Unknown
+    }
+}
+
+/** What the settings UI can change; lets previews and tests run without prefs. */
+interface SettingsActions {
+    fun setProfile(profile: String)
+    fun setCustomAction(triggerKey: String, action: String)
+    fun setKeyCombo(prefKey: String, combo: KeyCombo)
+    fun toggleModifier(prefKey: String, bit: Int)
+    fun setKey(prefKey: String, usage: Int)
+    fun setZoomFactor(factor: Float)
+    fun setDoubleClickMs(ms: Int)
+    fun setPalmRejection(on: Boolean)
+}
+
+/** Holds [SettingsState] backed by the `input` prefs; every action persists at once with `apply()`. */
+class SettingsStore(private val prefs: SharedPreferences, airActions: AirActions) : SettingsActions {
+    private val _state = mutableStateOf(read(airActions))
+    val state: State<SettingsState> get() = _state
+
+    private fun read(airActions: AirActions) = SettingsState(
+        profile = InputPrefs.profile(prefs),
+        custom = Triggers.associate { it.key to (prefs.getString(it.key, it.default) ?: it.default) },
+        keys = defaultKeys().mapValues { (k, d) -> KeyCombo.parse(prefs.getString(k, null), d) },
+        zoomFactor = normalizeZoomFactor(prefs.getFloat(InputPrefs.ZOOM_FACTOR, 2f)),
+        doubleClickMs = prefs.getInt(InputPrefs.DOUBLE_CLICK_MS, 300)
+            .coerceIn(InputPrefs.DOUBLE_CLICK_MIN, InputPrefs.DOUBLE_CLICK_MAX),
+        palmRejection = prefs.getBoolean(InputPrefs.PALM_REJECTION, true),
+        airActions = airActions,
+    )
+
+    override fun setProfile(profile: String) {
+        if (profile !in InputPrefs.PROFILES) return
+        prefs.edit { putString(InputPrefs.PROFILE, profile) }
+        _state.value = _state.value.copy(profile = profile)
+    }
+
+    /** Re-reads the system setting, e.g. after the user comes back from Samsung's settings. */
+    fun setAirActions(airActions: AirActions) {
+        _state.value = _state.value.copy(airActions = airActions)
+    }
+
+    /** Ignored when [action] is not allowed for the trigger. */
+    override fun setCustomAction(triggerKey: String, action: String) {
+        val t = Triggers.firstOrNull { it.key == triggerKey } ?: return
+        if (action !in t.actions) return
+        prefs.edit { putString(triggerKey, action) }
+        _state.value = _state.value.copy(custom = _state.value.custom + (triggerKey to action))
+    }
+
+    override fun setKeyCombo(prefKey: String, combo: KeyCombo) {
+        if (prefKey !in _state.value.keys) return
+        prefs.edit { putString(prefKey, combo.format()) }
+        _state.value = _state.value.copy(keys = _state.value.keys + (prefKey to combo))
+    }
+
+    /** Flips modifier [bit] (`InputPrefs.MOD_*`) of the combo stored under [prefKey]. */
+    override fun toggleModifier(prefKey: String, bit: Int) {
+        val c = _state.value.keys[prefKey] ?: return
+        setKeyCombo(prefKey, c.copy(mods = c.mods xor bit))
+    }
+
+    override fun setKey(prefKey: String, usage: Int) {
+        val c = _state.value.keys[prefKey] ?: return
+        setKeyCombo(prefKey, c.copy(usage = usage))
+    }
+
+    override fun setZoomFactor(factor: Float) {
+        val f = normalizeZoomFactor(factor)
+        prefs.edit { putFloat(InputPrefs.ZOOM_FACTOR, f) }
+        _state.value = _state.value.copy(zoomFactor = f)
+    }
+
+    /** [ms] is the already rounded value (see [roundDoubleClickMs]). */
+    override fun setDoubleClickMs(ms: Int) {
+        val v = ms.coerceIn(InputPrefs.DOUBLE_CLICK_MIN, InputPrefs.DOUBLE_CLICK_MAX)
+        prefs.edit { putInt(InputPrefs.DOUBLE_CLICK_MS, v) }
+        _state.value = _state.value.copy(doubleClickMs = v)
+    }
+
+    override fun setPalmRejection(on: Boolean) {
+        prefs.edit { putBoolean(InputPrefs.PALM_REJECTION, on) }
+        _state.value = _state.value.copy(palmRejection = on)
+    }
+
+    companion object {
+        fun create(context: Context) = SettingsStore(InputPrefs.prefs(context), readAirActions(context))
+    }
+}
