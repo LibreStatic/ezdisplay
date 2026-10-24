@@ -194,6 +194,9 @@ struct Queues {
     writing: bool,
     /// Written, not yet acked video frames with their write-completion time.
     unacked: VecDeque<(u64, Instant)>,
+    /// Highest ack newer than every `unacked` frame. On a fast link the peer's ack can arrive
+    /// before the writer records the frame it just wrote; the next finished frame consumes it.
+    early_ack: Option<u64>,
     closing: bool,
 }
 
@@ -377,6 +380,9 @@ impl MuxSender {
     /// Returns how many frames were released (0 for a late/unknown ack).
     pub fn ack_video(&self, frame_id: u64) -> usize {
         let mut q = self.shared.lock();
+        if q.unacked.back().is_none_or(|&(id, _)| frame_id > id) {
+            q.early_ack = Some(q.early_ack.map_or(frame_id, |a| a.max(frame_id)));
+        }
         let before = q.unacked.len();
         q.unacked.retain(|(id, _)| *id > frame_id);
         let released = before - q.unacked.len();
@@ -559,7 +565,10 @@ async fn writer_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io:
                     shared.videos_sent.fetch_add(1, Ordering::Relaxed);
                     let mut q = shared.lock();
                     q.writing = false;
-                    if let (Some(id), VideoCredit::OnAck { .. }) = (ack_id, shared.credit) {
+                    let early = q.early_ack.take();
+                    if let (Some(id), VideoCredit::OnAck { .. }) = (ack_id, shared.credit)
+                        && early.is_none_or(|a| a < id)
+                    {
                         q.unacked.push_back((id, Instant::now()));
                     }
                     shared.update_slot(&q);
@@ -1123,6 +1132,29 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(tx.ack_video(7), 0, "late ack is harmless");
+        assert_eq!(tx.stats().ack_timeouts, 0);
+    }
+
+    #[tokio::test]
+    async fn ack_before_bookkeeping_releases_the_frame() {
+        let (a, b) = Link::duplex_pair(1 << 20);
+        let (tx, _arx, _t) = a.into_mux_with(acked(1, 5000));
+        let (_btx, mut rx, _t2) = b.into_mux(4096);
+        // The peer's ack for 3 is handled before the writer records frame 3 as written.
+        assert_eq!(tx.ack_video(3), 0);
+        tx.send_video(vf(3, 100)).unwrap();
+        recv(&mut rx).await;
+        timeout(Duration::from_secs(1), tx.wait_video_slot())
+            .await
+            .expect("an early ack must not wait for the ack timeout")
+            .unwrap();
+        // The early ack was consumed: the next frame waits for its own ack.
+        tx.send_video(vf(4, 100)).unwrap();
+        recv(&mut rx).await;
+        sleep(Duration::from_millis(50)).await;
+        assert!(!tx.video_slot_free());
+        assert_eq!(tx.ack_video(4), 1);
+        assert!(tx.video_slot_free());
         assert_eq!(tx.stats().ack_timeouts, 0);
     }
 
