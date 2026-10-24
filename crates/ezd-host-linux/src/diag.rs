@@ -63,7 +63,7 @@ pub fn section() -> Value {
         "xdg_current_desktop": std::env::var("XDG_CURRENT_DESKTOP").ok(),
         "wayland_display": std::env::var("WAYLAND_DISPLAY").ok(),
         "kwin_version": kwin_version(),
-        "kwin_drm_devices": std::env::var("KWIN_DRM_DEVICES").ok(),
+        "kwin_drm_devices": crate::adapter::kwin_drm_devices(),
         "portal": portal::query_properties(),
         "render_nodes": probes,
         "software_encoder": { "libx264": sw.is_ok(), "error": sw.err() },

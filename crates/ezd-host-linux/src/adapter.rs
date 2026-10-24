@@ -143,12 +143,43 @@ pub fn list_render_nodes_in(
     nodes
 }
 
+/// `KWIN_DRM_DEVICES` from this process or, when it is not set here (a host started over ssh or
+/// from a stripped environment), from the systemd user manager, which starts `kwin_wayland` on
+/// Plasma 6.
+pub fn kwin_drm_devices() -> Option<String> {
+    if let Ok(v) = std::env::var("KWIN_DRM_DEVICES") {
+        return Some(v);
+    }
+    let out = std::process::Command::new("systemctl")
+        .args(["--user", "show-environment"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| env_value(&String::from_utf8_lossy(&out.stdout), "KWIN_DRM_DEVICES"))
+        .flatten()
+}
+
+/// The value of `key` in `systemctl show-environment` output (`KEY=value` lines, values with
+/// special characters quoted as `$'...'`).
+fn env_value(listing: &str, key: &str) -> Option<String> {
+    listing.lines().find_map(|l| {
+        let v = l.strip_prefix(key)?.strip_prefix('=')?;
+        let v = v
+            .strip_prefix("$'")
+            .and_then(|q| q.strip_suffix('\''))
+            .unwrap_or(v);
+        Some(v.to_string())
+    })
+}
+
 /// Lists render nodes of this machine.
 pub fn list_render_nodes() -> Vec<RenderNode> {
     list_render_nodes_in(
         Path::new("/sys/class/drm"),
         Path::new("/dev/dri"),
-        std::env::var("KWIN_DRM_DEVICES").ok().as_deref(),
+        kwin_drm_devices().as_deref(),
     )
 }
 
@@ -345,6 +376,28 @@ mod tests {
         assert_eq!(kwin_primary_card(""), None);
         assert_eq!(kwin_primary_card("/dev/dri/renderD128"), None);
         assert_eq!(kwin_primary_card("/dev/dri/card"), None);
+    }
+
+    #[test]
+    fn systemd_environment_value() {
+        let listing =
+            "HOME=/home/u\nKWIN_DRM_DEVICES=/dev/dri/card1:/dev/dri/card2\nKWIN_DRM_DEVICES_X=1\n";
+        assert_eq!(
+            env_value(listing, "KWIN_DRM_DEVICES").as_deref(),
+            Some("/dev/dri/card1:/dev/dri/card2")
+        );
+        assert_eq!(
+            env_value(
+                "KWIN_DRM_DEVICES=$'/dev/dri/by-path/pci-0000:01:00.0-card'\n",
+                "KWIN_DRM_DEVICES"
+            )
+            .as_deref(),
+            Some("/dev/dri/by-path/pci-0000:01:00.0-card")
+        );
+        assert_eq!(
+            env_value("KWIN_DRM_DEVICES_X=1\nHOME=/h\n", "KWIN_DRM_DEVICES"),
+            None
+        );
     }
 
     #[test]
