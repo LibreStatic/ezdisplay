@@ -20,6 +20,8 @@ libc = "0.2"
 tokio = { workspace = true }
 serde_json.workspace = true
 tracing.workspace = true
+# Only the bindings: functions are loaded through FFmpeg's Vulkan device.
+ash = { version = "0.38", default-features = false, features = ["std"] }
 
 [lints.rust]
 # FFI to FFmpeg (DRM frame descriptors, filter graphs), PipeWire raw buffers and libc fd handling.

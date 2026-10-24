@@ -5,6 +5,7 @@
 
 use crate::adapter::RenderNode;
 use crate::frame::{DmaBuf, Frame, Pixels, ShmBuf, av_pix_fmt_name, drm_fourcc};
+use crate::vkdma::VkDma;
 use ezd_ffmpeg::HwDevice;
 use ezd_ffmpeg::HwKind;
 use ezd_ffmpeg::sys as ff;
@@ -918,11 +919,12 @@ impl Converter {
         let fence_us = now_us() - t_fence;
         let (av, release) = match frame.pixels {
             Pixels::Dma(d) => {
-                let frames = a.drm_frames.as_ref().ok_or("no DRM frames context")?;
-                let (f, rel) = drm_frame(w, h, d, frames)?;
-                let f = match &a.vk_import {
-                    Some(i) => i.map(&f, ff::AV_HWFRAME_MAP_READ as i32)?,
-                    None => f,
+                let (f, rel) = match &a.vk_import {
+                    Some(i) => i.import(w, h, d)?,
+                    None => {
+                        let frames = a.drm_frames.as_ref().ok_or("no DRM frames context")?;
+                        drm_frame(w, h, d, frames)?
+                    }
                 };
                 if a.tag_colorspace {
                     // SAFETY: the frame is exclusively ours.
@@ -1203,6 +1205,9 @@ fn drm_frames(dev: &BufRef, pix_fmt: ff::AVPixelFormat, w: u32, h: u32) -> Resul
 /// Imports DMA-BUFs of one node, format and size into Vulkan. Shared by every converter in the
 /// process and never freed.
 ///
+/// Single-plane buffers are imported by [`VkDma`] with a dedicated allocation, which FFmpeg's map
+/// does not use (see `vkdma`). Other buffers go through FFmpeg's map.
+///
 /// FFmpeg (n8.1, and master as of October 2026) never frees a Vulkan frames context that a DRM
 /// frame was mapped into. `vulkan_map_from_drm_frame_sync` leaves the mapped frame as a dependency
 /// of a command buffer in the context's own pool, that pool is only released with the context, and
@@ -1213,6 +1218,10 @@ fn drm_frames(dev: &BufRef, pix_fmt: ff::AVPixelFormat, w: u32, h: u32) -> Resul
 struct VkImport {
     /// Vulkan device derived from the node's DRM device, with single-plane images.
     vk: BufRef,
+    /// Functions of `vk` for the dedicated imports.
+    dma: Arc<VkDma>,
+    /// Image format of `vk_frames`.
+    vk_format: ash::vk::Format,
     /// `DRM_PRIME` frames context that captured buffers are described with.
     drm_frames: BufRef,
     /// Vulkan frames context the buffers are mapped into.
@@ -1221,8 +1230,9 @@ struct VkImport {
     map_lock: Mutex<()>,
 }
 
-// SAFETY: the references are only cloned (atomic refcounts) and `vk_frames` is only mapped into
-// under `map_lock`; FFmpeg's Vulkan device locks its queues itself.
+// SAFETY: the references are only cloned (atomic refcounts), `vk_frames` is only mapped into under
+// `map_lock`, and dedicated imports create objects without touching shared state; FFmpeg's Vulkan
+// device locks its queues itself.
 unsafe impl Sync for VkImport {}
 
 impl VkImport {
@@ -1236,8 +1246,8 @@ impl VkImport {
     ) -> Result<Arc<VkImport>, String> {
         type Key = (String, i32, u32, u32);
         struct Cache {
-            /// Node, its DRM device, the Vulkan device derived from it.
-            devices: Vec<(String, BufRef, BufRef)>,
+            /// Node, its DRM device, the Vulkan device derived from it and its functions.
+            devices: Vec<(String, BufRef, BufRef, Arc<VkDma>)>,
             imports: Vec<(Key, Arc<VkImport>)>,
         }
         static CACHE: Mutex<Cache> = Mutex::new(Cache {
@@ -1256,9 +1266,11 @@ impl VkImport {
                 ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN,
                 Some(c"disable_multiplane"),
             )?;
-            cache.devices.push((node.to_string(), dev, vk));
+            // SAFETY: a Vulkan device context, kept alive by the cache for the whole process.
+            let dma = Arc::new(unsafe { VkDma::new(vk.0) }?);
+            cache.devices.push((node.to_string(), dev, vk, dma));
         }
-        let (_, dev, vk) = cache
+        let (_, dev, vk, dma) = cache
             .devices
             .iter()
             .find(|(n, ..)| n == node)
@@ -1278,14 +1290,48 @@ impl VkImport {
         if r < 0 {
             return Err(averr("derive Vulkan frames", r));
         }
+        // SAFETY: lookup in a static table; null for formats Vulkan cannot hold.
+        let vk_format = unsafe { ff::av_vkfmt_from_pixfmt(pix_fmt) };
+        if vk_format.is_null() {
+            return Err(format!("no Vulkan format for {pix_fmt:?}"));
+        }
         let import = Arc::new(VkImport {
             vk: vk.try_clone()?,
+            dma: dma.clone(),
+            // SAFETY: non-null pointer into FFmpeg's static table.
+            vk_format: ash::vk::Format::from_raw(unsafe { *vk_format } as i32),
             drm_frames: drm,
             vk_frames: BufRef(vk_frames),
             map_lock: Mutex::new(()),
         });
         cache.imports.push((key, import.clone()));
         Ok(import)
+    }
+
+    /// Imports `dma`, a `w`x`h` buffer of this import's format, as a Vulkan frame of `vk_frames`
+    /// for reading. The capture buffer's release comes back with it.
+    fn import(
+        &self,
+        w: u32,
+        h: u32,
+        dma: DmaBuf,
+    ) -> Result<(OwnedFrame, crate::frame::Release), String> {
+        if dma.planes.len() != 1 {
+            let (f, rel) = drm_frame(w, h, dma, &self.drm_frames)?;
+            return Ok((self.map(&f, ff::AV_HWFRAME_MAP_READ as i32)?, rel));
+        }
+        let f = OwnedFrame::alloc()?;
+        // SAFETY: `f` is a fresh frame; `vk_frames` holds images of `vk_format` on the device the
+        // functions were loaded from.
+        unsafe {
+            self.dma
+                .import(f.0, w, h, self.vk_format, dma.modifier, &dma.planes[0])?;
+            (*f.0).hw_frames_ctx = self.vk_frames.new_ref();
+            if (*f.0).hw_frames_ctx.is_null() {
+                return Err("av_buffer_ref failed".into());
+            }
+        }
+        Ok((f, dma.release))
     }
 
     /// Maps `src`, a frame of `drm_frames`, onto a Vulkan image with `flags` (`AV_HWFRAME_MAP_*`)
@@ -1795,15 +1841,25 @@ mod tests {
 
     /// A GBM buffer filled with `Q`, as a captured frame (the bo must outlive the frame's use).
     fn nvenc_frame(node: &str, bo: &Bo<'_>, vulkan_fill: bool) -> Result<Frame, String> {
-        use std::os::fd::AsRawFd;
-        let fd = bo.fd()?;
+        fill_bo(node, bo, vulkan_fill)?;
+        bo_frame(bo)
+    }
+
+    /// Fills `bo` with `Q`, through Vulkan for block-linear buffers.
+    fn fill_bo(node: &str, bo: &Bo<'_>, vulkan_fill: bool) -> Result<(), String> {
         if vulkan_fill {
-            fill_via_vulkan(node, &fd, NV_W, NV_H, bo)?;
+            fill_via_vulkan(node, &bo.fd()?, NV_W, NV_H, bo)
         } else {
             bo.write_mapped(NV_W, NV_H, |p, stride| {
                 fill_quadrants(p, stride, NV_W, NV_H)
-            })?;
+            })
         }
+    }
+
+    /// `bo` as a captured frame, with a fresh fd as PipeWire hands one over.
+    fn bo_frame(bo: &Bo<'_>) -> Result<Frame, String> {
+        use std::os::fd::AsRawFd;
+        let fd = bo.fd()?;
         // SAFETY: lseek on a valid fd.
         let size = unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_END) };
         if size <= 0 {
@@ -1923,6 +1979,52 @@ mod tests {
         .unwrap();
         assert!(out.keyframe && out.codec_config.is_some());
         check_colors(&decode_first(&out));
+    }
+
+    /// Many frames from a small pool of buffers, as the compositor cycles them: every decoded frame
+    /// must keep the content. Without dedicated allocations NVIDIA sampled some imports as black,
+    /// one frame in 16 to 33 depending on the buffers (see `vkdma`).
+    #[test]
+    fn nvenc_dmabuf_many_frames_keep_their_content() {
+        let (node, gbm) = match nvenc_env() {
+            Ok(x) => x,
+            Err(e) => return eprintln!("skip: {e}"),
+        };
+        for (label, mods) in [
+            ("linear", vec![DRM_FORMAT_MOD_LINEAR]),
+            ("block-linear", NV_MODS.collect()),
+        ] {
+            let linear = label == "linear";
+            let bos: Vec<Bo<'_>> = match (0..4).map(|_| gbm.create_bo(NV_W, NV_H, &mods)).collect()
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("skip {label}: {e}");
+                    continue;
+                }
+            };
+            for bo in &bos {
+                fill_bo(&node, bo, !linear).expect("fill buffer");
+            }
+            let mut p = Pipeline::new(nvenc_plan(node.clone()), 60_000, 8_000);
+            let mut d = Decoder::new(Codec::H264).unwrap();
+            let mut bad = Vec::new();
+            for i in 0..100 {
+                let frame = bo_frame(&bos[i % bos.len()]).expect("frame");
+                let out = p.encode(frame, false).expect("encode").expect("packet");
+                if let Some(c) = &out.codec_config {
+                    d.push_config(c).unwrap();
+                }
+                for f in d.decode(&out.data, i as i64).unwrap() {
+                    let c = rgb_at(&f, f.width / 4, f.height / 4);
+                    if !near(c, [255, 0, 0]) {
+                        bad.push((i, c));
+                    }
+                }
+            }
+            assert_eq!(p.path(), Some("nvenc-dmabuf"));
+            assert!(bad.is_empty(), "{label} frames lost their content: {bad:?}");
+        }
     }
 
     /// `cargo test -p ezd-host-linux --release -- --ignored --nocapture latency`

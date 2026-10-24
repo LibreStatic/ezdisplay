@@ -20,6 +20,7 @@ mod pod;
 mod portal;
 mod pw;
 mod source;
+mod vkdma;
 
 pub use ezd_host_core::PlatformOptions;
 use ezd_host_core::{PlatformError, VideoSource};

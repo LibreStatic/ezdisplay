@@ -337,7 +337,8 @@ took 1.5-2 ms and the encode 1.7-2 ms per frame; on the UHD 630 they take 2-17 m
   crashed after about 16. The same code is in FFmpeg master. The host maps into one Vulkan
   frames context per buffer format and size, shared by the whole process. Opening a converter
   again no longer leaks, and the last 8 mapped buffers (one per compute queue) stay referenced
-  until later mappings reuse their command buffers. The leaked devices also made the tests flaky:
+  until later mappings reuse their command buffers (only multi-plane buffers still go through
+  FFmpeg's map, see below). The leaked devices also made the tests flaky:
   a buffer filled through Vulkan sometimes read back as zeros.
 - Exiting the process while NVENC is being closed on another thread deadlocks: the exit handler
   of `libnvcuvid` and `avcodec_free_context` on the video thread block each other inside the
@@ -345,9 +346,53 @@ took 1.5-2 ms and the encode 1.7-2 ms per frame; on the UHD 630 they take 2-17 m
   stopping the source, so the host hung after "capture stopped" (also with `nvenc-sysmem`). Ctrl-C
   now ends the session through `SessionOptions::shutdown`, which sends `Bye` and waits for the
   source to stop.
+- Some imports sampled as black. FFmpeg's DRM to Vulkan map (`av_hwframe_map`, the same in
+  master) binds the imported memory with a dedicated allocation only when the driver prefers or
+  requires one, and the NVIDIA driver (595) reports neither. Without one, some imports sample as
+  zeros for the whole life of the image. Which ones depends only on the sequence of imports, not
+  on timing or on the memory type FFmpeg picks: with 4 test buffers in turn, linear buffers came
+  out black at frames 19, 52 and 85, block-linear ones at 7, 23, 40, 56 and 73, and with KWin's
+  buffers about one frame in 16 was black, which showed as flicker while scrolling. With a
+  dedicated allocation all 600 frames were right for both layouts; system memory (type 0) still
+  failed. The host now imports single-plane buffers itself (`vkdma.rs`, through `ash` and
+  FFmpeg's Vulkan device), preferring device-local memory, and hands FFmpeg the image as an
+  `AVVkFrame`. The test `nvenc_dmabuf_many_frames_keep_their_content` fails with FFmpeg's map.
+  `EZD_DIAG_DUMP=<file>` writes the stream as sent, which showed that the black frames were
+  already in it.
+
+### KWin on the NVIDIA GPU (hybrid mode)
+
+With `export KWIN_DRM_DEVICES=/dev/dri/card1:/dev/dri/card2` in
+`~/.config/plasma-workspace/env/kwin-nvidia.sh` (card1 is the GTX 1650), KWin composites on the
+NVIDIA GPU and the Intel GPU only drives the panel. The host then encodes with `nvenc-dmabuf`.
+Same benchmark, maximize and restore. NVIDIA busy is `utilization.gpu` from `nvidia-smi`, sampled
+every 100 ms over the whole run (mean / max):
+
+| Run | Frames from KWin | Encoded | NVIDIA busy | E2E p50 / p95 |
+|---|---|---|---|---|
+| 120 Hz | 26-28 | 22-23.5 | 19 / 38 % | 34 / 64 ms |
+| 120 Hz, with the import fix | 27.5-28 | 23-25 | - | 32 / 50 ms |
+| 60 Hz | 17 | 15-15.5 | 17 / 39 % | 36 / 88 ms |
+| 120 Hz, frames dropped without encoding | 20.5-21 | - | 20 / 39 % | - |
+| 120 Hz, converting ahead | 27.5-30 | 26-26.5 | 19 / 38 % | 31 / 66 ms |
+| `--scale 0.75`, 120 Hz | 28-28.5 | 22-24 | 17 / 38 % | 28 / 58 ms |
+
+Only the second row has the import fix above; that run also wrote the stream to disk and recorded
+the tablet's screen.
+
+- Against the UHD 630 at 120 Hz (20.5 frames from KWin, 10.5 encoded, 61 / 206 ms), KWin delivers
+  about 30 % more frames, the host encodes twice as many and the latency halves. The GTX 1650
+  stays under 40 % busy and its encoder under 42 %, so the GPU is no longer the limit.
+- Window moves run at 64 frames/s from KWin and encoded in every run, with gaps of 17-18 ms at
+  the 95th percentile.
+- Dropping every frame without encoding gave fewer frames from KWin, not more, so the host does
+  not hold KWin back. The main-thread stalls on maximize and restore remain (40-50 ms per event).
+- Converting ahead encodes 2-3 more frames per event without lowering the latency, and
+  `--scale 0.75` lowers it by a few ms. 60 Hz gives fewer frames and more latency than 120 Hz.
 
 ## Still to measure
 
+- KWin on the NVIDIA GPU in MUX dGPU-only mode.
 - The table runs above with a USB 3 cable. A drag over USB 3 did not change the link transfer.
 - The stylus `MotionEvent`s the app receives (button state, hover, tool type) with Air
   actions on and off, and whether an app can read `spen_air_action`.
