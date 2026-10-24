@@ -1,0 +1,30 @@
+about = Sostituto desktop del client Android.
+usage-label = Uso:
+heading-commands = Comandi
+heading-options = Opzioni
+help-flag = Mostra la guida
+version-flag = Mostra la versione
+arg-connect = Indirizzo dell'host (ad es., l'endpoint di `adb reverse` su un dispositivo è `127.0.0.1:27183`).
+arg-width = Larghezza dello schermo simulato.
+arg-height = Altezza dello schermo simulato.
+arg-refresh-rates-mhz = Frequenze di aggiornamento dello schermo simulato in millihertz, separate da virgole.
+arg-frames = Esce dopo questo numero di fotogrammi decodificati.
+arg-dump-frame = Scrive l'N-esimo fotogramma decodificato (da 1) in un file PPM: `--dump-frame 100 out.ppm`.
+arg-name = Nome del dispositivo inviato in Hello.
+arg-no-verify = Non interpreta i fotogrammi come il pattern di prova sintetico.
+arg-connect-timeout = Continua a ritentare la connessione TCP per questo numero di secondi.
+arg-max-seconds = Interrompe dopo questo numero di secondi.
+arg-input-script = Riproduce una volta una sequenza di input predefinita, a partire dal primo fotogramma video: tap, drag, circle, touch2, scroll o keys (Ctrl+Spazio tenuto durante un tratto della penna; richiede un host con KEYS).
+arg-exit-after-script = Esce poco dopo la fine dello script di input.
+
+err-dump-frame = --dump-frame N deve essere un numero
+err-connecting = connessione a { $addr }
+
+summary-stream = flusso: { $width }x{ $height } a { $hz } Hz { $codec } { $kbps } kbps tramite { $encoder }
+summary-end = fine: { $end }
+summary-video = video: ricevuti { $received } decodificati { $decoded } scartati { $dropped } keyframe { $keyframes } configurazioni codec { $configs } ({ $bytes } byte)
+summary-cursor = cursore: forme { $shapes } stati { $states } (forma mancante: { $missing }) ultimo { $last }
+summary-clock = orologio: scarto { $offset } us, rtt { $rtt } us
+summary-decode = decodifica: p50 { $p50 } us, p95 { $p95 } us
+summary-e2e = end-to-end (cattura host -> decodificato): p50 { $p50 } us, p95 { $p95 } us
+summary-input = input: stato { $status }, opzioni { $options }, inviati { $sent }

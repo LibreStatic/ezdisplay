@@ -1,7 +1,8 @@
 //! The `run` subcommand.
 
+use crate::i18n::fl;
 use anyhow::{Context, Result, bail};
-use clap::{Args, ValueEnum};
+use clap::{Args, Command, ValueEnum};
 use ezd_host_core::{
     InputBackend, PenMode, SessionError, SessionOptions, SessionSummary, UnavailableBackend,
     VideoSource, run_host_session_with,
@@ -9,14 +10,13 @@ use ezd_host_core::{
 use ezd_link::adb::{Adb, DeviceState};
 use ezd_link::{Link, VideoCredit};
 use ezd_proto::{DEFAULT_PORT, LinkKind, Prefs};
+use i18n_embed::fluent::FluentLanguageLoader;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Source {
-    /// Software-generated test pattern with a moving cursor.
     Synthetic,
-    /// A real virtual display captured and encoded by the platform backend.
     Virtual,
 }
 
@@ -28,60 +28,41 @@ pub enum LinkArg {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum PenModeArg {
-    /// Graphics tablet with pressure and tilt.
     Tablet,
-    /// Absolute mouse pointer.
     Mouse,
 }
 
+// Option help texts live in i18n/<lang>/ezd-host.ftl (`run-<option>` ids); see `localize`.
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Video source.
     #[arg(long, value_enum)]
     source: Source,
-    /// Address to listen on.
     #[arg(long, default_value = "127.0.0.1:27183")]
     listen: String,
-    /// Run `adb reverse tcp:27183 tcp:<listen port>` for SERIAL, or for every
-    /// ready device when no serial is given; removed again on exit.
     #[arg(long, num_args = 0..=1, value_name = "SERIAL")]
     adb: Option<Option<String>>,
-    /// Link kind: selects the default bitrate ceiling (usb 80 Mbps, network 30 Mbps).
     #[arg(long, value_enum, default_value = "usb")]
     link: LinkArg,
-    /// Highest refresh rate to use, in millihertz.
     #[arg(long, default_value_t = 120_000)]
     max_refresh_mhz: u32,
-    /// Fixed bitrate in kbit/s (clamped to the link ceiling).
     #[arg(long)]
     bitrate_kbps: Option<u32>,
-    /// Force a specific encoder by name.
     #[arg(long)]
     encoder: Option<String>,
-    /// GPU/adapter to use (`--source virtual`).
     #[arg(long)]
     adapter: Option<String>,
-    /// Prefer the discrete GPU (`--source virtual`).
     #[arg(long)]
     prefer_dgpu: bool,
-    /// Capture this existing output instead of creating one (`--source virtual`).
     #[arg(long)]
     output: Option<String>,
-    /// Stream at this fraction of the tablet's native resolution (0.25-1.0). Lower values
-    /// reduce GPU load; the tablet scales the picture up.
     #[arg(long, default_value_t = 1.0, value_parser = parse_scale)]
     scale: f32,
-    /// Video frames that may be sent but not yet acknowledged by the tablet. 1 gives the
-    /// lowest latency; more raises the frame rate when the round trip is long (Wi-Fi).
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=8))]
     video_window: u32,
-    /// Ask the tablet to show its telemetry overlay.
     #[arg(long)]
     telemetry: bool,
-    /// Do not inject input from the tablet.
     #[arg(long)]
     no_input: bool,
-    /// How the pen is injected.
     #[arg(long, value_enum, default_value = "tablet")]
     pen_mode: PenModeArg,
 }
@@ -103,6 +84,26 @@ impl Drop for ReverseGuard {
     }
 }
 
+/// Applies the localized help of every `run` option.
+pub fn localize(cmd: Command, l: &FluentLanguageLoader) -> Command {
+    use i18n_embed_fl::fl;
+    cmd.mut_arg("source", |a| a.help(fl!(l, "run-source")))
+        .mut_arg("listen", |a| a.help(fl!(l, "run-listen")))
+        .mut_arg("adb", |a| a.help(fl!(l, "run-adb")))
+        .mut_arg("link", |a| a.help(fl!(l, "run-link")))
+        .mut_arg("max_refresh_mhz", |a| a.help(fl!(l, "run-max-refresh-mhz")))
+        .mut_arg("bitrate_kbps", |a| a.help(fl!(l, "run-bitrate-kbps")))
+        .mut_arg("encoder", |a| a.help(fl!(l, "run-encoder")))
+        .mut_arg("adapter", |a| a.help(fl!(l, "run-adapter")))
+        .mut_arg("prefer_dgpu", |a| a.help(fl!(l, "run-prefer-dgpu")))
+        .mut_arg("output", |a| a.help(fl!(l, "run-output")))
+        .mut_arg("scale", |a| a.help(fl!(l, "run-scale")))
+        .mut_arg("video_window", |a| a.help(fl!(l, "run-video-window")))
+        .mut_arg("telemetry", |a| a.help(fl!(l, "run-telemetry")))
+        .mut_arg("no_input", |a| a.help(fl!(l, "run-no-input")))
+        .mut_arg("pen_mode", |a| a.help(fl!(l, "run-pen-mode")))
+}
+
 fn setup_adb(serial: Option<&str>, host_port: u16) -> Result<ReverseGuard> {
     let adb = Adb::locate()?;
     let serials: Vec<String> = match serial {
@@ -115,7 +116,7 @@ fn setup_adb(serial: Option<&str>, host_port: u16) -> Result<ReverseGuard> {
             .collect(),
     };
     if serials.is_empty() {
-        bail!("no ready adb device found (run `ezd-host diag` to inspect)");
+        bail!(fl!("err-no-adb-device"));
     }
     let mut guard = ReverseGuard {
         adb,
@@ -125,7 +126,7 @@ fn setup_adb(serial: Option<&str>, host_port: u16) -> Result<ReverseGuard> {
         guard
             .adb
             .reverse(&s, DEFAULT_PORT, host_port)
-            .with_context(|| format!("adb reverse for {s}"))?;
+            .with_context(|| fl!("err-adb-reverse", serial = s.as_str()))?;
         tracing::info!(serial = %s, "adb reverse tcp:{DEFAULT_PORT} -> tcp:{host_port}");
         guard.serials.push(s);
     }
@@ -133,18 +134,18 @@ fn setup_adb(serial: Option<&str>, host_port: u16) -> Result<ReverseGuard> {
 }
 
 fn parse_scale(s: &str) -> Result<f32, String> {
-    let v: f32 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
+    let v: f32 = s.parse().map_err(|_| fl!("err-scale-nan", value = s))?;
     if (0.25..=1.0).contains(&v) {
         Ok(v)
     } else {
-        Err(format!("scale must be between 0.25 and 1.0, got {s}"))
+        Err(fl!("err-scale-range", value = s))
     }
 }
 
 pub async fn run(args: RunArgs) -> Result<()> {
     let listener = TcpListener::bind(&args.listen)
         .await
-        .with_context(|| format!("binding {}", args.listen))?;
+        .with_context(|| fl!("err-binding", addr = args.listen.as_str()))?;
     let local = listener.local_addr()?;
     tracing::info!("listening on {local}");
     let _reverse = match &args.adb {

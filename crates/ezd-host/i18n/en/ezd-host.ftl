@@ -1,0 +1,37 @@
+about = ezdisplay host: streams a virtual display to the tablet, plus diagnostics
+cmd-run = Listen for a client and stream video to it.
+cmd-diag = Print a JSON diagnostics report (failures are reported as data).
+cmd-vdd = Manage the Virtual Display Driver (Windows).
+usage-label = Usage:
+heading-commands = Commands
+heading-options = Options
+help-flag = Print help
+version-flag = Print version
+run-source = Video source: "synthetic" is a software-generated test pattern with a moving cursor, "virtual" is a real virtual display captured and encoded by the platform backend.
+run-listen = Address to listen on.
+run-adb = Run `adb reverse tcp:27183 tcp:<listen port>` for SERIAL, or for every ready device when no serial is given; removed again on exit.
+run-link = Link kind: selects the default bitrate ceiling (usb 80 Mbps, network 30 Mbps).
+run-max-refresh-mhz = Highest refresh rate to use, in millihertz.
+run-bitrate-kbps = Fixed bitrate in kbit/s (clamped to the link ceiling).
+run-encoder = Force a specific encoder by name.
+run-adapter = GPU/adapter to use (`--source virtual`).
+run-prefer-dgpu = Prefer the discrete GPU (`--source virtual`).
+run-output = Capture this existing output instead of creating one (`--source virtual`).
+run-scale = Stream at this fraction of the tablet's native resolution (0.25-1.0). Lower values reduce GPU load; the tablet scales the picture up.
+run-video-window = Video frames that may be sent but not yet acknowledged by the tablet. 1 gives the lowest latency; more raises the frame rate when the round trip is long (Wi-Fi).
+run-telemetry = Ask the tablet to show its telemetry overlay.
+run-no-input = Do not inject input from the tablet.
+run-pen-mode = How the pen is injected: "tablet" is a graphics tablet with pressure and tilt, "mouse" is an absolute mouse pointer.
+
+vdd-status = Print the state of the VDD installation as JSON (changes nothing).
+vdd-setup = One-time setup, run as administrator: lets normal users edit the VDD settings, optionally assigns the GPU and pre-adds modes, then reloads the driver.
+vdd-setup-gpu = GPU the virtual display should render on (adapter name, as in `ezd-host diag`).
+vdd-setup-mode = Mode to offer, `WIDTHxHEIGHT@HZ`; repeatable.
+vdd-revert = Undo the permission change made by `setup`.
+
+err-no-adb-device = no ready adb device found (run `ezd-host diag` to inspect)
+err-adb-reverse = adb reverse for { $serial }
+err-binding = binding { $addr }
+err-scale-nan = `{ $value }` is not a number
+err-scale-range = scale must be between 0.25 and 1.0, got { $value }
+err-no-backend = no virtual display backend for this platform

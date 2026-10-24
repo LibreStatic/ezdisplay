@@ -1,0 +1,37 @@
+about = Host do ezdisplay: transmite uma tela virtual para o tablet, além de diagnósticos
+cmd-run = Aguarda um cliente e transmite vídeo para ele.
+cmd-diag = Exibe um relatório de diagnóstico em JSON (as falhas são informadas como dados).
+cmd-vdd = Gerencia o driver de tela virtual (Windows).
+usage-label = Uso:
+heading-commands = Comandos
+heading-options = Opções
+help-flag = Exibe a ajuda
+version-flag = Exibe a versão
+run-source = Fonte de vídeo: "synthetic" é um padrão de teste gerado por software com um cursor em movimento, "virtual" é uma tela virtual real capturada e codificada pelo backend da plataforma.
+run-listen = Endereço em que escutar.
+run-adb = Executa `adb reverse tcp:27183 tcp:<porta de escuta>` para SERIAL, ou para todos os dispositivos prontos se nenhum for informado; removido ao sair.
+run-link = Tipo de conexão: define o limite de bitrate padrão (usb 80 Mbps, rede 30 Mbps).
+run-max-refresh-mhz = Maior taxa de atualização a usar, em milihertz.
+run-bitrate-kbps = Bitrate fixo em kbit/s (limitado ao máximo da conexão).
+run-encoder = Força um codificador específico pelo nome.
+run-adapter = GPU/adaptador a usar (`--source virtual`).
+run-prefer-dgpu = Prefere a GPU dedicada (`--source virtual`).
+run-output = Captura esta saída existente em vez de criar uma (`--source virtual`).
+run-scale = Transmite a esta fração da resolução nativa do tablet (0,25-1,0). Valores menores reduzem a carga da GPU; o tablet amplia a imagem.
+run-video-window = Quadros de vídeo que podem ser enviados sem confirmação do tablet. 1 dá a menor latência; um valor maior aumenta a taxa de quadros quando o tempo de ida e volta é longo (Wi-Fi).
+run-telemetry = Pede ao tablet que mostre a sobreposição de telemetria.
+run-no-input = Não injeta a entrada do tablet.
+run-pen-mode = Como a caneta é injetada: "tablet" é uma mesa digitalizadora com pressão e inclinação, "mouse" é um ponteiro de mouse absoluto.
+
+vdd-status = Exibe o estado da instalação do VDD em JSON (não altera nada).
+vdd-setup = Configuração única, executada como administrador: permite que usuários comuns editem as configurações do VDD, atribui opcionalmente a GPU e adiciona modos antecipadamente, e recarrega o driver.
+vdd-setup-gpu = GPU em que a tela virtual deve renderizar (nome do adaptador, como em `ezd-host diag`).
+vdd-setup-mode = Modo a oferecer, `LARGURAxALTURA@HZ`; repetível.
+vdd-revert = Desfaz a alteração de permissões feita por `setup`.
+
+err-no-adb-device = nenhum dispositivo adb pronto encontrado (execute `ezd-host diag` para inspecionar)
+err-adb-reverse = adb reverse para { $serial }
+err-binding = vinculando { $addr }
+err-scale-nan = `{ $value }` não é um número
+err-scale-range = a escala deve estar entre 0,25 e 1,0, recebido { $value }
+err-no-backend = não há backend de tela virtual para esta plataforma

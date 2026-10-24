@@ -1,0 +1,30 @@
+about = Desktop-Ersatz für den Android-Client.
+usage-label = Verwendung:
+heading-commands = Befehle
+heading-options = Optionen
+help-flag = Hilfe anzeigen
+version-flag = Version anzeigen
+arg-connect = Host-Adresse (z. B. ist der `adb reverse`-Endpunkt auf einem Gerät `127.0.0.1:27183`).
+arg-width = Breite des simulierten Bildschirms.
+arg-height = Höhe des simulierten Bildschirms.
+arg-refresh-rates-mhz = Bildwiederholraten des simulierten Bildschirms in Millihertz, durch Kommas getrennt.
+arg-frames = Beendet nach dieser Anzahl dekodierter Bilder.
+arg-dump-frame = Schreibt das N-te dekodierte Bild (ab 1) in eine PPM-Datei: `--dump-frame 100 out.ppm`.
+arg-name = In Hello gesendeter Gerätename.
+arg-no-verify = Interpretiert die Bilder nicht als synthetisches Testmuster.
+arg-connect-timeout = Versucht die TCP-Verbindung so viele Sekunden lang erneut.
+arg-max-seconds = Bricht nach dieser Anzahl von Sekunden ab.
+arg-input-script = Spielt einmal eine vorgefertigte Eingabesequenz ab, beginnend mit dem ersten Videobild: tap, drag, circle, touch2, scroll oder keys (Strg+Leertaste während eines Stiftstrichs gehalten; benötigt einen Host mit KEYS).
+arg-exit-after-script = Beendet kurz nach Ende des Eingabeskripts.
+
+err-dump-frame = --dump-frame N muss eine Zahl sein
+err-connecting = Verbindung zu { $addr }
+
+summary-stream = Stream: { $width }x{ $height } bei { $hz } Hz { $codec } { $kbps } kbps über { $encoder }
+summary-end = Ende: { $end }
+summary-video = Video: empfangen { $received } dekodiert { $decoded } verworfen { $dropped } Keyframes { $keyframes } Codec-Konfigurationen { $configs } ({ $bytes } Bytes)
+summary-cursor = Cursor: Formen { $shapes } Zustände { $states } (fehlende Form: { $missing }) zuletzt { $last }
+summary-clock = Uhr: Versatz { $offset } us, RTT { $rtt } us
+summary-decode = Dekodierung: p50 { $p50 } us, p95 { $p95 } us
+summary-e2e = Ende-zu-Ende (Host-Aufnahme -> dekodiert): p50 { $p50 } us, p95 { $p95 } us
+summary-input = Eingabe: Status { $status }, Optionen { $options }, gesendet { $sent }

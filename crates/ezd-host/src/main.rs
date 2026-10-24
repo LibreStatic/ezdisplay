@@ -4,16 +4,22 @@
 //! * `ezd-host diag`: print a JSON report about the machine (GPUs, encoders, adb).
 
 mod diag;
+mod i18n;
 mod platform;
 mod run;
 #[cfg(windows)]
 mod vdd;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{
+    ArgMatches, Command as ClapCommand, CommandFactory, FromArgMatches, Parser, Subcommand,
+};
+use i18n_embed::fluent::FluentLanguageLoader;
 
+// Help texts live in i18n/<lang>/ezd-host.ftl and are applied by `command`; the derive structs
+// only describe the shape of the command line.
 #[derive(Parser, Debug)]
-#[command(name = "ezd-host", version, about)]
+#[command(name = "ezd-host", version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -21,17 +27,32 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Listen for a client and stream video to it.
     Run(run::RunArgs),
-    /// Print a JSON diagnostics report (failures are reported as data).
     Diag,
-    /// Manage the Virtual Display Driver (Windows).
     #[cfg(windows)]
     #[command(subcommand)]
     Vdd(vdd::VddCommand),
 }
 
+/// The command line with every help text taken from `l`.
+fn command(l: &FluentLanguageLoader) -> ClapCommand {
+    use i18n_embed_fl::fl;
+    let cmd = Cli::command();
+    let cmd = cmd
+        .about(fl!(l, "about"))
+        .mut_subcommand("run", |s| run::localize(s.about(fl!(l, "cmd-run")), l))
+        .mut_subcommand("diag", |s| s.about(fl!(l, "cmd-diag")));
+    #[cfg(windows)]
+    let cmd = cmd.mut_subcommand("vdd", |s| vdd::localize(s.about(fl!(l, "cmd-vdd")), l));
+    i18n::localize_version(i18n::localize_chrome(cmd, l), l)
+}
+
+fn parse(matches: &ArgMatches) -> Cli {
+    Cli::from_arg_matches(matches).unwrap_or_else(|e| e.exit())
+}
+
 fn main() -> Result<()> {
+    i18n::init();
     #[cfg(windows)]
     ezd_host_windows::isolate_std_handles();
     tracing_subscriber::fmt()
@@ -40,7 +61,8 @@ fn main() -> Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
-    match Cli::parse().command {
+    let matches = command(&i18n::LANGUAGE_LOADER).get_matches();
+    match parse(&matches).command {
         Command::Run(args) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -53,5 +75,43 @@ fn main() -> Result<()> {
         }
         #[cfg(windows)]
         Command::Vdd(cmd) => vdd::run(cmd),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn help(lang: i18n_embed::unic_langid::LanguageIdentifier, sub: &[&str]) -> String {
+        let l = i18n::loader_for(&[lang]);
+        let mut args = vec!["ezd-host"];
+        args.extend(sub);
+        args.push("--help");
+        let err = command(&l).try_get_matches_from(args).unwrap_err();
+        err.render().to_string()
+    }
+
+    #[test]
+    fn spanish_help_is_localized() {
+        let top = help("es".parse().unwrap(), &[]);
+        assert!(top.contains("Host de ezdisplay"), "{top}");
+        assert!(top.contains("Uso:"), "{top}");
+        assert!(top.contains("Comandos:"), "{top}");
+        assert!(top.contains("Opciones:"), "{top}");
+        assert!(
+            !top.contains("Usage:") && !top.contains("Print help"),
+            "{top}"
+        );
+        let run = help("es".parse().unwrap(), &["run"]);
+        assert!(run.contains("Espera a un cliente"), "{run}");
+        assert!(run.contains("Fuente de video:"), "{run}");
+    }
+
+    #[test]
+    fn english_is_the_fallback() {
+        let top = help("en".parse().unwrap(), &[]);
+        assert!(top.contains("Usage:") && top.contains("Commands:"), "{top}");
+        let unknown = help("xx".parse().unwrap(), &[]);
+        assert_eq!(top, unknown);
     }
 }

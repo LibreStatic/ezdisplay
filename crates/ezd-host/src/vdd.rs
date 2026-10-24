@@ -1,25 +1,33 @@
 //! `ezd-host vdd`: manage the Virtual Display Driver used by the Windows backend.
 
 use anyhow::{Result, anyhow};
-use clap::Subcommand;
+use clap::{Command, Subcommand};
 use ezd_host_windows::vdd_xml::Mode;
+use i18n_embed::fluent::FluentLanguageLoader;
 
+// Help texts live in i18n/<lang>/ezd-host.ftl (`vdd-*` ids); see `localize`.
 #[derive(Subcommand, Debug)]
 pub enum VddCommand {
-    /// Print the state of the VDD installation as JSON (changes nothing).
     Status,
-    /// One-time setup, run as administrator: lets normal users edit the VDD settings,
-    /// optionally assigns the GPU and pre-adds modes, then reloads the driver.
     Setup {
-        /// GPU the virtual display should render on (adapter name, as in `ezd-host diag`).
         #[arg(long)]
         gpu: Option<String>,
-        /// Mode to offer, `WIDTHxHEIGHT@HZ`; repeatable.
         #[arg(long = "mode", value_name = "WxH@Hz")]
         modes: Vec<String>,
     },
-    /// Undo the permission change made by `setup`.
     Revert,
+}
+
+/// Applies the localized help of the `vdd` subcommands and their options.
+pub fn localize(cmd: Command, l: &FluentLanguageLoader) -> Command {
+    use i18n_embed_fl::fl;
+    cmd.mut_subcommand("status", |s| s.about(fl!(l, "vdd-status")))
+        .mut_subcommand("setup", |s| {
+            s.about(fl!(l, "vdd-setup"))
+                .mut_arg("gpu", |a| a.help(fl!(l, "vdd-setup-gpu")))
+                .mut_arg("modes", |a| a.help(fl!(l, "vdd-setup-mode")))
+        })
+        .mut_subcommand("revert", |s| s.about(fl!(l, "vdd-revert")))
 }
 
 pub fn run(cmd: VddCommand) -> Result<()> {

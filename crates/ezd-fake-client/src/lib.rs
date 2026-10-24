@@ -5,6 +5,8 @@
 //! messages, measures capture-to-decoded latency and reports statistics.
 //! It is used by the integration tests and by the `ezd-fake-client` binary.
 
+#[macro_use]
+pub mod i18n;
 mod script;
 
 use ezd_client_core::{
@@ -179,42 +181,57 @@ impl ClientReport {
     /// Multi-line human readable summary.
     pub fn summary(&self) -> String {
         let s = &self.stream;
-        format!(
-            "stream: {}x{} @ {:.3} Hz {:?} {} kbps via {}\n\
-             end: {:?}\n\
-             video: received {} decoded {} dropped {} keyframes {} codec-configs {} ({} bytes)\n\
-             cursor: shapes {} states {} (missing shape: {}) last {:?}\n\
-             clock: offset {:?} us, rtt {:?} us\n\
-             decode: p50 {} us, p95 {} us\n\
-             e2e (host capture -> decoded): p50 {} us, p95 {} us\n\
-             input: status {:?}, options {:?}, sent {}",
-            s.width,
-            s.height,
-            s.refresh_mhz as f64 / 1000.0,
-            s.codec,
-            s.bitrate_kbps,
-            s.encoder_name,
-            self.end,
-            self.frames_received,
-            self.frames_decoded,
-            self.frames_dropped,
-            self.keyframes,
-            self.codec_configs,
-            self.video_bytes,
-            self.cursor_shapes,
-            self.cursor_states,
-            self.cursor_missing_shape,
-            self.last_cursor,
-            self.clock_offset_us,
-            self.rtt_us,
-            self.decode_us_p50,
-            self.decode_us_p95,
-            self.e2e_us_p50,
-            self.e2e_us_p95,
-            self.input_status,
-            self.client_options,
-            self.inputs_sent,
-        )
+        // Every value is passed pre-formatted so Fluent does not apply locale number grouping.
+        [
+            fl!(
+                "summary-stream",
+                width = s.width.to_string(),
+                height = s.height.to_string(),
+                hz = format!("{:.3}", s.refresh_mhz as f64 / 1000.0),
+                codec = format!("{:?}", s.codec),
+                kbps = s.bitrate_kbps.to_string(),
+                encoder = s.encoder_name.to_string()
+            ),
+            fl!("summary-end", end = format!("{:?}", self.end)),
+            fl!(
+                "summary-video",
+                received = self.frames_received.to_string(),
+                decoded = self.frames_decoded.to_string(),
+                dropped = self.frames_dropped.to_string(),
+                keyframes = self.keyframes.to_string(),
+                configs = self.codec_configs.to_string(),
+                bytes = self.video_bytes.to_string()
+            ),
+            fl!(
+                "summary-cursor",
+                shapes = self.cursor_shapes.to_string(),
+                states = self.cursor_states.to_string(),
+                missing = self.cursor_missing_shape.to_string(),
+                last = format!("{:?}", self.last_cursor)
+            ),
+            fl!(
+                "summary-clock",
+                offset = format!("{:?}", self.clock_offset_us),
+                rtt = format!("{:?}", self.rtt_us)
+            ),
+            fl!(
+                "summary-decode",
+                p50 = self.decode_us_p50.to_string(),
+                p95 = self.decode_us_p95.to_string()
+            ),
+            fl!(
+                "summary-e2e",
+                p50 = self.e2e_us_p50.to_string(),
+                p95 = self.e2e_us_p95.to_string()
+            ),
+            fl!(
+                "summary-input",
+                status = format!("{:?}", self.input_status),
+                options = format!("{:?}", self.client_options),
+                sent = self.inputs_sent.to_string()
+            ),
+        ]
+        .join("\n")
     }
 }
 

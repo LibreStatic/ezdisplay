@@ -1,0 +1,30 @@
+about = Sustituto de escritorio del cliente Android.
+usage-label = Uso:
+heading-commands = Comandos
+heading-options = Opciones
+help-flag = Muestra la ayuda
+version-flag = Muestra la versión
+arg-connect = Dirección del host (p. ej., el extremo de `adb reverse` en un dispositivo es `127.0.0.1:27183`).
+arg-width = Ancho de la pantalla simulada.
+arg-height = Alto de la pantalla simulada.
+arg-refresh-rates-mhz = Frecuencias de actualización de la pantalla simulada en milihercios, separadas por comas.
+arg-frames = Termina tras este número de fotogramas decodificados.
+arg-dump-frame = Escribe el fotograma decodificado número N (desde 1) en un archivo PPM: `--dump-frame 100 out.ppm`.
+arg-name = Nombre del dispositivo enviado en Hello.
+arg-no-verify = No interpreta los fotogramas como el patrón de prueba sintético.
+arg-connect-timeout = Sigue reintentando la conexión TCP durante este número de segundos.
+arg-max-seconds = Aborta tras este número de segundos.
+arg-input-script = Reproduce una vez una secuencia de entrada predefinida, desde el primer fotograma de video: tap, drag, circle, touch2, scroll o keys (Ctrl+Espacio mantenido durante un trazo del lápiz; requiere un host con KEYS).
+arg-exit-after-script = Termina poco después de acabar el guion de entrada.
+
+err-dump-frame = --dump-frame N debe ser un número
+err-connecting = conectando con { $addr }
+
+summary-stream = flujo: { $width }x{ $height } a { $hz } Hz { $codec } { $kbps } kbps mediante { $encoder }
+summary-end = fin: { $end }
+summary-video = video: recibidos { $received } decodificados { $decoded } descartados { $dropped } fotogramas clave { $keyframes } configuraciones de códec { $configs } ({ $bytes } bytes)
+summary-cursor = cursor: formas { $shapes } estados { $states } (forma ausente: { $missing }) último { $last }
+summary-clock = reloj: desfase { $offset } us, rtt { $rtt } us
+summary-decode = decodificación: p50 { $p50 } us, p95 { $p95 } us
+summary-e2e = extremo a extremo (captura del host -> decodificado): p50 { $p50 } us, p95 { $p95 } us
+summary-input = entrada: estado { $status }, opciones { $options }, enviados { $sent }

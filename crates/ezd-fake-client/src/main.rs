@@ -1,54 +1,43 @@
 //! `ezd-fake-client`: connect to an `ezd-host`, decode the stream, print latency statistics.
 
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{ArgMatches, Command, CommandFactory, FromArgMatches, Parser, ValueEnum};
+use ezd_fake_client::fl;
+use ezd_fake_client::i18n;
 use ezd_fake_client::{FakeClientConfig, InputScript, run_fake_client};
 use ezd_link::Link;
+use i18n_embed::fluent::FluentLanguageLoader;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-
-/// Desktop stand-in for the Android client.
+// Help texts live in i18n/<lang>/ezd-fake-client.ftl and are applied by `command`; the derive
+// struct only describes the shape of the command line.
 #[derive(Parser, Debug)]
-#[command(version, about)]
+#[command(version)]
 struct Args {
-    /// Host address (e.g. the `adb reverse` endpoint on a device is `127.0.0.1:27183`).
     #[arg(long, default_value = "127.0.0.1:27183")]
     connect: String,
-    /// Fake display width.
     #[arg(long, default_value_t = 1920)]
     width: u32,
-    /// Fake display height.
     #[arg(long, default_value_t = 1080)]
     height: u32,
-    /// Fake display refresh rates in millihertz, comma separated.
     #[arg(long, value_delimiter = ',', default_values_t = [60000u32, 120000])]
     refresh_rates_mhz: Vec<u32>,
-    /// Exit after this many decoded frames.
     #[arg(long)]
     frames: Option<u64>,
-    /// Write the Nth decoded frame (1-based) to a PPM file: `--dump-frame 100 out.ppm`.
     #[arg(long, num_args = 2, value_names = ["N", "PATH"])]
     dump_frame: Option<Vec<String>>,
-    /// Device name sent in Hello.
     #[arg(long, default_value = "ezd-fake-client")]
     name: String,
-    /// Do not interpret frames as the synthetic test pattern.
     #[arg(long)]
     no_verify: bool,
-    /// Keep retrying the TCP connection for this many seconds.
     #[arg(long, default_value_t = 10)]
     connect_timeout: u64,
-    /// Abort after this many seconds.
     #[arg(long)]
     max_seconds: Option<u64>,
-    /// Play a canned input sequence once, starting at the first video frame: tap, drag, circle,
-    /// touch2, scroll, or keys (Ctrl+Space held during a pen stroke; needs a host with KEYS).
     #[arg(long, value_enum)]
     input_script: Option<ScriptArg>,
-    /// Exit shortly after the input script finished.
     #[arg(long)]
     exit_after_script: bool,
-    /// Protocol minor to advertise (to test older clients).
     #[arg(long, hide = true)]
     proto_minor: Option<u16>,
 }
@@ -63,17 +52,47 @@ enum ScriptArg {
     Keys,
 }
 
+/// The command line with every help text taken from `l`.
+fn command(l: &FluentLanguageLoader) -> Command {
+    use i18n_embed_fl::fl;
+    let cmd = Args::command();
+    let cmd = cmd
+        .about(fl!(l, "about"))
+        .mut_arg("connect", |a| a.help(fl!(l, "arg-connect")))
+        .mut_arg("width", |a| a.help(fl!(l, "arg-width")))
+        .mut_arg("height", |a| a.help(fl!(l, "arg-height")))
+        .mut_arg("refresh_rates_mhz", |a| {
+            a.help(fl!(l, "arg-refresh-rates-mhz"))
+        })
+        .mut_arg("frames", |a| a.help(fl!(l, "arg-frames")))
+        .mut_arg("dump_frame", |a| a.help(fl!(l, "arg-dump-frame")))
+        .mut_arg("name", |a| a.help(fl!(l, "arg-name")))
+        .mut_arg("no_verify", |a| a.help(fl!(l, "arg-no-verify")))
+        .mut_arg("connect_timeout", |a| a.help(fl!(l, "arg-connect-timeout")))
+        .mut_arg("max_seconds", |a| a.help(fl!(l, "arg-max-seconds")))
+        .mut_arg("input_script", |a| a.help(fl!(l, "arg-input-script")))
+        .mut_arg("exit_after_script", |a| {
+            a.help(fl!(l, "arg-exit-after-script"))
+        });
+    i18n::localize_version(i18n::localize_chrome(cmd, l), l)
+}
+
+fn parse(matches: &ArgMatches) -> Args {
+    Args::from_arg_matches(matches).unwrap_or_else(|e| e.exit())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    i18n::init();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    let a = Args::parse();
+    let a = parse(&command(&i18n::LANGUAGE_LOADER).get_matches());
     let dump_frame = match a.dump_frame {
         Some(v) => {
-            let n: u64 = v[0].parse().context("--dump-frame N must be a number")?;
+            let n: u64 = v[0].parse().with_context(|| fl!("err-dump-frame"))?;
             Some((n, PathBuf::from(&v[1])))
         }
         None => None,
@@ -108,11 +127,44 @@ async fn main() -> Result<()> {
                 tracing::debug!("connect failed ({e}), retrying");
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            Err(e) => return Err(e).with_context(|| format!("connecting to {}", a.connect)),
+            Err(e) => {
+                return Err(e).with_context(|| fl!("err-connecting", addr = a.connect.as_str()));
+            }
         }
     };
     tracing::info!(host = %a.connect, "connected");
     let report = run_fake_client(link, cfg).await?;
     println!("{}", report.summary());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn help(lang: &str) -> String {
+        let l = i18n::loader_for(&[lang.parse().unwrap()]);
+        let err = command(&l)
+            .try_get_matches_from(["ezd-fake-client", "--help"])
+            .unwrap_err();
+        err.render().to_string()
+    }
+
+    #[test]
+    fn german_help_is_localized() {
+        let h = help("de");
+        assert!(h.contains("Desktop-Ersatz für den Android-Client."), "{h}");
+        assert!(h.contains("Verwendung:") && h.contains("Optionen:"), "{h}");
+        assert!(!h.contains("Usage:") && !h.contains("Print help"), "{h}");
+    }
+
+    #[test]
+    fn english_is_the_fallback() {
+        let h = help("en");
+        assert!(
+            h.contains("Desktop stand-in for the Android client."),
+            "{h}"
+        );
+        assert_eq!(h, help("xx"));
+    }
 }

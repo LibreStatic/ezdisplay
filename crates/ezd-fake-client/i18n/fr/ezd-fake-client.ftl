@@ -1,0 +1,30 @@
+about = Substitut de bureau pour le client Android.
+usage-label = Utilisation :
+heading-commands = Commandes
+heading-options = Options
+help-flag = Affiche l'aide
+version-flag = Affiche la version
+arg-connect = Adresse de l'hôte (p. ex., le point de terminaison `adb reverse` sur un appareil est `127.0.0.1:27183`).
+arg-width = Largeur de l'écran simulé.
+arg-height = Hauteur de l'écran simulé.
+arg-refresh-rates-mhz = Fréquences de rafraîchissement de l'écran simulé en millihertz, séparées par des virgules.
+arg-frames = Quitte après ce nombre d'images décodées.
+arg-dump-frame = Écrit la N-ième image décodée (à partir de 1) dans un fichier PPM : `--dump-frame 100 out.ppm`.
+arg-name = Nom de l'appareil envoyé dans Hello.
+arg-no-verify = N'interprète pas les images comme la mire de test synthétique.
+arg-connect-timeout = Réessaie la connexion TCP pendant ce nombre de secondes.
+arg-max-seconds = Abandonne après ce nombre de secondes.
+arg-input-script = Joue une fois une séquence d'entrée prédéfinie, dès la première image vidéo : tap, drag, circle, touch2, scroll ou keys (Ctrl+Espace maintenu pendant un tracé du stylet ; nécessite un hôte avec KEYS).
+arg-exit-after-script = Quitte peu après la fin du script d'entrée.
+
+err-dump-frame = --dump-frame N doit être un nombre
+err-connecting = connexion à { $addr }
+
+summary-stream = flux : { $width }x{ $height } à { $hz } Hz { $codec } { $kbps } kbps via { $encoder }
+summary-end = fin : { $end }
+summary-video = vidéo : reçues { $received } décodées { $decoded } abandonnées { $dropped } images clés { $keyframes } configurations de codec { $configs } ({ $bytes } octets)
+summary-cursor = curseur : formes { $shapes } états { $states } (forme manquante : { $missing }) dernier { $last }
+summary-clock = horloge : décalage { $offset } us, rtt { $rtt } us
+summary-decode = décodage : p50 { $p50 } us, p95 { $p95 } us
+summary-e2e = de bout en bout (capture hôte -> décodé) : p50 { $p50 } us, p95 { $p95 } us
+summary-input = entrée : état { $status }, options { $options }, envoyés { $sent }

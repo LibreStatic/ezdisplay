@@ -18,7 +18,7 @@ pub fn create_virtual_source(opts: &PlatformOptions) -> Result<Box<dyn VideoSour
     #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = opts;
-        anyhow::bail!("no virtual display backend for this platform")
+        anyhow::bail!(crate::i18n::fl!("err-no-backend"))
     }
 }
 

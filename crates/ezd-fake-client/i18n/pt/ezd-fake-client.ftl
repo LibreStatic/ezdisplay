@@ -1,0 +1,30 @@
+about = Substituto de desktop para o cliente Android.
+usage-label = Uso:
+heading-commands = Comandos
+heading-options = Opções
+help-flag = Exibe a ajuda
+version-flag = Exibe a versão
+arg-connect = Endereço do host (p. ex., o endpoint de `adb reverse` em um dispositivo é `127.0.0.1:27183`).
+arg-width = Largura da tela simulada.
+arg-height = Altura da tela simulada.
+arg-refresh-rates-mhz = Taxas de atualização da tela simulada em milihertz, separadas por vírgula.
+arg-frames = Sai após este número de quadros decodificados.
+arg-dump-frame = Grava o N-ésimo quadro decodificado (a partir de 1) em um arquivo PPM: `--dump-frame 100 out.ppm`.
+arg-name = Nome do dispositivo enviado no Hello.
+arg-no-verify = Não interpreta os quadros como o padrão de teste sintético.
+arg-connect-timeout = Continua tentando a conexão TCP por este número de segundos.
+arg-max-seconds = Aborta após este número de segundos.
+arg-input-script = Reproduz uma vez uma sequência de entrada predefinida, a partir do primeiro quadro de vídeo: tap, drag, circle, touch2, scroll ou keys (Ctrl+Espaço mantido durante um traço da caneta; requer um host com KEYS).
+arg-exit-after-script = Sai logo após o término do roteiro de entrada.
+
+err-dump-frame = --dump-frame N deve ser um número
+err-connecting = conectando a { $addr }
+
+summary-stream = fluxo: { $width }x{ $height } a { $hz } Hz { $codec } { $kbps } kbps via { $encoder }
+summary-end = fim: { $end }
+summary-video = vídeo: recebidos { $received } decodificados { $decoded } descartados { $dropped } quadros-chave { $keyframes } configurações de codec { $configs } ({ $bytes } bytes)
+summary-cursor = cursor: formas { $shapes } estados { $states } (forma ausente: { $missing }) último { $last }
+summary-clock = relógio: deslocamento { $offset } us, rtt { $rtt } us
+summary-decode = decodificação: p50 { $p50 } us, p95 { $p95 } us
+summary-e2e = ponta a ponta (captura do host -> decodificado): p50 { $p50 } us, p95 { $p95 } us
+summary-input = entrada: estado { $status }, opções { $options }, enviados { $sent }
