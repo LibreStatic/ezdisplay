@@ -5,4 +5,5 @@
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowDrawsSystemBarBackgrounds">false</item>
     </style>
+    <style name="Theme.EzDisplay.Settings" parent="@android:style/Theme.Material" />
 </resources>

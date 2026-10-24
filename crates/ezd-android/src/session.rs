@@ -128,6 +128,11 @@ impl Session {
         self.shared.to_json(&self.handle.snapshot())
     }
 
+    /// Hands one input message to the link; false if it was dropped.
+    pub fn send_input(&self, msg: &ezd_proto::Message) -> bool {
+        self.handle.send_input(msg)
+    }
+
     /// Latest cursor state.
     pub fn cursor(&self) -> Option<CursorSnapshot> {
         self.handle.cursor()

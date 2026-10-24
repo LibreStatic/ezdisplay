@@ -125,6 +125,10 @@ impl Shared {
             "frames_received": snap.total_received,
             "frames_decoded": snap.total_decoded,
             "frames_dropped": snap.total_dropped,
+            "input_caps": snap.input_status.as_ref().map(|i| i.caps),
+            "input_note": snap.input_status.as_ref().map(|i| i.note.clone()),
+            "client_flags": snap.client_options.map(|o| o.flags),
+            "inputs_sent": snap.inputs_sent,
         });
         v.to_string()
     }
@@ -151,6 +155,29 @@ mod tests {
         assert_eq!(j["width"], 2560);
         assert_eq!(j["codec"], "h264");
         assert_eq!(j["fps"], 0.0);
+        assert!(j["input_caps"].is_null());
+        assert!(j["input_note"].is_null());
+        assert!(j["client_flags"].is_null());
+        assert_eq!(j["inputs_sent"], 0);
+    }
+
+    #[test]
+    fn json_has_input_status() {
+        let sh = Shared::default();
+        let snap = ClientSnapshot {
+            input_status: Some(ezd_proto::InputStatus {
+                caps: 3,
+                note: "no uinput".into(),
+            }),
+            client_options: Some(ezd_proto::ClientOptions { flags: 1 }),
+            inputs_sent: 9,
+            ..Default::default()
+        };
+        let j: serde_json::Value = serde_json::from_str(&sh.to_json(&snap)).unwrap();
+        assert_eq!(j["input_caps"], 3);
+        assert_eq!(j["input_note"], "no uinput");
+        assert_eq!(j["client_flags"], 1);
+        assert_eq!(j["inputs_sent"], 9);
     }
 
     #[test]

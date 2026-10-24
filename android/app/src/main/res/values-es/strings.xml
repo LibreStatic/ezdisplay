@@ -8,4 +8,36 @@
     <string name="status_ended">Desconectado (%1$s). Esperando al host en %2$s…</string>
     <string name="status_bad_caps">No se puede iniciar: %1$s</string>
     <string name="telemetry">%1$s fps · %2$s Mbit/s\ndecodificación %3$s / %4$s ms (p50 / p95)\nextremo a extremo %5$s / %6$s ms (p50 / p95)\nRTT %7$s ms · descartados %8$d\n%9$s</string>
+    <string name="status_input_note">Entrada: %1$s</string>
+    <string name="status_air_actions_hint">Parece que el botón del lápiz activó las acciones aéreas de Samsung. Desactivalas en Ajustes → Funciones avanzadas → S Pen → Acciones aéreas.</string>
+    <string name="settings_button">Ajustes de entrada</string>
+    <string name="shortcut_input_settings">Ajustes de entrada</string>
+    <string name="settings_title">Ajustes de entrada</string>
+    <string name="settings_profile">Botón del lápiz</string>
+    <string name="profile_raw">Botón directo (como el lápiz de una tableta gráfica)</string>
+    <string name="profile_raw_desc">El botón va a la PC; el doble clic alterna el zoom local.</string>
+    <string name="profile_desktop">Escritorio</string>
+    <string name="profile_desktop_desc">Clic = clic derecho, doble clic = zoom local, mantener + arrastrar tocando = desplazar, mantener + mover en el aire = zoom en la PC.</string>
+    <string name="profile_drawing">Dibujo</string>
+    <string name="profile_drawing_desc">Mantener = goma mientras lo tengas apretado, doble clic = zoom local.</string>
+    <string name="profile_custom">Personalizado</string>
+    <string name="profile_custom_desc">Elegí la acción de cada gesto más abajo.</string>
+    <string name="trigger_click">Clic</string>
+    <string name="trigger_double_click">Doble clic</string>
+    <string name="trigger_hold">Mantener</string>
+    <string name="trigger_hold_drag_contact">Mantener + arrastrar tocando</string>
+    <string name="trigger_hold_drag_hover">Mantener + mover en el aire</string>
+    <string name="action_raw">Botón directo</string>
+    <string name="action_right_click">Clic derecho</string>
+    <string name="action_middle_click">Clic central</string>
+    <string name="action_local_zoom">Zoom local</string>
+    <string name="action_eraser">Goma</string>
+    <string name="action_scroll">Desplazar</string>
+    <string name="action_pc_zoom">Zoom en la PC</string>
+    <string name="action_none">Nada</string>
+    <string name="settings_zoom_factor">Nivel de zoom local</string>
+    <string name="settings_double_click">Tiempo de doble clic: %1$d ms</string>
+    <string name="settings_palm_rejection">Rechazo de palma (ignorar los dedos mientras el lápiz está cerca)</string>
+    <string name="settings_air_actions_on">Las acciones aéreas de Samsung están activadas. Pueden reaccionar a pulsaciones del botón que empiezan con la punta apoyada. Desactivalas en Ajustes → Funciones avanzadas → S Pen → Acciones aéreas.</string>
+    <string name="settings_air_actions_unknown">Si el botón del lápiz dispara las acciones aéreas de Samsung, desactivalas en Ajustes → Funciones avanzadas → S Pen → Acciones aéreas.</string>
 </resources>

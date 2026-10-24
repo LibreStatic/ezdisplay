@@ -453,9 +453,11 @@ version = "0.1.0"
 dependencies = [
  "android_logger",
  "ezd-client-core",
+ "ezd-input",
  "ezd-link",
  "ezd-proto",
  "jni",
+ "libc",
  "log",
  "ndk",
  "serde",

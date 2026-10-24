@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="input_settings"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_menu_preferences"
+        android:shortcutShortLabel="@string/shortcut_input_settings"
+        android:shortcutLongLabel="@string/shortcut_input_settings">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.github.facum.ezdisplay"
+            android:targetClass="io.github.facum.ezdisplay.SettingsActivity" />
+    </shortcut>
+</shortcuts>

@@ -94,7 +94,7 @@ androidComponents {
                 fileTree(repoRootDir) {
                     include("Cargo.toml", "Cargo.lock")
                     include("crates/ezd-android/**", "crates/ezd-client-core/**")
-                    include("crates/ezd-proto/**", "crates/ezd-link/**")
+                    include("crates/ezd-proto/**", "crates/ezd-link/**", "crates/ezd-input/**")
                     exclude("**/target/**")
                 },
             )

@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 serde.workspace = true
 serde_json.workspace = true
 ezd-client-core = { path = "../ezd-client-core" }
+ezd-input.workspace = true
 ezd-link.workspace = true
 ezd-proto.workspace = true
 tokio.workspace = true
@@ -24,6 +25,7 @@ tracing = { workspace = true, features = ["log"] }
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
 jni = "0.22"
+libc = "0.2"
 log = "0.4"
 ndk = { version = "0.9", default-features = false, features = ["media", "nativewindow", "api-level-26"] }
 
