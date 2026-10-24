@@ -274,13 +274,38 @@ Maximize, 500 ms after the event (KWin's animation lasts about 300 ms):
   They come from the outline animation itself, not from the host. Unloading the blur effect
   changed nothing.
 
+### Lower resolution and converting ahead
+
+Two changes from the options above, measured with the same benchmark. The client's 1 s
+statistics windows give the frames the tablet received and the end-to-end latency (median of the
+windows) during the maximize/restore cycles (about 11 s), and the latency during the window moves:
+
+| Run | Frames received | E2E p50 / p95 | Moves p50 |
+|---|---|---|---|
+| 120 Hz, serial | 140-144 | 61-63 / 175-226 ms | 37 ms |
+| 120 Hz, converting ahead | 161-176 | 80-82 / 213-220 ms | 37-38 ms |
+| `--scale 0.75`, 120 Hz, serial | 254-260 | 34-37 / 105-217 ms | 32 ms |
+| `--scale 0.75`, 120 Hz, converting ahead | 280 | 42-44 / 98-106 ms | 31 ms |
+| 60 Hz, serial | 178 | 58 / 148 ms | 34 ms |
+| 60 Hz, converting ahead | 194-195 | 63-64 / 145-180 ms | 33-34 ms |
+
+- `--scale 0.75` (2220x1386) nearly doubles the frames during the animations and halves the
+  latency. The tablet scales the picture up, so text is less sharp.
+- Converting ahead (`EZD_CONVERT_AHEAD=1`) runs the fence wait and the conversion of the next
+  frame on its own thread while the core thread encodes and sends the current one. It gives
+  9-24 % more frames during the animations but adds 6-20 ms of latency, and the moves do not
+  change. The GPU is 91-100 % busy, so the overlap cannot add capacity: while a conversion runs,
+  the encoder's submit time goes from 12 to 23 ms (90th percentile). Starting the conversion late, so that it
+  ends when the encoder asks for the frame, makes no difference here, because under this load
+  the conversion takes longer than the encoder's cycle and the start is never delayed. It stays
+  off by default; the NVIDIA path, where the GPU is not saturated, is the next place to try it.
+- Waiting for the conversion with `vaSyncSurface` takes no time: the filter graph already
+  returns after the GPU has finished.
+
 Next options:
 - A 60 Hz default when encoding on an integrated GPU.
-- A lower stream resolution as an option: smoother animations, less sharp text.
 - The NVIDIA GPU for both compositing and encoding, either in MUX dGPU mode or with KWin using
   the NVIDIA GPU as primary. This needs the zero-copy NVENC path.
-- Overlapping the encode (video engine) with the next frame's conversion (render engine). At
-  120 Hz this saves up to 8 ms per frame, but the render engine is close to saturated.
 - A higher GPU priority for the conversion needs `CAP_SYS_NICE`. It would also take render time
   from KWin, which is already the limit at 60 Hz.
 

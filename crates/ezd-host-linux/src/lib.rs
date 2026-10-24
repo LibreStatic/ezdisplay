@@ -7,6 +7,7 @@
 #![cfg(target_os = "linux")]
 
 mod adapter;
+mod ahead;
 mod cursor;
 mod cursor_meta;
 mod diag;

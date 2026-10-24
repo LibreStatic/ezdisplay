@@ -1,7 +1,8 @@
 //! [`VideoSource`] for KDE Plasma: portal virtual output -> PipeWire -> hardware encode.
 
 use crate::adapter::{self, RenderNode};
-use crate::encode::{Kind, Pipeline, Plan, plan_encoders, probe_plan};
+use crate::ahead::{ConvertAhead, Item, Start};
+use crate::encode::{Converter, Encoder, Kind, Pipeline, Plan, plan_encoders, probe_plan};
 use crate::kscreen;
 use crate::portal::{PortalCapture, SourceKind};
 use crate::pw::{PwCapture, PwParams, Target, default_intel_modifiers};
@@ -9,7 +10,7 @@ use ezd_host_core::{CursorSink, EncodedFrame, PlatformOptions, SourceError, Vide
 use ezd_proto::{Codec, EncoderCaps, StreamConfig};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 type ProbeCache = Mutex<HashMap<(String, String), Result<(), String>>>;
 
@@ -55,12 +56,45 @@ pub struct KdeVirtualSource {
     force_key: bool,
 }
 
+/// Converts and encodes capture frames.
+enum Input {
+    /// Both on the core thread (the default).
+    Serial(Pipeline),
+    /// Conversion on its own thread, one frame ahead of the encoder on the core thread.
+    Ahead {
+        // Field order matters for drop: join the converter thread first.
+        conv: ConvertAhead,
+        enc: Encoder,
+    },
+}
+
 struct Running {
-    // Field order matters for drop: stop capture before closing the portal session.
-    pipeline: Pipeline,
+    // Field order matters for drop: stop converting, then capture, then close the portal session.
+    input: Input,
     pw: PwCapture,
     _portal: PortalCapture,
     dmabuf_ok: bool,
+    /// When the shared-memory fallback started.
+    dmabuf_off_at: Option<Instant>,
+}
+
+/// After the shared-memory fallback starts, DMA-BUF frames that were already captured or
+/// converted can still fail for this long; they are dropped instead of ending the stream.
+const DMABUF_GRACE: Duration = Duration::from_secs(2);
+
+/// Converting ahead is opt-in: `EZD_CONVERT_AHEAD=1` (late start) or `early`. On the Intel iGPU
+/// it gives more frames during window animations but adds latency, because KWin already keeps
+/// the GPU busy and the conversion slows the encoder down (`docs/phase0-findings.md`). The
+/// benchmark's skip-encode mode needs the serial path, which drops frames before converting them.
+fn convert_ahead() -> Option<Start> {
+    if std::env::var_os("EZD_DIAG_SKIP_ENCODE").is_some() {
+        return None;
+    }
+    match std::env::var("EZD_CONVERT_AHEAD").as_deref() {
+        Ok("1") => Some(Start::Late),
+        Ok("early") => Some(Start::Early),
+        _ => None,
+    }
 }
 
 impl KdeVirtualSource {
@@ -186,12 +220,26 @@ impl VideoSource for KdeVirtualSource {
             );
         }
         tracing::info!(?fmt, plan = ?plan, "capture format negotiated");
-        let pipeline = Pipeline::new(plan, cfg.refresh_mhz, cfg.bitrate_kbps);
+        let ahead = convert_ahead();
+        tracing::info!(convert_ahead = ?ahead, "encode pipeline ready");
+        let input = match ahead {
+            Some(start) => Input::Ahead {
+                enc: Encoder::new(plan.name, cfg.refresh_mhz, cfg.bitrate_kbps),
+                conv: ConvertAhead::start(
+                    Converter::new(plan, cfg.refresh_mhz),
+                    pw.frames(),
+                    start,
+                )
+                .map_err(SourceError::msg)?,
+            },
+            None => Input::Serial(Pipeline::new(plan, cfg.refresh_mhz, cfg.bitrate_kbps)),
+        };
         self.running = Some(Running {
-            pipeline,
+            input,
             pw,
             _portal: portal,
             dmabuf_ok: fmt.modifier.is_some(),
+            dmabuf_off_at: None,
         });
         self.force_key = true;
         Ok(())
@@ -202,31 +250,54 @@ impl VideoSource for KdeVirtualSource {
         let Some(r) = self.running.as_mut() else {
             return Err(SourceError::msg("source not started"));
         };
-        let frame = match r.pw.next(timeout) {
-            Ok(Some(f)) => f,
-            Ok(None) => {
-                self.force_key |= force;
-                return Ok(None);
+        // `start_us`: when this frame's conversion (serial) or encoding (ahead) began.
+        let (result, start_us, capture_us, seq, was_dma) = match &mut r.input {
+            Input::Serial(pipeline) => {
+                let frame = match r.pw.next(timeout) {
+                    Ok(Some(f)) => f,
+                    Ok(None) => {
+                        self.force_key |= force;
+                        return Ok(None);
+                    }
+                    Err(e) => return Err(SourceError::msg(e)),
+                };
+                // Benchmark aid (tools/kwin-anim-bench): drop every frame to measure KWin alone.
+                if std::env::var_os("EZD_DIAG_SKIP_ENCODE").is_some() {
+                    drop(frame);
+                    return Ok(None);
+                }
+                let (capture_us, seq, dma) = (frame.capture_us, frame.seq, frame.is_dma());
+                let start_us = ezd_host_core::now_us();
+                (
+                    pipeline.encode(frame, force),
+                    start_us,
+                    capture_us,
+                    seq,
+                    dma,
+                )
             }
-            Err(e) => return Err(SourceError::msg(e)),
+            Input::Ahead { conv, enc } => match conv.take(timeout) {
+                None => {
+                    self.force_key |= force;
+                    return Ok(None);
+                }
+                Some(Item::Frame(p)) => {
+                    let (capture_us, seq, dma) = (p.capture_us, p.seq, p.dma);
+                    let start_us = ezd_host_core::now_us();
+                    (enc.encode(p, force), start_us, capture_us, seq, dma)
+                }
+                Some(Item::Failed { dma, error }) => (Err(error), 0, 0, 0, dma),
+                Some(Item::Closed(e)) => return Err(SourceError::msg(e)),
+            },
         };
-        // Benchmark aid (tools/kwin-anim-bench): drop every frame to measure KWin alone.
-        if std::env::var_os("EZD_DIAG_SKIP_ENCODE").is_some() {
-            drop(frame);
-            return Ok(None);
-        }
-        let capture_us = frame.capture_us;
-        let seq = frame.seq;
-        let was_dma = frame.is_dma();
-        let dequeued_us = ezd_host_core::now_us();
-        match r.pipeline.encode(frame, force) {
+        match result {
             Ok(Some(o)) => {
                 tracing::trace!(
                     path = o.path,
                     bytes = o.data.len(),
                     key = o.keyframe,
-                    age_us = dequeued_us.saturating_sub(capture_us),
-                    encode_us = o.encoded_us.saturating_sub(dequeued_us),
+                    age_us = start_us.saturating_sub(capture_us),
+                    encode_us = o.encoded_us.saturating_sub(start_us),
                     "encoded"
                 );
                 Ok(Some(EncodedFrame {
@@ -245,7 +316,13 @@ impl VideoSource for KdeVirtualSource {
             Err(e) if was_dma && r.dmabuf_ok => {
                 tracing::warn!("DMA-BUF encode failed ({e}); falling back to shared memory");
                 r.dmabuf_ok = false;
+                r.dmabuf_off_at = Some(Instant::now());
                 r.pw.disable_dmabuf();
+                self.force_key = true;
+                Ok(None)
+            }
+            Err(e) if was_dma && r.dmabuf_off_at.is_some_and(|t| t.elapsed() < DMABUF_GRACE) => {
+                tracing::debug!("dropping a DMA-BUF frame during the fallback: {e}");
                 self.force_key = true;
                 Ok(None)
             }
@@ -258,7 +335,8 @@ impl VideoSource for KdeVirtualSource {
     }
 
     fn stop(&mut self) {
-        // Drop order: encoder, PipeWire, then the portal session (removes the virtual output).
+        // Drop order: converter and encoder, PipeWire, then the portal session (removes the
+        // virtual output).
         if let Some(r) = &self.running {
             let (produced, coalesced) = r.pw.counters();
             tracing::info!(produced, coalesced, "capture stopped");

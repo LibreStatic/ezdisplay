@@ -17,6 +17,6 @@ for t, k in [e for e in ev if e[1] == sys.argv[3]][:n]:
         if not (t <= s < t + 0.35): continue
         at = (s - t) * 1e3
         if kind == "P": print("%6.1f  KWin frame%s" % (at, " (replaced an unencoded one)" if "replaced" in d or "true" in str(d) else ""))
-        elif kind == "S": print("%6.1f    fence %5.1f  convert %5.1f  encode %5.1f" % (at, d.get("fence_us", 0) / 1e3, d["graph_us"] / 1e3, d["send_us"] / 1e3))
+        elif kind == "S": print("%6.1f    fence %5.1f  convert %5.1f  wait %5.1f  encode %5.1f" % (at, d.get("fence_us", 0) / 1e3, (d["graph_us"] + d.get("sync_us", 0)) / 1e3, d.get("wait_us", 0) / 1e3, d["send_us"] / 1e3))
         else: print("%6.1f    encoded, age %5.1f" % (at, d.get("age_us", 0) / 1e3))
     print()

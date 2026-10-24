@@ -77,6 +77,41 @@ impl Shared {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.m.lock().unwrap_or_else(|e| e.into_inner())
     }
+
+    /// Takes the newest frame, waiting up to `timeout`. `Err` when the stream died.
+    fn next(&self, timeout: Duration) -> Result<Option<Frame>, String> {
+        let deadline = Instant::now() + timeout;
+        let mut s = self.lock();
+        loop {
+            if let Some(f) = s.latest.take() {
+                return Ok(Some(f));
+            }
+            if let Some(e) = &s.error {
+                return Err(e.clone());
+            }
+            if s.closed {
+                return Err("PipeWire stream closed (portal session ended?)".into());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(None);
+            }
+            s = self
+                .cv
+                .wait_timeout(s, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+}
+
+/// Takes frames from the capture thread; usable from any thread while the capture runs.
+pub struct Frames(Arc<Shared>);
+
+impl crate::ahead::FrameSource for Frames {
+    fn next(&self, timeout: Duration) -> Result<Option<Frame>, String> {
+        self.0.next(timeout)
+    }
 }
 
 /// Handle to the capture thread.
@@ -200,29 +235,12 @@ impl PwCapture {
 
     /// Takes the newest frame, waiting up to `timeout`. `Err` when the stream died.
     pub fn next(&self, timeout: Duration) -> Result<Option<Frame>, String> {
-        let deadline = Instant::now() + timeout;
-        let mut s = self.shared.lock();
-        loop {
-            if let Some(f) = s.latest.take() {
-                return Ok(Some(f));
-            }
-            if let Some(e) = &s.error {
-                return Err(e.clone());
-            }
-            if s.closed {
-                return Err("PipeWire stream closed (portal session ended?)".into());
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(None);
-            }
-            s = self
-                .shared
-                .cv
-                .wait_timeout(s, deadline - now)
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
-        }
+        self.shared.next(timeout)
+    }
+
+    /// Handle that takes frames from another thread.
+    pub fn frames(&self) -> Frames {
+        Frames(self.shared.clone())
     }
 
     /// Frames delivered by the compositor and frames replaced before the encoder took them.

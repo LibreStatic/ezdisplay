@@ -262,11 +262,6 @@ impl Graph {
         }
     }
 
-    fn sink_hw_frames(&self) -> *mut ff::AVBufferRef {
-        // SAFETY: valid, configured sink.
-        unsafe { ff::av_buffersink_get_hw_frames_ctx(self.sink) }
-    }
-
     fn sink_size(&self) -> (u32, u32) {
         // SAFETY: valid, configured sink.
         unsafe {
@@ -585,24 +580,56 @@ struct InputKey {
     height: u32,
 }
 
-struct Active {
+/// Input stage of an opened pipeline.
+struct Conv {
     key: InputKey,
     graph: Option<Graph>,
-    enc: Enc,
     drm_frames: Option<BufRef>,
-    /// Keeps the VAAPI/DRM devices alive as long as the encoder.
+    /// Keeps the VAAPI/DRM devices alive as long as the graph.
     _devices: Vec<BufRef>,
     _vaapi: Option<HwDevice>,
-    sent_config: bool,
+    /// Encoder input format and (even) size.
+    pix_fmt: ff::AVPixelFormat,
+    width: u32,
+    height: u32,
     path: &'static str,
 }
 
-/// Capture-to-bitstream pipeline for one plan.
-pub struct Pipeline {
+/// A frame converted for the encoder.
+pub struct Prepared {
+    frame: OwnedFrame,
+    /// Changes whenever the converter reopens; the encoder then reopens too.
+    generation: u64,
+    pix_fmt: ff::AVPixelFormat,
+    width: u32,
+    height: u32,
+    path: &'static str,
+    /// The input was a DMA-BUF.
+    pub dma: bool,
+    /// Capture time of the source frame.
+    pub capture_us: u64,
+    /// Capture counter of the source frame.
+    pub seq: u64,
+    /// `now_us` when the conversion finished.
+    ready_us: u64,
+    fence_us: u64,
+    graph_us: u64,
+    sync_us: u64,
+    /// The capture buffer, while the conversion may still read it.
+    release: Option<crate::frame::Release>,
+}
+
+// SAFETY: the frame is exclusively owned and moves between threads as a whole; FFmpeg buffer
+// reference counts are atomic.
+unsafe impl Send for Prepared {}
+
+/// Converts captured frames to the encoder's input: DMA-BUF import or upload, then color
+/// conversion.
+pub struct Converter {
     plan: Plan,
     fps_mhz: u32,
-    kbps: u32,
-    active: Option<Active>,
+    active: Option<Conv>,
+    generation: u64,
     pts: i64,
 }
 
@@ -620,14 +647,38 @@ fn even(v: u32) -> u32 {
     v & !1
 }
 
-impl Pipeline {
-    /// New pipeline; nothing is opened until the first frame arrives.
-    pub fn new(plan: Plan, fps_mhz: u32, kbps: u32) -> Pipeline {
-        Pipeline {
+#[link(name = "va")]
+unsafe extern "C" {
+    fn vaSyncSurface(dpy: *mut c_void, surface: u32) -> i32;
+}
+
+/// Waits until the GPU has finished writing a VAAPI frame; other frames are already complete.
+fn sync_vaapi(frame: &OwnedFrame) -> Result<(), String> {
+    // SAFETY: a VAAPI frame keeps its VASurfaceID in data[3] and its frames context alive; the
+    // device's hwctx is an AVVAAPIDeviceContext, whose first field is the VADisplay.
+    unsafe {
+        let f = &*frame.0;
+        if f.format != ff::AVPixelFormat::AV_PIX_FMT_VAAPI as i32 || f.hw_frames_ctx.is_null() {
+            return Ok(());
+        }
+        let fc = &*((*f.hw_frames_ctx).data as *const ff::AVHWFramesContext);
+        let display = *((*fc.device_ctx).hwctx as *const *mut c_void);
+        let r = vaSyncSurface(display, f.data[3] as usize as u32);
+        if r != 0 {
+            return Err(format!("vaSyncSurface failed ({r})"));
+        }
+    }
+    Ok(())
+}
+
+impl Converter {
+    /// New converter; nothing is opened until the first frame arrives.
+    pub fn new(plan: Plan, fps_mhz: u32) -> Converter {
+        Converter {
             plan,
             fps_mhz,
-            kbps,
             active: None,
+            generation: 0,
             pts: 0,
         }
     }
@@ -637,7 +688,7 @@ impl Pipeline {
         self.active.as_ref().map(|a| a.path)
     }
 
-    fn open(&self, frame: &Frame) -> Result<Active, String> {
+    fn open(&self, frame: &Frame) -> Result<Conv, String> {
         let (w, h) = (even(frame.width), even(frame.height));
         let (dma, spa_format) = match &frame.pixels {
             Pixels::Dma(d) => (true, d.spa_format),
@@ -710,27 +761,19 @@ impl Pipeline {
                     }
                     (g.ok_or(last)?, "vaapi-shm")
                 };
-                let enc = Enc::open(&EncParams {
-                    name: self.plan.name,
-                    width: w,
-                    height: h,
-                    fps_mhz: self.fps_mhz,
-                    kbps: self.kbps,
-                    pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_VAAPI,
-                    hw_frames: Some(graph.sink_hw_frames()),
-                })?;
                 let (gw, gh) = graph.sink_size();
                 if (gw, gh) != (w, h) {
                     return Err(format!("filter output is {gw}x{gh}, expected {w}x{h}"));
                 }
-                Ok(Active {
+                Ok(Conv {
                     key,
                     graph: Some(graph),
-                    enc,
                     drm_frames,
                     _devices: devices,
                     _vaapi: Some(vaapi),
-                    sent_config: false,
+                    pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_VAAPI,
+                    width: w,
+                    height: h,
                     path,
                 })
             }
@@ -738,23 +781,15 @@ impl Pipeline {
                 if dma {
                     return Err("NVENC path takes shared-memory frames".into());
                 }
-                let enc = Enc::open(&EncParams {
-                    name: self.plan.name,
-                    width: w,
-                    height: h,
-                    fps_mhz: self.fps_mhz,
-                    kbps: self.kbps,
-                    pix_fmt: in_fmt,
-                    hw_frames: None,
-                })?;
-                Ok(Active {
+                Ok(Conv {
                     key,
                     graph: None,
-                    enc,
                     drm_frames: None,
                     _devices: Vec::new(),
                     _vaapi: None,
-                    sent_config: false,
+                    pix_fmt: in_fmt,
+                    width: w,
+                    height: h,
                     path: "nvenc-sysmem",
                 })
             }
@@ -773,33 +808,25 @@ impl Pipeline {
                     "scale=w={w}:h={h}:flags=fast_bilinear:out_color_matrix=bt709:out_range=tv,format=yuv420p"
                 );
                 let graph = Graph::build(&input, &desc, None)?;
-                let enc = Enc::open(&EncParams {
-                    name: self.plan.name,
-                    width: w,
-                    height: h,
-                    fps_mhz: self.fps_mhz,
-                    kbps: self.kbps,
-                    pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_YUV420P,
-                    hw_frames: None,
-                })?;
-                Ok(Active {
+                Ok(Conv {
                     key,
                     graph: Some(graph),
-                    enc,
                     drm_frames: None,
                     _devices: Vec::new(),
                     _vaapi: None,
-                    sent_config: false,
+                    pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_YUV420P,
+                    width: w,
+                    height: h,
                     path: "x264-swscale",
                 })
             }
         }
     }
 
-    /// Encodes `frame`. A new encoder is opened when the input format or size changes (the
-    /// result then starts with an IDR and codec config). The PipeWire buffer behind a DMA-BUF
-    /// frame is released after the encoder produced its packet.
-    pub fn encode(&mut self, frame: Frame, force_key: bool) -> Result<Option<Output>, String> {
+    /// Converts `frame`, reopening when its format or size changed. With `sync`, waits until the
+    /// GPU has finished and gives the capture buffer back at once; without, the buffer goes along
+    /// with the result and is released after encoding.
+    pub fn convert(&mut self, frame: Frame, sync: bool) -> Result<Option<Prepared>, String> {
         let key = InputKey {
             dma: frame.is_dma(),
             spa_format: match &frame.pixels {
@@ -812,11 +839,12 @@ impl Pipeline {
         if self.active.as_ref().is_none_or(|a| a.key != key) {
             self.active = None;
             self.active = Some(self.open(&frame)?);
+            self.generation += 1;
             tracing::info!(path = self.path(), plan = ?self.plan, "encode pipeline opened");
         }
         let a = self.active.as_mut().expect("opened above");
-        let want_key = force_key || !a.sent_config;
         let (w, h) = (frame.width, frame.height);
+        let (capture_us, seq, dma) = (frame.capture_us, frame.seq, key.dma);
 
         // Waits until the compositor's GPU has finished drawing into the buffer. The conversion
         // would wait for it anyway; waiting here splits the compositor's time from ours in the
@@ -835,7 +863,7 @@ impl Pipeline {
             unsafe { libc::poll(&mut pfd, 1, 1000) };
         }
         let fence_us = now_us() - t_fence;
-        let (av, _release) = match frame.pixels {
+        let (av, release) = match frame.pixels {
             Pixels::Dma(d) => {
                 let frames = a.drm_frames.as_ref().ok_or("no DRM frames context")?;
                 let (f, rel) = drm_frame(w, h, d, frames)?;
@@ -856,9 +884,102 @@ impl Pipeline {
             },
             None => av,
         };
-        // SAFETY: `out` is a valid frame we own.
+        let t_sync = now_us();
+        let release = if sync {
+            sync_vaapi(&out)?;
+            // The GPU is done reading the capture buffer.
+            drop(release);
+            None
+        } else {
+            release
+        };
+        let ready_us = now_us();
+        Ok(Some(Prepared {
+            frame: out,
+            generation: self.generation,
+            pix_fmt: a.pix_fmt,
+            width: a.width,
+            height: a.height,
+            path: a.path,
+            dma,
+            capture_us,
+            seq,
+            ready_us,
+            fence_us,
+            graph_us: t_sync - t_graph,
+            sync_us: ready_us - t_sync,
+            release,
+        }))
+    }
+}
+
+struct Active {
+    generation: u64,
+    enc: Enc,
+    sent_config: bool,
+}
+
+/// Encodes [`Prepared`] frames. A new encoder is opened when the converter reopened; its first
+/// packet is an IDR with codec config.
+pub struct Encoder {
+    name: &'static str,
+    fps_mhz: u32,
+    kbps: u32,
+    active: Option<Active>,
+}
+
+impl Encoder {
+    /// New encoder; nothing is opened until the first frame arrives.
+    pub fn new(name: &'static str, fps_mhz: u32, kbps: u32) -> Encoder {
+        Encoder {
+            name,
+            fps_mhz,
+            kbps,
+            active: None,
+        }
+    }
+
+    /// Encodes `p`. The capture buffer, if `p` still holds it, is released once the packet is out.
+    pub fn encode(&mut self, p: Prepared, force_key: bool) -> Result<Option<Output>, String> {
+        let taken_us = now_us();
+        if self
+            .active
+            .as_ref()
+            .is_none_or(|a| a.generation != p.generation)
+        {
+            self.active = None;
+            // SAFETY: valid frame; the frames context outlives the call.
+            let hw = unsafe { (*p.frame.0).hw_frames_ctx };
+            let enc = Enc::open(&EncParams {
+                name: self.name,
+                width: p.width,
+                height: p.height,
+                fps_mhz: self.fps_mhz,
+                kbps: self.kbps,
+                pix_fmt: p.pix_fmt,
+                hw_frames: (!hw.is_null()).then_some(hw),
+            })?;
+            self.active = Some(Active {
+                generation: p.generation,
+                enc,
+                sent_config: false,
+            });
+        }
+        let a = self.active.as_mut().expect("opened above");
+        let want_key = force_key || !a.sent_config;
+        let Prepared {
+            frame,
+            path,
+            ready_us,
+            fence_us,
+            graph_us,
+            sync_us,
+            release,
+            ..
+        } = p;
+        // SAFETY: `frame` is a valid frame we own.
         unsafe {
-            let f = &mut *out.0;
+            let f = &mut *frame.0;
             if want_key {
                 f.pict_type = ff::AVPictureType::AV_PICTURE_TYPE_I;
                 f.flags |= ff::AV_FRAME_FLAG_KEY;
@@ -868,24 +989,26 @@ impl Pipeline {
             }
         }
         let t_send = now_us();
-        a.enc.send(out.0)?;
-        drop(out);
+        a.enc.send(frame.0)?;
+        drop(frame);
         let t_receive = now_us();
         let packet = a.enc.receive()?;
         let encoded_us = now_us();
         tracing::trace!(
             fence_us,
-            graph_us = t_send - t_graph,
+            graph_us,
+            sync_us,
+            wait_us = taken_us.saturating_sub(ready_us),
             send_us = t_receive - t_send,
             receive_us = encoded_us - t_receive,
             "encode stages"
         );
         // The GPU/CPU is done with the capture buffer once the packet is out.
-        drop(_release);
+        drop(release);
         let Some((data, keyframe)) = packet else {
             return Ok(None);
         };
-        let codec_config = if (want_key || !a.sent_config) && !a.enc.extradata.is_empty() {
+        let codec_config = if want_key && !a.enc.extradata.is_empty() {
             Some(a.enc.extradata.clone())
         } else {
             None
@@ -896,8 +1019,40 @@ impl Pipeline {
             keyframe,
             codec_config,
             encoded_us,
-            path: a.path,
+            path,
         }))
+    }
+}
+
+/// Converter and encoder in series on the calling thread.
+pub struct Pipeline {
+    conv: Converter,
+    enc: Encoder,
+}
+
+impl Pipeline {
+    /// New pipeline; nothing is opened until the first frame arrives.
+    pub fn new(plan: Plan, fps_mhz: u32, kbps: u32) -> Pipeline {
+        Pipeline {
+            enc: Encoder::new(plan.name, fps_mhz, kbps),
+            conv: Converter::new(plan, fps_mhz),
+        }
+    }
+
+    /// Input path currently in use (`dmabuf`/`shm`), if started.
+    #[cfg(test)]
+    pub fn path(&self) -> Option<&'static str> {
+        self.conv.path()
+    }
+
+    /// Converts and encodes `frame`. A new encoder is opened when the input format or size
+    /// changes (the result then starts with an IDR and codec config). The PipeWire buffer behind
+    /// a DMA-BUF frame is released after the encoder produced its packet.
+    pub fn encode(&mut self, frame: Frame, force_key: bool) -> Result<Option<Output>, String> {
+        match self.conv.convert(frame, false)? {
+            Some(p) => self.enc.encode(p, force_key),
+            None => Ok(None),
+        }
     }
 }
 
@@ -1276,6 +1431,42 @@ mod tests {
             .expect("dma-buf import + encode")
             .expect("packet");
         assert_eq!(p.path(), Some("vaapi-dmabuf"));
+        assert!(out.keyframe && out.codec_config.is_some());
+        check_colors(&decode_first(&out));
+    }
+
+    #[test]
+    fn vaapi_dmabuf_synced_conversion_encodes_on_another_thread() {
+        let Some(node) = intel_node() else {
+            eprintln!("skip: no VAAPI-capable render node");
+            return;
+        };
+        let frame = match export_test_dmabuf(&node, 640, 360, Q) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("skip: cannot export a dma-buf: {e}");
+                return;
+            }
+        };
+        let plan = Plan {
+            name: "h264_vaapi",
+            kind: Kind::Vaapi,
+            node: Some(node),
+        };
+        let mut conv = Converter::new(plan, 60_000);
+        let p = conv
+            .convert(frame, true)
+            .expect("dma-buf import + convert")
+            .expect("converted frame");
+        assert_eq!(conv.path(), Some("vaapi-dmabuf"));
+        // Synced: the capture buffer went back before encoding.
+        assert!(p.release.is_none());
+        let out = std::thread::spawn(move || {
+            let mut enc = Encoder::new("h264_vaapi", 60_000, 8_000);
+            enc.encode(p, false).expect("encode").expect("packet")
+        })
+        .join()
+        .unwrap();
         assert!(out.keyframe && out.codec_config.is_some());
         check_colors(&decode_first(&out));
     }

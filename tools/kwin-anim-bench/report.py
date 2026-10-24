@@ -8,7 +8,7 @@ for l in open(log, errors="replace"):
     l = re.sub(r"\x1b\[[0-9;]*m", "", l)
     if not l.startswith("20"): continue
     t = ts(l.split()[0]); d = dict((k, int(v)) for k, v in re.findall(r"(\w+)=(\d+)", l))
-    if "encode stages" in l: stages.append((t, d.get("fence_us", 0) + d["graph_us"]))
+    if "encode stages" in l: stages.append((t, d.get("fence_us", 0) + d["graph_us"] + d.get("sync_us", 0)))
     elif "TRACE" in l and " encoded " in l: enc.append(t)
     elif "pipewire frame" in l: pwf.append(t)
     elif "client stats" in l and d.get("recv"): client.append((t, d))
