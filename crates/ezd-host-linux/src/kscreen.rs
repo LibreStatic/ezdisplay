@@ -36,6 +36,8 @@ pub struct KOutput {
     pub size: (u32, u32),
     /// Position in the global compositor space.
     pub pos: (i32, i32),
+    /// Output scale (logical size = `size / scale`).
+    pub scale: f64,
     /// Id of the current mode.
     pub current_mode_id: String,
     /// All modes.
@@ -92,6 +94,11 @@ pub fn parse_outputs(json: &str) -> Result<Vec<KOutput>, String> {
                 i(o.get("pos").and_then(|s| s.get("x"))),
                 i(o.get("pos").and_then(|s| s.get("y"))),
             ),
+            scale: o
+                .get("scale")
+                .and_then(Value::as_f64)
+                .filter(|s| *s > 0.0)
+                .unwrap_or(1.0),
             current_mode_id: match o.get("currentModeId") {
                 Some(Value::String(s)) => s.clone(),
                 Some(Value::Number(n)) => n.to_string(),
@@ -261,6 +268,7 @@ mod tests {
             connected: true,
             size: (1920, 1080),
             pos: (1746, 0),
+            scale: 1.0,
             current_mode_id: "15".into(),
             modes: Vec::new(),
         };
@@ -283,6 +291,7 @@ mod tests {
         assert!(o.enabled && o.connected);
         assert_eq!(o.size, (1920, 1080));
         assert_eq!(o.pos, (0, 0));
+        assert!((o.scale - 1.1).abs() < 1e-9);
         assert_eq!(o.current_mode_id, "1");
         let cur = o.current_mode().unwrap();
         assert_eq!((cur.width, cur.height), (1920, 1080));
@@ -340,6 +349,12 @@ mod tests {
             "output.Virtual-1.mode.2560x1600@120"
         );
         assert_eq!(mode_name(2560, 1600, 119_880), "2560x1600@120");
+    }
+
+    #[test]
+    fn scale_defaults_to_one() {
+        let outs = parse_outputs(&with_virtual()).unwrap();
+        assert!((outs[1].scale - 1.0).abs() < 1e-9);
     }
 
     #[test]

@@ -15,11 +15,14 @@ mod encode;
 mod frame;
 #[cfg(test)]
 mod gbm_test;
+mod input;
 mod kscreen;
+mod kwin_input;
 mod pod;
 mod portal;
 mod pw;
 mod source;
+mod uinput_sink;
 mod vkdma;
 
 pub use ezd_host_core::PlatformOptions;
@@ -41,7 +44,18 @@ pub fn create_virtual_source(
 
 /// Input injection backend (`None` = not available on this desktop).
 pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
-    None
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    if !desktop.to_ascii_uppercase().split(':').any(|d| d == "KDE") {
+        tracing::info!(%desktop, "input injection is only implemented for KDE Plasma");
+        return None;
+    }
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => Some(Arc::new(uinput_sink::KdeInputBackend::new(handle))),
+        Err(_) => {
+            tracing::warn!("input injection needs a tokio runtime; it is disabled");
+            None
+        }
+    }
 }
 
 /// Platform section of `ezd-host diag`.

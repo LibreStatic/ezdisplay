@@ -73,7 +73,25 @@ pub fn section() -> Value {
             "path": portal::token_path(SourceKind::Virtual),
         },
         "kscreen_doctor": kscreen::available(),
+        "input": {
+            "uinput": uinput_state(),
+            "kwin_input_dbus": crate::kwin_input::manager_available(),
+        },
     })
+}
+
+/// Whether `/dev/uinput` can be opened (no device is created).
+fn uinput_state() -> &'static str {
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/uinput")
+    {
+        Ok(_) => "ok",
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => "permission denied",
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "missing",
+        Err(_) => "error",
+    }
 }
 
 fn diag_probe_nvidia() -> bool {

@@ -6,7 +6,9 @@ use crate::encode::{Converter, Encoder, Kind, Pipeline, Plan, plan_encoders, pro
 use crate::kscreen;
 use crate::portal::{PortalCapture, SourceKind};
 use crate::pw::{PwCapture, PwParams, Target, default_intel_modifiers, default_nvidia_modifiers};
-use ezd_host_core::{CursorSink, EncodedFrame, PlatformOptions, SourceError, VideoSource};
+use ezd_host_core::{
+    CursorSink, DisplayMode, EncodedFrame, OutputInfo, PlatformOptions, SourceError, VideoSource,
+};
 use ezd_proto::{Codec, EncoderCaps, StreamConfig};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -54,6 +56,8 @@ pub struct KdeVirtualSource {
     plans: Vec<Plan>,
     running: Option<Running>,
     force_key: bool,
+    /// The output the stream shows (KDE virtual output or the captured monitor), after `start`.
+    output: Option<kscreen::KOutput>,
 }
 
 /// Converts and encodes capture frames.
@@ -120,6 +124,7 @@ impl KdeVirtualSource {
             plans,
             running: None,
             force_key: false,
+            output: None,
         }
     }
 
@@ -193,13 +198,20 @@ impl VideoSource for KdeVirtualSource {
             "screencast session open"
         );
 
+        self.output = None;
         if virtual_kind {
             match &before {
-                Some(before) => switch_mode(before, cfg),
+                Some(before) => self.output = switch_mode(before, cfg),
                 None => tracing::warn!(
                     "kscreen-doctor unavailable: the virtual display keeps its default size"
                 ),
             }
+        } else if let Some(name) = &self.output_name
+            && kscreen::available()
+        {
+            self.output = kscreen::list_outputs()
+                .ok()
+                .and_then(|outs| outs.into_iter().find(|o| &o.name == name));
         }
 
         let params = PwParams {
@@ -335,6 +347,24 @@ impl VideoSource for KdeVirtualSource {
         }
     }
 
+    fn output(&self) -> Option<OutputInfo> {
+        let o = self.output.as_ref()?;
+        Some(OutputInfo {
+            name: o.name.clone(),
+            mode: DisplayMode {
+                width: o.size.0,
+                height: o.size.1,
+                refresh_mhz: o
+                    .modes
+                    .iter()
+                    .find(|m| m.id == o.current_mode_id)
+                    .map_or(0, |m| (m.refresh_hz * 1000.0).round() as u32),
+            },
+            origin: o.pos,
+            adapter: None,
+        })
+    }
+
     fn request_keyframe(&mut self) {
         self.force_key = true;
     }
@@ -351,7 +381,8 @@ impl VideoSource for KdeVirtualSource {
 }
 
 /// Best-effort switch of the new virtual output to the negotiated mode.
-fn switch_mode(before: &[kscreen::KOutput], cfg: &StreamConfig) {
+/// Returns the output as KWin reports it after the switch.
+fn switch_mode(before: &[kscreen::KOutput], cfg: &StreamConfig) -> Option<kscreen::KOutput> {
     let mut found = None;
     for _ in 0..20 {
         if let Ok(after) = kscreen::list_outputs() {
@@ -366,10 +397,22 @@ fn switch_mode(before: &[kscreen::KOutput], cfg: &StreamConfig) {
     }
     let Some(name) = found else {
         tracing::warn!("could not find the new virtual output; keeping its default mode");
-        return;
+        return None;
     };
     match kscreen::apply_mode(&name, cfg.width, cfg.height, cfg.refresh_mhz) {
-        Ok(_) => tracing::info!("{name} set to {}x{}", cfg.width, cfg.height),
-        Err(e) => tracing::warn!("could not set {name} to {}x{}: {e}", cfg.width, cfg.height),
+        Ok(o) => {
+            tracing::info!("{name} set to {}x{}", cfg.width, cfg.height);
+            // Re-list: the position and scale can change with the mode.
+            kscreen::list_outputs()
+                .ok()
+                .and_then(|outs| outs.into_iter().find(|x| x.name == name))
+                .or(Some(o))
+        }
+        Err(e) => {
+            tracing::warn!("could not set {name} to {}x{}: {e}", cfg.width, cfg.height);
+            kscreen::list_outputs()
+                .ok()
+                .and_then(|outs| outs.into_iter().find(|x| x.name == name))
+        }
     }
 }
