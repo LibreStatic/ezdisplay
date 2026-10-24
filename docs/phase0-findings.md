@@ -391,10 +391,15 @@ the tablet's screen.
   `--scale 0.75` lowers it by a few ms. 60 Hz gives fewer frames and more latency than 120 Hz.
 - In use, with the import fix, the tablet felt about the same as the built-in panel, scrolling
   included.
+- This laptop (HP Pavilion Gaming 16-a0xxx, board 87AD, BIOS F.27) has no MUX, so there is no
+  dGPU-only mode to compare with. The panel's eDP connector exists only on the Intel GPU,
+  `nvidia-drm` lists only HDMI and DisplayPort, and the BIOS has no graphics mode setting (HP
+  offers one on OMEN and Victus models). Hybrid mode is already the closest setup: the virtual
+  output is rendered and encoded on the NVIDIA GPU, and only the panel's frames are copied to the
+  Intel GPU.
 
 ## Still to measure
 
-- KWin on the NVIDIA GPU in MUX dGPU-only mode.
 - The table runs above with a USB 3 cable. A drag over USB 3 did not change the link transfer.
 - The stylus `MotionEvent`s the app receives (button state, hover, tool type) with Air
   actions on and off, and whether an app can read `spen_air_action`.
