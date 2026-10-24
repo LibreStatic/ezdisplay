@@ -97,6 +97,15 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
         .map_err(|e| format!("cannot start portal runtime: {e}"))
 }
 
+/// A ScreenCast proxy on its own session-bus connection. ashpd's default proxy shares one cached
+/// connection whose reader task runs on the runtime that created it; each portal call here runs
+/// on a short-lived runtime, so after the first one is dropped the cached connection never
+/// answers again (every later session timed out).
+async fn screencast() -> Result<Screencast, ashpd::Error> {
+    let conn = zbus::Connection::session().await?;
+    Screencast::with_connection(conn).await
+}
+
 struct Started {
     session: ashpd::desktop::Session<Screencast>,
     stream: Stream,
@@ -110,7 +119,7 @@ async fn try_start(
     persist: bool,
 ) -> Result<Started, String> {
     let e = |what: &str, err: ashpd::Error| format!("portal {what}: {err}");
-    let proxy = Screencast::new().await.map_err(|x| e("connect", x))?;
+    let proxy = screencast().await.map_err(|x| e("connect", x))?;
     let session = proxy
         .create_session(Default::default())
         .await
@@ -229,7 +238,7 @@ pub fn query_properties() -> serde_json::Value {
         let rt = runtime()?;
         rt.block_on(async {
             tokio::time::timeout(Duration::from_secs(3), async {
-                let p = Screencast::new().await.map_err(|e| e.to_string())?;
+                let p = screencast().await.map_err(|e| e.to_string())?;
                 let types = p
                     .available_source_types()
                     .await
