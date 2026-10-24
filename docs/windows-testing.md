@@ -90,6 +90,29 @@ En cada caso comprobar: que el monitor virtual aparece a la derecha del principa
 imagen llega a la tablet con el modo pedido, que el puntero se mueve sin retraso, y que
 al cambiar la resolucion o bloquear/desbloquear la sesion el video se recupera solo.
 
+## Entrada (lapiz y tacto)
+
+El host inyecta el lapiz y el tacto de la tablet con dispositivos de puntero sinteticos de
+Windows (Windows 10 1809 o posterior), y los clics y el scroll con `SendInput`.
+
+1. **Diagnostico.** En `diag.json`, la seccion `input` debe decir `"pen": "ok"` y `"touch": "ok"`.
+   Si no, copiar el error (HRESULT) tal cual.
+2. **Sin tablet.** Con `.\ezd-host.exe run --source virtual` en una consola, ejecutar en otra
+   `.\ezd-fake-client.exe` con `--input-script drag`, `touch2` y `scroll` (uno por vez; ver
+   `.\ezd-fake-client.exe --help` por las demas opciones) y mirar el cursor y la tinta en Paint o
+   en Pizarra (Whiteboard) en el monitor virtual. `drag` dibuja un trazo, `touch2` hace dos dedos,
+   `scroll` rueda y zoom con Ctrl.
+3. **Presion.** Con la tablet y un lapiz: en Paint o Pizarra el grosor del trazo debe seguir la
+   presion; el borrador (si el lapiz tiene) debe borrar.
+4. **Tacto.** En Edge: arrastrar con un dedo desplaza la pagina, pellizcar con dos dedos hace zoom.
+   Un dedo quieto no debe soltarse solo (el host lo refresca cada 100 ms; si se suelta, anotarlo).
+5. **Boton del lapiz.** Boton lateral apretado + toque = clic derecho (menu contextual).
+6. **Ventanas elevadas.** Con el Administrador de tareas abierto (elevado): Windows bloquea la
+   entrada hacia el, salvo que el host tambien corra como administrador. Anotar si en el log de
+   `ezd-host run` aparece el aviso de UIPI y si el lapiz/tacto no tienen efecto ahi.
+7. Anotar el campo `note` del estado de entrada que muestra la tablet y cualquier linea
+   `input:` del log (con `RUST_LOG=debug`).
+
 ## Que enviar de vuelta
 
 - `diag.json` y `vdd-status.json` de cada modo MUX (indicar cual era).

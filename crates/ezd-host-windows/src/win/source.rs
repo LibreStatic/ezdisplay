@@ -53,7 +53,8 @@ mod imp {
     use crate::policy::{AdapterInfo, Decision};
     use crate::vdd_xml::Mode;
     use ezd_host_core::{
-        CursorSink, EncodedFrame, PlatformOptions, SourceError, VideoSource, now_us,
+        CursorSink, DisplayMode, EncodedFrame, OutputInfo, PlatformOptions, SourceError,
+        VideoSource, now_us,
     };
     use ezd_proto::{Codec, EncoderCaps, StreamConfig};
     use std::collections::HashMap;
@@ -91,6 +92,7 @@ mod imp {
         encoder: GpuEncoder,
         // Keeps the device alive for as long as the capture and encoder use it.
         _device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
+        output: OutputInfo,
         last_seq: u64,
     }
 
@@ -232,10 +234,21 @@ mod imp {
             })?;
             // Texture creation also validates the device before the first frame.
             drop(create_bgra_texture(&device, 2, 2)?);
+            let output_info = OutputInfo {
+                name: output.device_name.clone(),
+                mode: DisplayMode {
+                    width: w,
+                    height: h,
+                    refresh_mhz: cfg.refresh_mhz,
+                },
+                origin: (output.rect.left, output.rect.top),
+                adapter: Some(adapter.info.luid_hex()),
+            };
             Ok(Running {
                 capture,
                 encoder,
                 _device: device,
+                output: output_info,
                 last_seq: 0,
             })
         }
@@ -292,6 +305,10 @@ mod imp {
                 encoded_us: now_us(),
                 frame_id: Some(t.seq),
             }))
+        }
+
+        fn output(&self) -> Option<OutputInfo> {
+            self.running.as_ref().map(|r| r.output.clone())
         }
 
         fn request_keyframe(&mut self) {

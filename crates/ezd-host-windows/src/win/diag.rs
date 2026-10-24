@@ -40,6 +40,7 @@ pub fn report() -> Value {
         "vdd": vdd::status_json(),
         "vdd_output": vdd_output_json,
         "displays": display::diag_json(),
+        "input": super::input::diag_json(),
         "encoder_probes": encoders_json,
         "dda_test": dda_json,
     })

@@ -13,6 +13,7 @@
 pub mod annexb;
 pub mod cursor_shape;
 pub mod ident;
+pub mod input_map;
 pub mod pipe_proto;
 pub mod policy;
 pub mod vdd_xml;
@@ -42,7 +43,14 @@ pub fn create_virtual_source(
 
 /// Input injection backend (`None` = not available).
 pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
-    None
+    #[cfg(windows)]
+    {
+        Some(Arc::new(win::input::WinInputBackend::new()))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /// Platform-specific diagnostics for `ezd-host diag`.
