@@ -22,7 +22,8 @@
 - Run Gradle from this directory and redirect output to a log, then grep or tail it:
   `./gradlew assembleFullDebug assemblePlayDebug lintFullDebug testFullDebugUnitTest > build.log 2>&1`
 - Tests are JUnit4 plus Robolectric (`sdk=36`, set in `robolectric.properties`) and compose-ui-test. Layout tests
-  choose the size with `@Config(qualifiers = "w412dp-h915dp")`.
+  choose the size with `@Config(qualifiers = "w412dp-h915dp")`. Robolectric needs JDK 21 or newer for SDK 36
+  (CI uses 21); older JDKs fail every test class with `UnsupportedOperationException` in `DefaultSdkProvider`.
 
 ## Rendering the UI
 - `./gradlew :app:recordRoborazziFullDebug` writes PNGs to `app/build/outputs/roborazzi/`. No reference images are

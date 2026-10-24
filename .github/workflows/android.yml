@@ -38,7 +38,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
       # The runner image ships the Android SDK (ANDROID_HOME) with cmdline-tools.
       - name: Install Android platform and NDK
         run: |
