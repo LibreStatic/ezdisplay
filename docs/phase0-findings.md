@@ -389,6 +389,8 @@ the tablet's screen.
   not hold KWin back. The main-thread stalls on maximize and restore remain (40-50 ms per event).
 - Converting ahead encodes 2-3 more frames per event without lowering the latency, and
   `--scale 0.75` lowers it by a few ms. 60 Hz gives fewer frames and more latency than 120 Hz.
+- In use, with the import fix, the tablet felt about the same as the built-in panel, scrolling
+  included.
 
 ## Still to measure
 
