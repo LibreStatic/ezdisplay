@@ -532,6 +532,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ezd-input"
+version = "0.1.0"
+dependencies = [
+ "ezd-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ezd-link"
 version = "0.1.0"
 dependencies = [

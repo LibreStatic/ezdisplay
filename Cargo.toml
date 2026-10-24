@@ -12,6 +12,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 ezd-proto = { path = "crates/ezd-proto" }
+ezd-input = { path = "crates/ezd-input" }
 ezd-link = { path = "crates/ezd-link" }
 ezd-host-core = { path = "crates/ezd-host-core" }
 ezd-ffmpeg = { path = "crates/ezd-ffmpeg" }
