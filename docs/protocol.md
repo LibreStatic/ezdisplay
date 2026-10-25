@@ -261,6 +261,20 @@ chunks, so a large keyframe delays a control, input or cursor message by at most
 replaced by a newer one. Everything else is reliable FIFO. Note that control messages overtake
 video: send `Bye` after the last frame has been written if the peer should see all frames first.
 
+```mermaid
+flowchart LR
+  subgraph Q["Queues, highest priority on top"]
+    direction TB
+    QC["Control<br/>FIFO"]
+    QI["Input<br/>drained into one write"]
+    QS["CursorShape<br/>FIFO"]
+    QT["CursorState<br/>latest wins"]
+    QV["Video<br/>one frame per credit, freed by FrameAck<br/>written in 64 KiB chunks"]
+  end
+  Q --> WR["Writer<br/>re-checks the higher queues<br/>between video chunks"]
+  WR --> S["byte stream<br/>(TCP over adb reverse)"]
+```
+
 Input is batched: when the writer takes input it drains every queued input message into one
 buffer and writes and flushes it once. Under a backlog (128 or more queued input messages) a
 new `Pen` replaces the last queued message if that is a `Pen` with identical `flags`, and a new
@@ -336,6 +350,18 @@ Either side may send `Ping { seq, t0_us }`; the peer answers immediately with `P
 t1_us, t2_us }`, where `t1` is its clock when the ping arrived and `t2` its clock when the pong
 was sent. All clocks are local monotonic microseconds with an arbitrary epoch. With `t3` the
 pinger's clock when the pong arrived:
+
+```mermaid
+sequenceDiagram
+  participant A as Pinger (local clock)
+  participant B as Peer (peer clock)
+  Note left of A: t0 = local time
+  A->>B: Ping(seq, t0)
+  Note right of B: t1 = arrival, peer clock
+  Note right of B: t2 = send, peer clock
+  B->>A: Pong(seq, t0, t1, t2)
+  Note left of A: t3 = arrival, local clock
+```
 
 ```
 rtt    = (t3 - t0) - (t2 - t1)

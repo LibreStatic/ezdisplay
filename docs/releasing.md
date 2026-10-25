@@ -34,6 +34,22 @@ reworked screen or flow), major (`X.0.0`) for a large overhaul. Keep the pre-rel
 
 ## What the workflow does
 
+```mermaid
+flowchart LR
+  PM["push to main"] --> V
+  TG["push tag vX.Y.Z"] --> V
+  RD["Run workflow<br/>(dry_run)"] --> V
+  V["version<br/>reads and checks the version"] --> CI["ci<br/>fmt, clippy, tests,<br/>Windows installer"]
+  V --> AN["android<br/>APKs"]
+  V --> LX["linux<br/>Arch, .deb, AppImage,<br/>smoke test"]
+  CI --> PB["publish<br/>SHA256SUMS"]
+  AN --> PB
+  LX --> PB
+  PB -- "main" --> PRE["pre-release<br/>v(version)+(run number)"]
+  PB -- "tag" --> REL["release vX.Y.Z<br/>(pre-release if it has a -)"]
+  PB -- "dry run or tag exists" --> ART["release-preview artifact"]
+```
+
 | Job | What it does |
 | --- | --- |
 | `version` | Reads the workspace version, checks it against the tag and picks the tag of a `main` pre-release (skipped if that tag already exists). |

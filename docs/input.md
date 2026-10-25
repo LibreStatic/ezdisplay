@@ -4,6 +4,30 @@ The tablet sends pen, touch, button, scroll and key events; the host injects the
 `ezd-host run` does this by default; `--no-input` turns it off. Without a working backend the
 stream still runs and the tablet is told why (`InputStatus.note`).
 
+```mermaid
+flowchart LR
+  subgraph TAB["Tablet (ezd-input)"]
+    EV["S Pen and finger<br/>motion events"] --> PALM["palm rejection,<br/>local zoom"]
+    PALM --> GES["pen button gestures<br/>(below)"]
+  end
+  GES -- "Input channel: Pen, Touch,<br/>PointerButton, Scroll, Key" --> HOST["Host input thread<br/>keys settle 8 ms before pen events"]
+  subgraph LNX["Linux: uinput devices"]
+    LT["ezdisplay touch / pen<br/>mapped to the virtual output"]
+    LP["ezdisplay pointer<br/>over the whole workspace"]
+    LK["ezdisplay keyboard<br/>global"]
+  end
+  subgraph WIN["Windows"]
+    WP["synthetic PT_PEN / PT_TOUCH<br/>on the virtual display"]
+    WS["SendInput<br/>buttons, wheel, scancodes"]
+  end
+  HOST --> LT
+  HOST --> LP
+  HOST --> LK
+  HOST --> WP
+  HOST --> WS
+  HOST -. "InputStatus (caps, note)" .-> TAB
+```
+
 ## Host flags
 
 - `--no-input`: do not inject anything.
@@ -33,6 +57,39 @@ The hold, and the second press of a double click + hold, are resolved at the fir
 the tip touching, or the pen moving in hover (a release before that is a plain click or double click).
 The keys are released when the button is released, when the pen leaves range and when the session
 ends, so a key cannot stay stuck on the PC.
+
+How a button press resolves:
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> Idle
+  Idle --> Pending: press in the air
+  Idle --> Held: press while touching
+  Pending --> Click: release
+  Pending --> Waiting: release, double click set
+  Pending --> Held: hold time, touch or move
+  Waiting --> Click: time out, touch or out of range
+  Waiting --> Held: second press, double click fires
+  Waiting --> DoublePending: second press, double click + hold set
+  DoublePending --> DoubleClick: release
+  DoublePending --> Held: hold time, touch or move
+  Click --> Idle
+  DoubleClick --> Idle
+  Held --> Idle: release
+  Click: Click fires
+  DoubleClick: Double click fires
+  Held: Held (button down)
+  note right of Held
+    Runs the hold, a drag (scroll, zoom, pan),
+    a key combination or the raw barrel.
+    Keys are released with the button,
+    pan keys at the lift.
+  end note
+```
+
+When a drag is configured, the hold time alone does not fire the hold: the press waits for a drag or the
+release. With the view locally zoomed, moving in the air with the button held pans the view.
 
 ### Zoom in steps
 
@@ -76,6 +133,19 @@ steps" (the travel from the touch point counts, so the first step is not delayed
 and the shortcut is released after the lift. A touch that never leaves the tolerance does nothing. With an
 empty pan shortcut the pan branch just forwards the contact. If the button is released mid-touch the mode
 stays until the lift (the pan shortcut stays down, a zoom just stops, and an undecided touch stays hover).
+
+```mermaid
+flowchart TD
+  T["Button held, tip touches"] --> H["touch reported as hover"]
+  H --> M{"moved past the<br/>movement tolerance?"}
+  M -- "no, lifted" --> N["nothing sent"]
+  M -- yes --> D{"|dy| ≥ 2·|dx|<br/>(within ~27° of vertical)"}
+  D -- "yes" --> Z["Zoom: one wheel notch per 80 px,<br/>up = in, down = out,<br/>touch stays hover"]
+  D -- "no" --> P["Pan: press the pan shortcut,<br/>contact starts at the first touch point"]
+  Z --> L["lift"]
+  P --> L
+  L --> R["pan shortcut released,<br/>next touch decides again"]
+```
 
 ### Button pressed while touching
 
