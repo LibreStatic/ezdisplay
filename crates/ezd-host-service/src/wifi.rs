@@ -475,7 +475,7 @@ async fn session(
         tokio::pin!(guard);
         // The guard never completes; it is dropped when the session returns.
         tokio::select! {
-            () = &mut run => {}
+            _ = &mut run => {}
             () = &mut guard => unreachable!("the guard never completes"),
         }
     }

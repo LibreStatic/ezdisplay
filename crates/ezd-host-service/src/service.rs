@@ -485,20 +485,21 @@ pub(crate) async fn stream_session(
     link: Link,
     transport: Transport,
     stop_rx: &mut watch::Receiver<bool>,
-) {
+) -> bool {
     let source = match (inner.hooks.create_source)(cfg) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("cannot create virtual source: {e}");
             inner.emit(HostEvent::SourceFailed(e.clone()));
             inner.update(|st| st.phase = Phase::Error(e));
-            return;
+            return false;
         }
     };
-    finish_session(inner, cfg, link, transport, source, stop_rx).await;
+    finish_session(inner, cfg, link, transport, source, stop_rx).await
 }
 
-/// Runs a session with an existing source and reports its end.
+/// Runs a session with an existing source and reports its end. True when the peer opened with
+/// something other than its handshake: a client still in a session with an earlier host process.
 pub(crate) async fn finish_session(
     inner: &Inner,
     cfg: &ServiceConfig,
@@ -506,14 +507,16 @@ pub(crate) async fn finish_session(
     transport: Transport,
     source: Box<dyn VideoSource>,
     stop_rx: &mut watch::Receiver<bool>,
-) {
+) -> bool {
     let result = run_session(inner, cfg, link, transport, source, stop_rx).await;
     inner.update(|st| st.phase = Phase::Waiting);
     match &result {
         Ok(s) => tracing::debug!(end = ?s.end, "session returned"),
         Err(e) => tracing::debug!("session failed: {e}"),
     }
+    let stale = matches!(result, Err(ezd_host_core::SessionError::Unexpected { .. }));
     inner.emit(HostEvent::SessionEnded(result.map_err(|e| e.to_string())));
+    stale
 }
 
 async fn run_session(

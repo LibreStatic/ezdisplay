@@ -44,6 +44,13 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long a declined device must be gone from the bus before it is tried again (a replug after
 /// installing the app). The re-enumeration after our own reset takes far less.
 pub const DECLINED_REARM: Duration = Duration::from_secs(10);
+/// How long a device must have been on the bus before it is switched: a tablet that was just
+/// plugged in ignores the handshake while it is still setting up its USB functions.
+pub const SETTLE: Duration = Duration::from_secs(2);
+/// Switch attempts before a device that keeps failing the handshake is declined.
+pub const SWITCH_ATTEMPTS: u32 = 3;
+/// Delay between two switch attempts on the same device.
+pub const SWITCH_RETRY: Duration = Duration::from_secs(3);
 
 /// The USB operations the acceptor needs. Every method blocks.
 pub trait UsbBackend: Send + Sync + 'static {
@@ -92,6 +99,10 @@ pub struct AoaHooks {
     pub probe_timeout: Duration,
     /// How long a declined device must be absent from the bus before it is switched again.
     pub declined_rearm: Duration,
+    /// How long a device must have been on the bus before it is switched.
+    pub settle: Duration,
+    /// Delay between two switch attempts on the same device.
+    pub switch_retry: Duration,
 }
 
 impl Default for AoaHooks {
@@ -106,6 +117,8 @@ impl Default for AoaHooks {
             switched_timeout: SWITCHED_TIMEOUT,
             probe_timeout: PROBE_TIMEOUT,
             declined_rearm: DECLINED_REARM,
+            settle: SETTLE,
+            switch_retry: SWITCH_RETRY,
         }
     }
 }
@@ -131,6 +144,19 @@ type Idle = HashMap<String, Link>;
 /// AOA being off does not re-arm a phone that stayed plugged in.
 type Declined = HashMap<String, Option<Instant>>;
 
+/// Switch candidates on the bus, by `DeviceInfo::key`: when they showed up and how their switch
+/// attempts went. Forgotten as soon as a poll misses them.
+type Candidates = HashMap<String, Candidate>;
+
+struct Candidate {
+    /// When a poll first saw the device.
+    seen: Instant,
+    /// Failed switch attempts so far.
+    failures: u32,
+    /// No attempt before this.
+    next_try: Instant,
+}
+
 /// Sets the reported USB problem; observers are only woken when it changes.
 fn set_problem(inner: &Inner, problem: Option<String>) {
     inner.aoa_problem.send_if_modified(|cur| {
@@ -151,6 +177,7 @@ pub(crate) async fn run(inner: Arc<Inner>) {
     // Devices (by `DeviceInfo::key` of the original device) that are never switched again.
     let mut declined = Declined::new();
     let mut idle = Idle::new();
+    let mut candidates = Candidates::new();
     let mut reported: Option<String> = None;
     loop {
         if *stop_rx.borrow() {
@@ -192,7 +219,12 @@ pub(crate) async fn run(inner: Arc<Inner>) {
         if let Some(b) = &backend {
             // Without the permit a session is running (or about to): leave the devices alone.
             if let Ok(permit) = inner.slot.clone().try_acquire_owned() {
-                cycle(&inner, &cfg, b, &mut declined, &mut idle, &mut stop_rx).await;
+                let state = PollState {
+                    declined: &mut declined,
+                    idle: &mut idle,
+                    candidates: &mut candidates,
+                };
+                cycle(&inner, &cfg, b, state, &mut stop_rx).await;
                 drop(permit);
             }
         }
@@ -209,10 +241,14 @@ async fn cycle(
     inner: &Inner,
     cfg: &ServiceConfig,
     backend: &Arc<dyn UsbBackend>,
-    declined: &mut Declined,
-    idle: &mut Idle,
+    state: PollState<'_>,
     stop_rx: &mut watch::Receiver<bool>,
 ) {
+    let PollState {
+        declined,
+        idle,
+        candidates,
+    } = state;
     let list = match blocking(backend, |b| b.list()).await {
         Ok(l) => l,
         Err(e) => {
@@ -260,7 +296,7 @@ async fn cycle(
         match listen(link, hooks.probe_timeout, stop_rx).await {
             Heard::Data(first) => {
                 if let Some(link) = idle.remove(&key) {
-                    start_session(inner, cfg, link, first, stop_rx).await;
+                    start_session(inner, cfg, backend, acc, link, first, stop_rx).await;
                 }
                 return;
             }
@@ -271,10 +307,22 @@ async fn cycle(
             Heard::Stopped => return,
         }
     }
-    let Some(dev) = list
-        .iter()
-        .find(|d| d.mode != Mode::Accessory && !declined.contains_key(&d.key()))
-    else {
+    candidates.retain(|key, _| list.iter().any(|d| d.key() == *key));
+    for d in list.iter().filter(|d| d.mode != Mode::Accessory) {
+        candidates.entry(d.key()).or_insert(Candidate {
+            seen: now,
+            failures: 0,
+            next_try: now,
+        });
+    }
+    let Some(dev) = list.iter().find(|d| {
+        let key = d.key();
+        d.mode != Mode::Accessory
+            && !declined.contains_key(&key)
+            && candidates
+                .get(&key)
+                .is_some_and(|c| now.duration_since(c.seen) >= hooks.settle && now >= c.next_try)
+    }) else {
         return;
     };
     tracing::info!(
@@ -286,14 +334,27 @@ async fn cycle(
     let acc = match blocking(backend, move |b| b.switch(&target)).await {
         Ok(acc) => acc,
         Err(e) => {
-            tracing::warn!("cannot switch {} to accessory mode: {e}", dev.describe());
-            declined.insert(dev.key(), None);
+            let c = candidates
+                .get_mut(&dev.key())
+                .expect("the device was just picked from the candidates");
+            c.failures += 1;
+            c.next_try = Instant::now() + hooks.switch_retry;
+            // A device without accessory support never gets it; others may just not be ready.
+            if e.kind() == io::ErrorKind::Unsupported || c.failures >= SWITCH_ATTEMPTS {
+                tracing::warn!("cannot switch {} to accessory mode: {e}", dev.describe());
+                declined.insert(dev.key(), None);
+            } else {
+                tracing::info!(
+                    "cannot switch {} to accessory mode yet ({e}), trying again",
+                    dev.describe()
+                );
+            }
             return;
         }
     };
     match open_and_listen(backend, &acc, hooks.switched_timeout, stop_rx).await {
         Ok((link, first)) => {
-            start_session(inner, cfg, link, first, stop_rx).await;
+            start_session(inner, cfg, backend, &acc, link, first, stop_rx).await;
             return;
         }
         Err(Heard::Stopped) => return,
@@ -307,6 +368,13 @@ async fn cycle(
     if let Err(e) = blocking(backend, move |b| b.reset(&acc)).await {
         tracing::warn!("cannot reset {}: {e}", dev.describe());
     }
+}
+
+/// What the acceptor remembers between polls.
+struct PollState<'a> {
+    declined: &'a mut Declined,
+    idle: &'a mut Idle,
+    candidates: &'a mut Candidates,
 }
 
 /// Opens the freshly switched accessory and waits up to `wait` for the app's first bytes. On
@@ -352,6 +420,8 @@ async fn listen(link: &mut Link, wait: Duration, stop_rx: &mut watch::Receiver<b
 async fn start_session(
     inner: &Inner,
     cfg: &ServiceConfig,
+    backend: &Arc<dyn UsbBackend>,
+    acc: &DeviceInfo,
     mut link: Link,
     first: Vec<u8>,
     stop_rx: &mut watch::Receiver<bool>,
@@ -363,7 +433,19 @@ async fn start_session(
         pos: 0,
         inner: inner_reader,
     });
-    stream_session(inner, cfg, link, Transport::Aoa, stop_rx).await;
+    if stream_session(inner, cfg, link, Transport::Aoa, stop_rx).await {
+        // The app is still in a session with an earlier host process and cannot tell that it
+        // ended (an accessory never reports the host closing it). A reset makes it see the cable
+        // go away; the device then comes back in its normal mode and is switched again.
+        tracing::info!(
+            "{} is still in an old session: resetting it",
+            acc.describe()
+        );
+        let target = acc.clone();
+        if let Err(e) = blocking(backend, move |b| b.reset(&target)).await {
+            tracing::warn!("cannot reset {}: {e}", acc.describe());
+        }
+    }
 }
 
 /// Runs `f` on a blocking thread.
@@ -540,6 +622,8 @@ mod tests {
             switched_timeout: switched,
             probe_timeout: probe,
             declined_rearm: Duration::from_secs(10),
+            settle: Duration::ZERO,
+            switch_retry: Duration::from_millis(30),
         };
         h
     }
@@ -609,16 +693,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_switch_is_not_retried() {
+    async fn a_failing_switch_is_retried_a_few_times_then_given_up() {
         let fake = FakeUsb::with(vec![mtp(None)]);
         *fake.fail_switch.lock().unwrap() = true;
         let svc = start(
             aoa_cfg(),
             aoa_hooks(&fake, Duration::from_millis(100), Duration::from_millis(50)),
         );
-        fake.until("the switch", |f| f.calls("switch") == 1).await;
+        let attempts = SWITCH_ATTEMPTS as usize;
+        fake.until("the last attempt", |f| f.calls("switch") == attempts)
+            .await;
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(fake.calls("switch"), 1);
+        assert_eq!(fake.calls("switch"), attempts);
         assert_eq!(fake.calls("reset"), 0);
         timeout(WAIT, svc.stop()).await.unwrap();
     }
@@ -678,6 +764,43 @@ mod tests {
         assert_eq!(live.transport, Transport::Aoa);
         assert_eq!(fake.calls("reset"), 0);
         assert_eq!(fake.calls("open"), 1);
+        timeout(WAIT, svc.stop()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_accessory_still_in_an_old_session_is_reset() {
+        let fake = FakeUsb::with(vec![accessory_of(&mtp(Some("R1")))]);
+        let svc = start(
+            aoa_cfg(),
+            aoa_hooks(&fake, Duration::from_millis(100), Duration::from_millis(50)),
+        );
+        // The app talks as if a session were running: no Hello, just its statistics.
+        let tablet = fake.peer().await;
+        let (tx, _rx, _t) = tablet.into_mux(ezd_proto::DEFAULT_CHUNK_LEN);
+        tx.send_control(Message::ClientStats(ezd_proto::ClientStats {
+            window_ms: 1000,
+            frames_received: 0,
+            frames_decoded: 0,
+            frames_dropped: 0,
+            decode_us_p50: 0,
+            decode_us_p95: 0,
+            e2e_us_p50: 0,
+            e2e_us_p95: 0,
+        }))
+        .unwrap();
+        fake.until("the reset", |f| f.calls("reset") == 1).await;
+        timeout(WAIT, svc.stop()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_device_that_just_showed_up_is_left_to_settle() {
+        let fake = FakeUsb::with(vec![mtp(Some("R1"))]);
+        let mut h = aoa_hooks(&fake, Duration::from_millis(100), Duration::from_millis(50));
+        h.aoa.settle = Duration::from_millis(400);
+        let svc = start(aoa_cfg(), h);
+        fake.until("a few polls", |f| f.calls("list") >= 3).await;
+        assert_eq!(fake.calls("switch"), 0);
+        fake.until("the switch", |f| f.calls("switch") == 1).await;
         timeout(WAIT, svc.stop()).await.unwrap();
     }
 
