@@ -11,7 +11,7 @@ pkgdesc='Use an Android tablet as an extended monitor over USB (KDE Plasma host 
 arch=(x86_64)
 url='https://github.com/LibreStatic/ezdisplay'
 license=('MIT OR Apache-2.0')
-depends=(ffmpeg pipewire libva gcc-libs glibc android-tools xdg-desktop-portal-kde libkscreen)
+depends=(ffmpeg pipewire libva gcc-libs glibc android-tools xdg-desktop-portal-kde libkscreen libusb)
 makedepends=(rust clang pkgconf)
 options=(!lto !debug)
 install=ezdisplay.install
@@ -38,6 +38,8 @@ package() {
   install -Dm755 "$t/ezd-host" "$pkgdir/usr/bin/ezd-host"
   install -Dm644 packaging/linux/70-ezdisplay-uinput.rules \
     "$pkgdir/usr/lib/udev/rules.d/70-ezdisplay-uinput.rules"
+  install -Dm644 packaging/linux/70-ezdisplay-usb.rules \
+    "$pkgdir/usr/lib/udev/rules.d/70-ezdisplay-usb.rules"
   install -Dm644 packaging/linux/ufw/ezdisplay "$pkgdir/etc/ufw/applications.d/ezdisplay"
   install -Dm644 packaging/linux/firewalld/ezdisplay.xml \
     "$pkgdir/usr/lib/firewalld/services/ezdisplay.xml"

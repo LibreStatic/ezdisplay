@@ -19,7 +19,7 @@ jobs:
     steps:
       - name: Install system packages
         run: |
-          pacman -Syu --noconfirm --needed base-devel clang pkgconf ffmpeg pipewire libva git curl
+          pacman -Syu --noconfirm --needed base-devel clang pkgconf ffmpeg pipewire libva libusb git curl
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:

@@ -5,14 +5,14 @@
 #
 # Run it inside an ubuntu:24.04 container (glibc 2.39 is the floor of the result). Supported
 # targets: any x86_64 distro with glibc 2.39 or newer and KDE Plasma 6 on Wayland (KDE neon,
-# Debian 13, Fedora 40+, Arch, openSUSE Tumbleweed, Kubuntu 24.10+). libva, libdrm, libvulkan and
-# PipeWire come from the host; everything else is bundled.
+# Debian 13, Fedora 40+, Arch, openSUSE Tumbleweed, Kubuntu 24.10+). libva, libdrm, libvulkan,
+# libusb-1.0 and PipeWire come from the host; everything else is bundled.
 #
 # The container needs (and must NOT have any libav*-dev package, so the system FFmpeg can never
 # be picked up):
 #   build-essential clang libclang-dev pkg-config nasm curl ca-certificates git xz-utils unzip
-#   file patchelf binutils libva-dev libdrm-dev libpipewire-0.3-dev libvulkan-dev libxkbcommon-dev
-#   libwayland-dev libx11-dev glslang-tools glslang-dev spirv-tools
+#   file patchelf binutils libva-dev libdrm-dev libpipewire-0.3-dev libvulkan-dev libusb-1.0-0-dev
+#   libxkbcommon-dev libwayland-dev libx11-dev glslang-tools glslang-dev spirv-tools
 #
 # Usage: build.sh [--out DIR] [--cache DIR] [--work DIR] [--jobs N]
 #   --out    where the AppImage and the sources bundle go (default: ./out)
@@ -245,7 +245,7 @@ chmod 755 "$APPDIR/AppRun"
 # --- 7. Dependency gate -------------------------------------------------------------------
 
 log "Checking the dependencies of every ELF in the AppDir"
-ALLOW='^(libc\.so\.6|libm\.so\.6|libdl\.so\.2|libpthread\.so\.0|librt\.so\.1|libmvec\.so\.1|libgcc_s\.so\.1|ld-linux-x86-64\.so\.2|libva\.so\.2|libva-drm\.so\.2|libdrm\.so\.2|libvulkan\.so\.1|libpipewire-0\.3\.so\.0)$'
+ALLOW='^(libc\.so\.6|libm\.so\.6|libdl\.so\.2|libpthread\.so\.0|librt\.so\.1|libmvec\.so\.1|libgcc_s\.so\.1|ld-linux-x86-64\.so\.2|libva\.so\.2|libva-drm\.so\.2|libdrm\.so\.2|libvulkan\.so\.1|libpipewire-0\.3\.so\.0|libusb-1\.0\.so\.0)$'
 MAX_GLIBC=2.39
 gate_failed=0
 while IFS= read -r -d '' f; do
