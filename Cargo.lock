@@ -1450,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-android"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "android_logger",
  "ezd-client-core",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-client-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "ezd-link",
  "ezd-proto",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-fake-client"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-ffmpeg"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "ezd-host-core",
  "ezd-proto",
@@ -1511,7 +1511,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-host"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-host-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "ezd-link",
  "ezd-proto",
@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-host-linux"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "ash",
  "ashpd",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-host-service"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "ezd-ffmpeg",
  "ezd-host-core",
@@ -1577,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-host-windows"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "ezd-ffmpeg",
  "ezd-host-core",
@@ -1591,7 +1591,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-input"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "ezd-proto",
  "serde",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-link"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "ezd-proto",
  "socket2",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-proto"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "postcard",
  "serde",
@@ -1621,7 +1621,7 @@ dependencies = [
 
 [[package]]
 name = "ezd-tray"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "auto-launch",
  "clap",

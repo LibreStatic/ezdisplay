@@ -19,7 +19,8 @@ install=ezdisplay.install
 _root=$(realpath "$startdir/../../..")
 
 pkgver() {
-  sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' "$_root/Cargo.toml"
+  # pkgver cannot contain '-': 0.2.0-rc1 becomes 0.2.0rc1, which vercmp sorts before 0.2.0.
+  sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' "$_root/Cargo.toml" | tr -d -
 }
 
 build() {
