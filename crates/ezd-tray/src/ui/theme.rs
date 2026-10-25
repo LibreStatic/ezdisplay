@@ -16,7 +16,7 @@ pub struct Palette {
     pub text_secondary: Color32,
     pub accent: Color32,
     pub on_accent: Color32,
-    /// Accent for text and links on `window_bg` and `card`; the dark `accent` is too dark for that.
+    /// Accent for text and links on `window_bg` and `card`.
     pub accent_text: Color32,
     /// Fill of the selected navigation row.
     pub nav_selected: Color32,
@@ -34,37 +34,37 @@ const fn rgb(hex: u32) -> Color32 {
 }
 
 pub const LIGHT: Palette = Palette {
-    window_bg: rgb(0xF7F8FA),
-    nav_bg: rgb(0xF2F4F8),
-    card: rgb(0xFFFFFF),
-    border: rgb(0xDFE2EA),
-    text: rgb(0x171925),
-    text_secondary: rgb(0x697184),
-    accent: rgb(0x2C2A79),
+    window_bg: rgb(0xECEFEE),
+    nav_bg: rgb(0xE4E8E7),
+    card: rgb(0xF4F6F5),
+    border: rgb(0xCBD2CF),
+    text: rgb(0x202928),
+    text_secondary: rgb(0x58635F),
+    accent: rgb(0x006E65),
     on_accent: rgb(0xFFFFFF),
-    accent_text: rgb(0x2C2A79),
-    nav_selected: rgb(0xE9EAF9),
-    success: rgb(0x2E9B38),
-    warning: rgb(0xC88600),
-    warning_container: rgb(0xFFF3D6),
-    error: rgb(0xC62828),
+    accent_text: rgb(0x005D56),
+    nav_selected: rgb(0xD6E5E0),
+    success: rgb(0x146F42),
+    warning: rgb(0x815400),
+    warning_container: rgb(0xF8EACA),
+    error: rgb(0xB52F38),
 };
 
 pub const DARK: Palette = Palette {
-    window_bg: rgb(0x181A20),
-    nav_bg: rgb(0x1C1E25),
-    card: rgb(0x24262D),
-    border: rgb(0x3B3E49),
-    text: rgb(0xF4F4F7),
-    text_secondary: rgb(0xA6AABA),
-    accent: rgb(0x625FF0),
-    on_accent: rgb(0xFFFFFF),
-    accent_text: rgb(0x9896F5),
-    nav_selected: rgb(0x30335A),
-    success: rgb(0x4BD35C),
-    warning: rgb(0xFFBD45),
-    warning_container: rgb(0x3A2E14),
-    error: rgb(0xEF6666),
+    window_bg: rgb(0x101315),
+    nav_bg: rgb(0x141819),
+    card: rgb(0x090C0D),
+    border: rgb(0x303839),
+    text: rgb(0xE7ECEB),
+    text_secondary: rgb(0xB0BCB9),
+    accent: rgb(0x50D8BF),
+    on_accent: rgb(0x082C25),
+    accent_text: rgb(0x72E3D1),
+    nav_selected: rgb(0x20312E),
+    success: rgb(0x62DDA1),
+    warning: rgb(0xF0BF6B),
+    warning_container: rgb(0x3B3225),
+    error: rgb(0xFF8F91),
 };
 
 pub fn palette(theme: Theme) -> Palette {
