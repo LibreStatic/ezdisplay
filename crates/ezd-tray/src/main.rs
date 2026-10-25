@@ -34,8 +34,19 @@ fn main() -> ExitCode {
     let loader = i18n::desktop_loader();
     let args = cli::parse(&loader);
 
-    if let Some(on) = args.autostart {
-        return match autostart::set(on == cli::OnOff::On) {
+    if args.autostart.is_some() || args.elevation.is_some() {
+        let on = |v: cli::OnOff| v == cli::OnOff::On;
+        let result = if let Some(v) = args.autostart {
+            let path = args
+                .config
+                .clone()
+                .unwrap_or_else(paths::default_config_file);
+            let run_elevated = config::load(&path).config.run_elevated;
+            autostart::set(on(v), run_elevated)
+        } else {
+            autostart::set_run_elevated(on(args.elevation.unwrap_or(cli::OnOff::On)))
+        };
+        return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("{e}");
@@ -60,6 +71,11 @@ fn main() -> ExitCode {
     let _log_guard = logging::init(&paths::log_dir());
     tracing::info!("ezdisplay {} starting", env!("CARGO_PKG_VERSION"));
 
+    #[cfg(windows)]
+    if args.config.is_none() && windows_startup(&args, &socket) {
+        return ExitCode::SUCCESS;
+    }
+
     // Claim the instance name before doing anything else.
     let server = match ipc::Server::bind(&socket, || {}) {
         Ok(s) => s,
@@ -74,6 +90,44 @@ fn main() -> ExitCode {
         }
     };
     run(loader, args, config_path, Some(server))
+}
+
+/// Windows only: makes sure the app runs elevated when the setting asks for it (pen and touch
+/// cannot reach administrator windows from a normal process). Returns true when this process
+/// should exit because the elevated copy took over.
+#[cfg(windows)]
+fn windows_startup(args: &cli::Args, socket: &str) -> bool {
+    let run_elevated = config::load(&paths::default_config_file())
+        .config
+        .run_elevated;
+    if ezd_host_windows::is_elevated() {
+        autostart::migrate_legacy(run_elevated);
+        return false;
+    }
+    // A running instance gets the usual "show yourself" request further down.
+    if !run_elevated || ipc::is_running(socket) {
+        return false;
+    }
+    if !ezd_host_windows::task_runs_elevated() {
+        tracing::warn!("no elevated launcher task; running without administrator rights");
+        return false;
+    }
+    if let Err(e) = ezd_host_windows::task_run() {
+        tracing::warn!("cannot start the elevated launcher task ({e}); running unelevated");
+        return false;
+    }
+    tracing::info!("started the elevated instance through its scheduled task");
+    if args.settings {
+        // The new instance starts without arguments: ask it to open its window once it is up.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            match ipc::send(socket, ipc::Command::Show, Duration::from_secs(5)) {
+                Err(ipc::SendError::NoInstance) => std::thread::sleep(Duration::from_millis(200)),
+                _ => break,
+            }
+        }
+    }
+    true
 }
 
 fn run(

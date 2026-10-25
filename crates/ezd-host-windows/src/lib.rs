@@ -18,6 +18,7 @@ pub mod ident;
 pub mod input_map;
 pub mod pipe_proto;
 pub mod policy;
+pub mod task_xml;
 pub mod vdd_install;
 pub mod vdd_xml;
 
@@ -97,6 +98,55 @@ pub fn pump_messages(timeout: std::time::Duration) {
 #[cfg(windows)]
 pub fn run_elevated(exe: &std::path::Path, args: &str) -> Result<u32, String> {
     win::shell::run_elevated(exe, args)
+}
+
+/// True if this process runs elevated (administrator token).
+#[cfg(windows)]
+pub fn is_elevated() -> bool {
+    win::vdd::is_elevated()
+}
+
+/// SID string of the account this process runs as.
+#[cfg(windows)]
+pub fn current_user_sid() -> Option<String> {
+    win::task::current_user_sid()
+}
+
+/// Creates or replaces the `ezdisplay` scheduled task that launches `exe` (see [`task_xml`]).
+/// Needs elevation.
+#[cfg(windows)]
+pub fn task_register(exe: &std::path::Path, autostart: bool, elevated: bool) -> Result<(), String> {
+    win::task::register(exe, autostart, elevated)
+}
+
+/// Removes the `ezdisplay` scheduled task (succeeds when there is none).
+#[cfg(windows)]
+pub fn task_delete() -> Result<(), String> {
+    win::task::delete()
+}
+
+/// Whether the `ezdisplay` scheduled task exists.
+#[cfg(windows)]
+pub fn task_exists() -> bool {
+    win::task::exists()
+}
+
+/// Whether the task exists and runs with the highest privileges (elevated).
+#[cfg(windows)]
+pub fn task_runs_elevated() -> bool {
+    win::task::runs_elevated()
+}
+
+/// Whether the task exists and starts the app at logon.
+#[cfg(windows)]
+pub fn task_autostart_enabled() -> bool {
+    win::task::autostart_enabled()
+}
+
+/// Starts the `ezdisplay` scheduled task now.
+#[cfg(windows)]
+pub fn task_run() -> Result<(), String> {
+    win::task::run()
 }
 
 /// `ezd-host vdd status`: report on the VDD installation (Windows only).

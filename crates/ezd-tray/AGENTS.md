@@ -17,7 +17,24 @@ the workspace stays on 1.85. Run cargo with the rustup toolchain (`PATH=$HOME/.c
   tray or the service. `ui/app.rs`: eframe glue (`logic` calls `Controller::tick`). `ui/theme.rs`: palettes.
 - `config.rs` (`config.toml`), `ipc.rs` (local socket), `autostart.rs`, `logging.rs`, `icons.rs`,
   `platform.rs`, `text.rs` (status wording), `i18n.rs` + `i18n/<lang>/ezd-tray.ftl`.
-- All unsafe Win32 code lives in `ezd-host-windows` (`ensure_dpi_aware`, `pump_messages`, `run_elevated`).
+- All unsafe Win32 code lives in `ezd-host-windows` (`ensure_dpi_aware`, `pump_messages`, `run_elevated`,
+  the `task_*` functions).
+
+## Windows: elevated launch and autostart
+Pen and touch injected from a normal process cannot reach administrator windows (UIPI), so by default
+(`run_elevated = true` in `config.toml`, a checkbox in General) the app runs elevated without a UAC prompt
+at each launch, through the scheduled task `ezdisplay` (`RunLevel` `HighestAvailable`, or
+`LeastPrivilege` when the setting is off; XML in `ezd-host-windows/src/task_xml.rs`, driven with
+`schtasks`). The task is also the autostart mechanism: its logon trigger exists only while autostart is
+on (`autostart::is_enabled`). Changing either needs elevation: an elevated process registers the task
+itself, a normal one runs `ezdisplay.exe --autostart on|off` / `--elevation on|off` through `run_elevated`
+(UAC prompt). The installer registers the task (elevated `--autostart`) and deletes it on uninstall.
+- Startup (`main.rs`, `windows_startup`): a normal process with no `--config` and `run_elevated` on asks
+  the task to start the elevated copy and exits (with `--settings` it then sends `Show` to the new
+  instance); with no task it keeps running unelevated. An elevated start moves a legacy
+  `HKCU\...\Run` entry to the task's trigger.
+- The IPC pipe gets an explicit security descriptor (`ipc.rs`, `restrict_to_user`) because the default
+  of an elevated process would lock out the same user's normal processes (`Show`).
 
 ## Threads
 Main thread: tray (Windows needs its message loop: `pump_messages`), `Controller`, the settings window

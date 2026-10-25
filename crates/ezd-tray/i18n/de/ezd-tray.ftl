@@ -3,6 +3,7 @@ about = ezdisplay: Nutze dein Tablet als zweiten Bildschirm. Läuft im Infoberei
 arg-settings = Öffnet das Einstellungsfenster.
 arg-quit = Beendet das laufende ezdisplay und wartet, bis es gestoppt ist.
 arg-autostart = Schaltet den Start mit der Sitzung ein oder aus und beendet sich dann.
+arg-elevation = Schaltet die Ausführung als Administrator ein oder aus und beendet sich dann.
 usage-label = Aufruf:
 heading-options = Optionen
 help-flag = Hilfe anzeigen
@@ -132,6 +133,8 @@ port-hint = Das Tablet erreicht diesen Computer über diesen Port. Änderungen g
 
 ## Fenster: Allgemein
 start-on-launch = Übertragen, wenn ezdisplay startet
+setting-run-elevated = Administratorfenster steuern (mit erhöhten Rechten ausführen)
+run-elevated-hint = Lässt Stift und Touch Fenster erreichen, die als Administrator laufen, etwa den Task-Manager. Gilt nach einem Neustart von ezdisplay.
 about-version = ezdisplay { $version }
 licenses = Lizenzen
 

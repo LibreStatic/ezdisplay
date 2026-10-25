@@ -354,6 +354,38 @@ fn general_section_actions() {
 }
 
 #[test]
+fn run_elevated_checkbox_is_windows_only() {
+    let mut h = harness(snapshot(HostStatus::Stopped), "en");
+    h.get_by_role_and_label(Role::Button, "General").click();
+    h.run();
+    assert!(
+        h.query_by_label("Control administrator windows (run elevated)")
+            .is_none()
+    );
+
+    for (lang, label) in [
+        ("en", "Control administrator windows (run elevated)"),
+        (
+            "es",
+            "Controlar ventanas de administrador (ejecutar con privilegios elevados)",
+        ),
+    ] {
+        let mut snap = snapshot(HostStatus::Stopped);
+        snap.windows = true;
+        let mut h = harness(snap, lang);
+        h.get_by_role_and_label(Role::Button, "General").click();
+        h.run();
+        h.get_by_label(label).click();
+        h.run();
+        assert_eq!(
+            h.state_mut().take_actions(),
+            vec![Action::SetRunElevated(false)],
+            "{lang}"
+        );
+    }
+}
+
+#[test]
 fn driver_page_exists_only_with_driver_info() {
     let h = harness(snapshot(HostStatus::Stopped), "en");
     assert!(

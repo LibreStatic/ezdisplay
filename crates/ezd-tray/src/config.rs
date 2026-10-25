@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 pub struct TrayConfig {
     /// Start streaming (listening for the tablet) when ezdisplay opens.
     pub start_on_launch: bool,
+    /// Windows only: run the app elevated (through its scheduled task) so that pen and touch
+    /// reach administrator windows. Ignored elsewhere.
+    pub run_elevated: bool,
     /// The host service settings.
     pub service: ServiceConfig,
 }
@@ -19,6 +22,7 @@ impl Default for TrayConfig {
     fn default() -> Self {
         TrayConfig {
             start_on_launch: true,
+            run_elevated: true,
             service: ServiceConfig::default(),
         }
     }
@@ -87,6 +91,7 @@ mod tests {
     fn defaults() {
         let c = TrayConfig::default();
         assert!(c.start_on_launch);
+        assert!(c.run_elevated);
         assert_eq!(c.service, ServiceConfig::default());
         let empty: TrayConfig = toml::from_str("").unwrap();
         assert_eq!(empty, c);
@@ -106,6 +111,7 @@ mod tests {
         )
         .unwrap();
         assert!(!c.start_on_launch);
+        assert!(c.run_elevated);
         assert_eq!(c.service.adb, AdbMode::Off);
         assert_eq!(c.service.scale_permille, 750);
         assert_eq!(c.service.max_refresh_mhz, 120_000);
@@ -117,6 +123,7 @@ mod tests {
         let path = dir.path().join("sub").join("config.toml");
         let c = TrayConfig {
             start_on_launch: false,
+            run_elevated: false,
             service: ServiceConfig {
                 adb: AdbMode::Serial("R52X204YJNW".into()),
                 bitrate_kbps: Some(40_000),

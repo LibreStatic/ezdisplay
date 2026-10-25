@@ -275,11 +275,28 @@ impl Controller {
     }
 
     pub fn set_autostart(&mut self, on: bool) {
-        match autostart::set(on) {
+        match autostart::set(on, self.config.run_elevated) {
             Ok(()) => tracing::info!("autostart {}", if on { "enabled" } else { "disabled" }),
             Err(e) => tracing::warn!("cannot change autostart: {e}"),
         }
         self.autostart = autostart::is_enabled();
+    }
+
+    /// Windows: saves the "run elevated" setting and gives the launcher task the matching run
+    /// level (asks for permission when this process is not elevated). It applies on the next start.
+    pub fn set_run_elevated(&mut self, on: bool) {
+        if self.config.run_elevated == on {
+            return;
+        }
+        match autostart::set_run_elevated(on) {
+            Ok(()) => {
+                tracing::info!("run elevated {}", if on { "enabled" } else { "disabled" });
+                let mut config = self.config.clone();
+                config.run_elevated = on;
+                self.set_config(config, false);
+            }
+            Err(e) => tracing::warn!("cannot change the run level: {e}"),
+        }
     }
 
     pub fn refresh_autostart(&mut self) {
@@ -342,7 +359,11 @@ impl Controller {
     pub fn dispatch(&mut self, actions: Vec<Action>) {
         for a in actions {
             match a {
-                Action::SetConfig(c) => self.set_config(c, false),
+                Action::SetConfig(mut c) => {
+                    // Only `SetRunElevated` changes this, together with the launcher task.
+                    c.run_elevated = self.config.run_elevated;
+                    self.set_config(c, false);
+                }
                 Action::ApplyNow => {
                     let c = self.config.clone();
                     self.set_config(c, true);
@@ -350,6 +371,7 @@ impl Controller {
                 Action::Start => self.start(),
                 Action::Stop => self.stop(),
                 Action::SetAutostart(on) => self.set_autostart(on),
+                Action::SetRunElevated(on) => self.set_run_elevated(on),
                 Action::OpenLogs => platform::open_path(&paths::log_dir()),
                 Action::OpenLicenses => {
                     if let Some(d) = paths::licenses_dir() {

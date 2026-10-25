@@ -3,6 +3,7 @@ about = ezdisplay: use your tablet as a second display. Runs in the system tray.
 arg-settings = Open the settings window.
 arg-quit = Quit the running ezdisplay, waiting until it has stopped.
 arg-autostart = Turn starting with the session on or off, then exit.
+arg-elevation = Turn running as administrator on or off, then exit.
 usage-label = Usage:
 heading-options = Options
 help-flag = Print help
@@ -132,6 +133,8 @@ port-hint = The tablet reaches this computer on this port. Changes apply when no
 
 ## Window: general
 start-on-launch = Stream when ezdisplay opens
+setting-run-elevated = Control administrator windows (run elevated)
+run-elevated-hint = Lets pen and touch reach windows that run as administrator, such as Task Manager. Applies after restarting ezdisplay.
 about-version = ezdisplay { $version }
 licenses = Licenses
 

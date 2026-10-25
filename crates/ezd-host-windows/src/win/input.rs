@@ -94,7 +94,7 @@ pub fn diag_json() -> Value {
     json!({
         "pen": show(Device::pen()),
         "touch": show(Device::touch()),
-        "note": "needs Windows 10 1809+; input to elevated (administrator) windows is blocked unless the host runs elevated",
+        "note": "needs Windows 10 1809+; input to elevated (administrator) windows is blocked unless the host runs elevated (the tray app does by default)",
     })
 }
 

@@ -95,7 +95,8 @@ the MUX mode) and, if possible, in a third pass that forces the GPU.
 
 - **Reinstall** over the existing install: it must not download FFmpeg again.
 - **Autostart:** sign out and back in; ezdisplay must start in the notification area (unless the
-  "Start ezdisplay when you sign in" task was unchecked).
+  "Start ezdisplay when you sign in" task was unchecked), elevated and without a UAC prompt. It is the
+  logon trigger of the `ezdisplay` scheduled task (Task Scheduler Library); uninstalling deletes the task.
 - **Uninstall** from *Settings*, *Apps*: afterwards Device Manager (*Display adapters*, with
   *View*, *Show hidden devices*) must not list "Virtual Display Driver", and
   `C:\Program Files\ezdisplay` must be gone.
@@ -141,7 +142,9 @@ or later), and clicks, scrolling and keys with `SendInput`.
    page (`tools/input-test`) the keys show up as `keydown` / `keyup`, with Ctrl held during the
    stroke. Note whether any key stays "stuck" after releasing the button or ending the session.
 7. **Elevated windows.** With Task Manager open (elevated), Windows blocks input to it unless the
-   host also runs as administrator. Note whether the `ezd-host run` log shows the UIPI warning and
+   host also runs as administrator; the tray app does by default (Task Manager's *Details* shows
+   `ezdisplay.exe` as elevated). Switching *Control administrator windows (run elevated)* off in the
+   settings and restarting ezdisplay should bring the block back. Note whether the `ezd-host run` log shows the UIPI warning and
    whether pen/touch have no effect there.
 8. Note the `note` field of the input state shown on the tablet and any `input:` line in the log
    (with `RUST_LOG=debug`).

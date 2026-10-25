@@ -3,6 +3,7 @@ about = ezdisplay: usa il tablet come secondo schermo. Gira nell'area di notific
 arg-settings = Apre la finestra delle impostazioni.
 arg-quit = Chiude l'ezdisplay in esecuzione e attende che si sia fermato.
 arg-autostart = Attiva o disattiva l'avvio con la sessione, poi esce.
+arg-elevation = Attiva o disattiva l'esecuzione come amministratore, poi esce.
 usage-label = Uso:
 heading-options = Opzioni
 help-flag = Mostra l'aiuto
@@ -132,6 +133,8 @@ port-hint = Il tablet raggiunge questo computer su questa porta. Le modifiche va
 
 ## Finestra: generale
 start-on-launch = Trasmetti all'apertura di ezdisplay
+setting-run-elevated = Controlla le finestre di amministratore (esegui con privilegi elevati)
+run-elevated-hint = Permette alla penna e al tocco di raggiungere le finestre eseguite come amministratore, come Gestione attività. Vale dopo il riavvio di ezdisplay.
 about-version = ezdisplay { $version }
 licenses = Licenze
 

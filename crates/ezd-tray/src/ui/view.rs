@@ -128,6 +128,8 @@ pub enum Action {
     Start,
     Stop,
     SetAutostart(bool),
+    /// Windows: run elevated (administrator) or not; applied after restarting the app.
+    SetRunElevated(bool),
     OpenLogs,
     OpenLicenses,
     OpenUrl(String),
@@ -1076,6 +1078,21 @@ impl SettingsView {
                     Some(&fl!(l, "start-on-launch-description")),
                     &mut self.snap.config.start_on_launch,
                 );
+                if self.snap.windows {
+                    widgets::row_divider(ui, pal);
+                    let mut elevated = self.snap.config.run_elevated;
+                    if widgets::toggle_row(
+                        ui,
+                        pal,
+                        &fl!(l, "setting-run-elevated"),
+                        Some(&fl!(l, "run-elevated-hint")),
+                        &mut elevated,
+                    )
+                    .changed()
+                    {
+                        self.actions.push(Action::SetRunElevated(elevated));
+                    }
+                }
             },
         );
         ui.add_space(CARD_GAP);

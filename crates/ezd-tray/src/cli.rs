@@ -23,6 +23,8 @@ pub struct Args {
     pub quit: bool,
     /// Turn the autostart entry on or off and exit.
     pub autostart: Option<OnOff>,
+    /// Register the launcher task to run elevated (or not) and exit.
+    pub elevation: Option<OnOff>,
     /// Another config file (tests, manual runs).
     pub config: Option<PathBuf>,
 }
@@ -54,6 +56,14 @@ pub fn command(l: &FluentLanguageLoader) -> Command {
                 .help(fl!(l, "arg-autostart")),
         )
         .arg(
+            Arg::new("elevation")
+                .long("elevation")
+                .value_name("on|off")
+                .value_parser(clap::value_parser!(OnOff))
+                .hide(!cfg!(windows))
+                .help(fl!(l, "arg-elevation")),
+        )
+        .arg(
             Arg::new("config")
                 .long("config")
                 .value_name("PATH")
@@ -72,6 +82,7 @@ fn from_matches(m: &clap::ArgMatches) -> Args {
         settings: m.get_flag("settings"),
         quit: m.get_flag("quit"),
         autostart: m.get_one::<OnOff>("autostart").copied(),
+        elevation: m.get_one::<OnOff>("elevation").copied(),
         config: m.get_one::<PathBuf>("config").cloned(),
     }
 }
@@ -131,6 +142,8 @@ mod tests {
                 "--settings",
                 "--autostart",
                 "off",
+                "--elevation",
+                "on",
                 "--config",
                 "/x",
             ])
@@ -138,6 +151,7 @@ mod tests {
         let a = from_matches(&m);
         assert!(a.settings && !a.quit);
         assert_eq!(a.autostart, Some(OnOff::Off));
+        assert_eq!(a.elevation, Some(OnOff::On));
         assert_eq!(a.config, Some(PathBuf::from("/x")));
     }
 

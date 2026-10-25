@@ -79,18 +79,17 @@ impl Server {
         let ns = name
             .to_ns_name::<GenericNamespaced>()
             .map_err(BindError::Other)?;
-        let listener =
-            ListenerOptions::new()
-                .name(ns)
-                .create_sync()
-                .map_err(|e| match e.kind() {
-                    std::io::ErrorKind::AddrInUse => BindError::InUse,
-                    // The first pipe instance is created with FILE_FLAG_FIRST_PIPE_INSTANCE,
-                    // which fails with ERROR_ACCESS_DENIED when the name is taken.
-                    #[cfg(windows)]
-                    std::io::ErrorKind::PermissionDenied => BindError::InUse,
-                    _ => BindError::Other(e),
-                })?;
+        let options = ListenerOptions::new().name(ns);
+        #[cfg(windows)]
+        let options = restrict_to_user(options);
+        let listener = options.create_sync().map_err(|e| match e.kind() {
+            std::io::ErrorKind::AddrInUse => BindError::InUse,
+            // The first pipe instance is created with FILE_FLAG_FIRST_PIPE_INSTANCE,
+            // which fails with ERROR_ACCESS_DENIED when the name is taken.
+            #[cfg(windows)]
+            std::io::ErrorKind::PermissionDenied => BindError::InUse,
+            _ => BindError::Other(e),
+        })?;
         let (tx, requests) = channel();
         let on_request = std::sync::Arc::new(on_request);
         std::thread::Builder::new()
@@ -111,6 +110,47 @@ impl Server {
             })
             .map_err(BindError::Other)?;
         Ok(Server { requests })
+    }
+}
+
+/// An elevated process creates its pipe with a default DACL that only lets administrators in, which
+/// would lock out the same user's normal processes (a Start menu launch asking to show the window).
+/// So the pipe gets an explicit descriptor: SYSTEM, administrators and this user, plus a Medium
+/// integrity label so that normal-integrity clients may write to it. Other users get nothing. The
+/// user needs the generic file rights, which include creating further pipe instances; they run
+/// as the same account anyway.
+#[cfg(windows)]
+fn restrict_to_user(options: ListenerOptions<'_>) -> ListenerOptions<'_> {
+    use interprocess::os::windows::{
+        local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
+    };
+    let Some(sid) = ezd_host_windows::current_user_sid() else {
+        tracing::warn!("ipc: cannot read the user SID; the pipe keeps its default access");
+        return options;
+    };
+    let sddl = format!("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{sid})S:(ML;;NW;;;ME)");
+    let sd = widestring::U16CString::from_str(&sddl)
+        .map_err(std::io::Error::other)
+        .and_then(|w| SecurityDescriptor::deserialize(&w));
+    match sd {
+        Ok(sd) => options.security_descriptor(sd),
+        Err(e) => {
+            tracing::warn!("ipc: cannot build the pipe access rules ({e}); using the default");
+            options
+        }
+    }
+}
+
+/// Whether an instance already listens on `name` (connects and hangs up; nothing is requested).
+#[cfg(any(windows, test))]
+pub fn is_running(name: &str) -> bool {
+    let Ok(ns) = name.to_ns_name::<GenericNamespaced>() else {
+        return false;
+    };
+    match Stream::connect(ns) {
+        Ok(_) => true,
+        // An instance that exists but denies us is still an instance.
+        Err(e) => e.kind() == std::io::ErrorKind::PermissionDenied,
     }
 }
 
@@ -193,6 +233,14 @@ mod tests {
     fn no_instance() {
         let r = send(&unique_name(), Command::Show, Duration::from_secs(2));
         assert!(matches!(r, Err(SendError::NoInstance)), "{r:?}");
+    }
+
+    #[test]
+    fn is_running_follows_the_listener() {
+        let name = unique_name();
+        assert!(!is_running(&name));
+        let _server = Server::bind(&name, || {}).unwrap();
+        assert!(is_running(&name));
     }
 
     #[test]
