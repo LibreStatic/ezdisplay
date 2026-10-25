@@ -144,6 +144,32 @@ cargo run --release -p ezd-fake-client -- --connect 127.0.0.1:27183 --frames 300
 With a real device, `ezd-host run --source synthetic --adb` sets up
 `adb reverse tcp:27183 tcp:27183` for the attached device(s) and removes it on exit.
 
+## Wi-Fi
+
+`--wifi` also listens for tablets on the local network (QUIC over UDP port 27183, encrypted,
+paired devices only). The host advertises itself over mDNS so tablets can find it:
+
+```sh
+ezd-host run --wifi
+```
+
+The first time, or with `--pair`, the host prints a QR code and a 6-digit PIN that are valid for
+5 minutes. Once paired, a device reconnects without a PIN. `ezd-host paired list` shows the
+paired devices and `ezd-host paired forget <name>` removes one. (The Android app's Wi-Fi
+connect screen is in progress.)
+
+The fake client pairs the same way, then streams:
+
+```sh
+cargo run --release -p ezd-fake-client -- --wifi 127.0.0.1:27183 --pin 123456 --frames 300
+```
+
+On Windows, allow inbound UDP port 27183 in Windows Defender Firewall for private networks.
+Wi-Fi also works without pairing through ADB wireless debugging:
+`ezd-host run --adb <ip:port> --link network`.
+
+How the link and the pairing work: [docs/protocol.md](docs/protocol.md#transports).
+
 ## Diagnostics
 
 ```sh
