@@ -588,13 +588,30 @@ pub fn banner<R>(
                         FontId::proportional(ICON_SIZE),
                         on_color(pal, circle),
                     );
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.label(RichText::new(title).size(17.0).color(pal.text));
-                        if let Some(subtitle) = subtitle {
-                            ui.label(RichText::new(subtitle).size(13.0).color(pal.text_secondary));
-                        }
-                    });
+                    // A block of the texts' own height, so the row centres it next to the icon
+                    // (`ui.vertical` would take the whole row and start at the top).
+                    let width = ui.available_width();
+                    let measure = |text: &str, size: f32| {
+                        ui.painter()
+                            .layout(text.to_owned(), FontId::proportional(size), pal.text, width)
+                            .size()
+                            .y
+                    };
+                    let height =
+                        measure(title, 17.0) + subtitle.map_or(0.0, |s| 2.0 + measure(s, 13.0));
+                    ui.allocate_ui_with_layout(
+                        vec2(width, height),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.label(RichText::new(title).size(17.0).color(pal.text));
+                            if let Some(subtitle) = subtitle {
+                                ui.label(
+                                    RichText::new(subtitle).size(13.0).color(pal.text_secondary),
+                                );
+                            }
+                        },
+                    );
                 });
                 inner
             },
