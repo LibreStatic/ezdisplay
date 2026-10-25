@@ -36,17 +36,24 @@ jobs:
       # The RUSTFLAGS environment variable replaces the rustflags of .cargo/config.toml, so the
       # static CRT (no VC++ runtime needed on a clean Windows) is repeated here.
       RUSTFLAGS: "-D warnings -C target-feature=+crt-static"
+      # MSVC writes release debug info to PDB files that no artifact ships, and producing them
+      # makes the release build about 75 s slower.
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # A failed run still saves its build, so the next push does not start cold. Only main
+          # saves, which keeps the repository cache under its size limit.
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Fetch pinned FFmpeg (SHA-256 checked; headers + import libs)
         shell: pwsh
         run: |
           ./packaging/windows/stage.ps1 -RepoRoot $PWD -CacheDir "$env:RUNNER_TEMP\pins" -FfmpegOnly
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - run: cargo build --workspace --release
-      - run: cargo test --workspace
       - name: Check the C runtime is linked statically
         shell: pwsh
         run: |
@@ -104,6 +111,9 @@ jobs:
           name: ezdisplay-windows-installer
           path: installer-out/ezdisplay-setup-*-x64.exe
           if-no-files-found: error
+      # The installer is uploaded before the tests run, so it can be tried on a real PC while they
+      # finish.
+      - run: cargo test --workspace
       - name: Installer smoke test (install, upgrade, uninstall)
         shell: pwsh
         timeout-minutes: 10
