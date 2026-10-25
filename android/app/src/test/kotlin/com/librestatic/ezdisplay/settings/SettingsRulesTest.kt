@@ -75,6 +75,7 @@ class SettingsRulesTest {
 
     @Test fun panOnTheContactDragShowsThePanEditor() {
         assertEquals(listOf(InputPrefs.KEYS_PAN), visibleKeyEditors(custom(contact = "pan")))
+        assertEquals(listOf(InputPrefs.KEYS_PAN), visibleKeyEditors(custom(contact = "pan_zoom")))
         assertEquals(emptyList<String>(), visibleKeyEditors(custom(hover = "pan")))
         assertEquals(emptyList<String>(), visibleKeyEditors(custom(contact = "wheel_zoom", hover = "wheel_zoom")))
         assertEquals(listOf(InputPrefs.KEYS_HOLD), visibleKeyEditors(custom(hold = "keys", contact = "pan")))

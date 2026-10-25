@@ -40,6 +40,17 @@ const STEP_ZOOM_GAP_US: u64 = 60_000;
 /// Zoom steps that can be queued by fast travel; the rest is dropped.
 const STEP_ZOOM_BACKLOG: f32 = 3.0;
 
+/// Decision of the [`Held::PanZoom`] drag, taken once per touch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum PanZoomMode {
+    /// The travel from the anchor has not passed the slop yet.
+    Classify,
+    /// Wheel zoom steps; `rem` holds the upward travel not yet turned into steps.
+    Zoom,
+    /// The pan combination is pressed and the contact is forwarded.
+    Pan,
+}
+
 /// A resolved gesture whose barrel button is still down.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Held {
@@ -60,6 +71,16 @@ pub(crate) enum Held {
     /// pressed (`PenState::keys_held`) while the tip touches and released at
     /// the lift. The pen reports contact and motion as usual.
     PanDrag,
+    /// Pan or zoom drag. The tip touch is reported as hover until the drag
+    /// picks a mode; `Pan` then forwards the contact (starting at `anchor`, the
+    /// first touch point) and `Zoom` keeps reporting hover. After a lift the
+    /// state waits for the next touch (barrel still held).
+    PanZoom {
+        anchor: (f32, f32),
+        touching: bool,
+        mode: PanZoomMode,
+        rem: f32,
+    },
     /// The hold key combination is pressed (`PenState::keys_held`); the pen
     /// reports contact and motion as usual.
     Keys,
@@ -208,7 +229,10 @@ impl InputEngine {
         !matches!(m.hold, ButtonAction::Keys | ButtonAction::None)
             && (drag_effect(m.hold_drag_hover)
                 || drag_effect(m.hold_drag_contact)
-                || m.hold_drag_contact == ButtonAction::Pan)
+                || matches!(
+                    m.hold_drag_contact,
+                    ButtonAction::Pan | ButtonAction::PanZoom
+                ))
     }
 
     /// Hold action fired by the release of a barrel that was held still past the
@@ -321,6 +345,35 @@ impl InputEngine {
             self.pen.keys_held = Some(c);
         }
         self.set_held(Held::PanDrag);
+    }
+
+    /// Starts the pan or zoom drag at the tip touch: contact is reported as
+    /// hover until the drag picks a mode.
+    fn start_pan_zoom(&mut self) {
+        self.pen.suppress = true;
+        self.set_held(Held::PanZoom {
+            anchor: self.cur_pos(),
+            touching: true,
+            mode: PanZoomMode::Classify,
+            rem: 0.0,
+        });
+    }
+
+    /// The barrel went down with the tip already touching, and the contact drag
+    /// is a pan or pan/zoom: ends the stroke with a lift sample, then goes on as
+    /// if the tip had just touched with the barrel held.
+    fn barrel_while_touching(&mut self, t: u64, out: &mut Vec<Message>) {
+        self.pen.suppress = true;
+        let f = self.base_flags();
+        self.emit_flush(t, f, out);
+        if self.p.map.hold_drag_contact == ButtonAction::Pan {
+            self.start_pan(t, out);
+            self.pen.suppress = false;
+            let f = self.base_flags();
+            self.emit_flush(t, f, out);
+        } else {
+            self.start_pan_zoom();
+        }
     }
 
     /// Starts the double-hold action: presses its combination and keeps it
@@ -441,6 +494,16 @@ impl InputEngine {
         let g = self.pen.gesture;
         if down {
             match g {
+                Gesture::Idle
+                    if self.pen.contact
+                        && self.p.map.hold != ButtonAction::Keys
+                        && matches!(
+                            self.p.map.hold_drag_contact,
+                            ButtonAction::Pan | ButtonAction::PanZoom
+                        ) =>
+                {
+                    self.barrel_while_touching(t, out);
+                }
                 Gesture::Idle if self.pen.contact => {
                     // Pressed with the tip already down: forward raw.
                     self.pen.barrel_fwd = true;
@@ -474,7 +537,17 @@ impl InputEngine {
         } else {
             // The held keys are released whatever the gesture state is, except
             // the pan keys of a touching tip: they stay until the lift.
-            if !(g == Gesture::Held(Held::PanDrag) && self.pen.contact) {
+            let pan_keys = matches!(
+                g,
+                Gesture::Held(
+                    Held::PanDrag
+                        | Held::PanZoom {
+                            mode: PanZoomMode::Pan,
+                            ..
+                        }
+                )
+            );
+            if !(pan_keys && self.pen.contact) {
                 self.release_keys(t, out);
             }
             self.pen.gesture = Gesture::Idle;
@@ -598,6 +671,12 @@ impl InputEngine {
             {
                 self.start_pan(t, out);
             }
+            Gesture::Pending { .. }
+            | Gesture::Held(Held::HoverDrag { .. } | Held::PanZoom { .. })
+                if self.p.map.hold_drag_contact == ButtonAction::PanZoom =>
+            {
+                self.start_pan_zoom();
+            }
             Gesture::Pending { past_t: true, .. }
                 if self.defers_hold() && !drag_effect(self.p.map.hold_drag_contact) =>
             {
@@ -685,6 +764,14 @@ impl InputEngine {
                 self.instant(click, Trigger::Click, t, out);
             }
         }
+        if let Gesture::Held(Held::PanZoom { anchor, .. }) = self.pen.gesture {
+            self.set_held(Held::PanZoom {
+                anchor,
+                touching: false,
+                mode: PanZoomMode::Classify,
+                rem: 0.0,
+            });
+        }
         if self.pen.eraser_switch_pending {
             self.eraser_end(t, out);
         }
@@ -732,6 +819,45 @@ impl InputEngine {
         }
         let prev = self.pen.prev;
         let d = (cur.0 - prev.0, cur.1 - prev.1);
+        if let Gesture::Held(Held::PanZoom {
+            anchor,
+            touching: true,
+            mode: PanZoomMode::Classify,
+            ..
+        }) = self.pen.gesture
+            && dist(cur, anchor) > self.p.slop
+        {
+            let (dx, dy) = (cur.0 - anchor.0, cur.1 - anchor.1);
+            if dy.abs() >= 2.0 * dx.abs() {
+                // The travel up to the previous sample; this sample's delta is
+                // added below, so the slop distance counts for the first step.
+                self.set_held(Held::PanZoom {
+                    anchor,
+                    touching: true,
+                    mode: PanZoomMode::Zoom,
+                    rem: anchor.1 - prev.1,
+                });
+            } else {
+                let c = self.p.keys.pan;
+                if self.pen.keys_held.is_none() {
+                    Self::press_combo(c, t, out);
+                    self.pen.keys_held = Some(c);
+                }
+                self.pen.suppress = false;
+                self.set_held(Held::PanZoom {
+                    anchor,
+                    touching: true,
+                    mode: PanZoomMode::Pan,
+                    rem: 0.0,
+                });
+                // The app pans from where the tip first touched.
+                let saved = (self.pen.cur.x, self.pen.cur.y);
+                (self.pen.cur.x, self.pen.cur.y) = anchor;
+                let f = self.base_flags();
+                self.emit_flush(t, f, out);
+                (self.pen.cur.x, self.pen.cur.y) = saved;
+            }
+        }
         let n = self.p.scroll_n;
         let slop = self.p.slop;
         let mut emit: Option<((f32, f32), Units)> = None;
@@ -765,6 +891,15 @@ impl InputEngine {
                         emit = drag_units(*kind, n, d, rem).map(|u| (*anchor, u));
                     }
                 }
+            }
+            Gesture::Held(Held::PanZoom {
+                anchor,
+                touching: true,
+                mode: PanZoomMode::Zoom,
+                rem,
+            }) => {
+                zoom = step_zoom_dir(rem, d.1, zstep, &mut self.pen.step_last, t)
+                    .map(|up| (*anchor, up, true));
             }
             Gesture::Held(Held::Pan) => {
                 self.view = crate::view::ViewTransform {

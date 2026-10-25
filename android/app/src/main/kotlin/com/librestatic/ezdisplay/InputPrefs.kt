@@ -130,7 +130,7 @@ object InputPrefs {
                 p.getString(CUSTOM_DOUBLE_HOLD, "none") == "keys" ||
                 p.getString(CUSTOM_HOLD_DRAG_CONTACT, "raw") == "step_zoom" ||
                 p.getString(CUSTOM_HOLD_DRAG_HOVER, "raw") == "step_zoom" ||
-                p.getString(CUSTOM_HOLD_DRAG_CONTACT, "raw") == "pan"
+                p.getString(CUSTOM_HOLD_DRAG_CONTACT, "raw") in setOf("pan", "pan_zoom")
             else -> false
         }
     }

@@ -48,6 +48,13 @@ pub enum ButtonAction {
     /// ([`KeyBindings::pan`], Space by default) is kept pressed while the tip
     /// touches, so a drag with the pen pans in many drawing apps.
     Pan,
+    /// Pan or zoom the canvas of the host by dragging with the tip (contact
+    /// drag only), like a graphics-tablet pan/zoom button: a mostly vertical
+    /// drag zooms with the wheel (as [`ButtonAction::WheelZoom`]), any other
+    /// drag pans (as [`ButtonAction::Pan`]). The first drag past the slop
+    /// decides, until the lift. With an empty pan combination the pan branch
+    /// just forwards the contact.
+    PanZoom,
     /// Toggle the local zoom of the view.
     LocalZoom,
     /// Switch to the eraser while held (hold trigger only).
@@ -246,7 +253,7 @@ impl ButtonMap {
                 _ => None,
             },
             hold_drag_contact: match self.hold_drag_contact {
-                Pan => Pan,
+                Pan | PanZoom => self.hold_drag_contact,
                 a => drag(a),
             },
             hold_drag_hover: drag(self.hold_drag_hover),

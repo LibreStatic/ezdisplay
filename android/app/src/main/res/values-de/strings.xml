@@ -38,6 +38,7 @@
     <string name="action_step_zoom">Zoom in Stufen</string>
     <string name="action_wheel_zoom">Zoom mit dem Mausrad, in Stufen</string>
     <string name="action_pan">Arbeitsfläche verschieben</string>
+    <string name="action_pan_zoom">Verschieben oder zoomen</string>
     <string name="action_none">Keine</string>
     <string name="settings_zoom_factor">Zoomstufe</string>
     <string name="settings_air_actions_on">Die Air-Aktionen von Samsung sind aktiviert. Sie können auf Tastendrücke reagieren, die bei aufgesetzter Stiftspitze beginnen. Deaktiviere sie unter Einstellungen → Erweiterte Funktionen → S Pen → Air-Aktionen.</string>

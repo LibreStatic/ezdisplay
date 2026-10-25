@@ -83,7 +83,7 @@ class SettingsWideTest : SettingsUiTestBase() {
     @Test fun customPanShowsThePanShortcut() {
         launch(AirActions.On) {
             putString(InputPrefs.PROFILE, "custom")
-            putString(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "pan")
+            putString(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "pan_zoom")
             putString(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "wheel_zoom")
         }
         tag("shortcut_keys_zoom_in").assertDoesNotExist()

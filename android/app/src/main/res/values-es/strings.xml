@@ -38,6 +38,7 @@
     <string name="action_step_zoom">Zoom por pasos</string>
     <string name="action_wheel_zoom">Zoom con la rueda, por pasos</string>
     <string name="action_pan">Mover el lienzo</string>
+    <string name="action_pan_zoom">Mover o hacer zoom</string>
     <string name="action_none">Nada</string>
     <string name="settings_zoom_factor">Nivel de zoom</string>
     <string name="settings_air_actions_on">Las acciones aéreas de Samsung están activadas. Pueden reaccionar a pulsaciones del botón que empiezan con la punta apoyada. Desactivalas en Ajustes → Funciones avanzadas → S Pen → Acciones aéreas.</string>

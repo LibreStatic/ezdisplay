@@ -38,6 +38,7 @@
     <string name="action_step_zoom">Zoom par paliers</string>
     <string name="action_wheel_zoom">Zoom par molette, par paliers</string>
     <string name="action_pan">Déplacer le canevas</string>
+    <string name="action_pan_zoom">Déplacer ou zoomer</string>
     <string name="action_none">Aucune</string>
     <string name="settings_zoom_factor">Niveau de zoom</string>
     <string name="settings_air_actions_on">Les actions aériennes de Samsung sont activées. Elles peuvent réagir aux appuis sur le bouton qui commencent avec la pointe posée. Désactivez-les dans Paramètres → Fonctions avancées → S Pen → Actions aériennes.</string>
