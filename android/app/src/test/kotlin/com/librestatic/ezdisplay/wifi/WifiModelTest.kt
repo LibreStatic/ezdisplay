@@ -121,4 +121,54 @@ class WifiModelTest {
         // A discovered host nobody paired is never chosen.
         assertNull(chooseWifiTarget(listOf(noAddr), listOf(seenB), null))
     }
+
+    @Test fun spoofedAnnouncementsAreRotatedOut() {
+        val real = WifiHost("Real", fpA, shortFingerprint(fpA), "10.0.0.2:27183")
+        val spoof = DiscoveredHost("evil", "Real", shortFingerprint(fpA), "192.168.1.66:27183")
+        val genuine = DiscoveredHost("real", "Real", shortFingerprint(fpA), "192.168.1.9:27183")
+        val seen = listOf(spoof, genuine)
+        // The first announcement wins until it fails.
+        assertEquals(WifiChoice(real, spoof.addr), chooseWifiTarget(listOf(real), seen, fpA))
+        // Then the other discovered address, then the stored one.
+        val avoid = mutableSetOf(fpA to spoof.addr)
+        assertEquals(WifiChoice(real, genuine.addr), chooseWifiTarget(listOf(real), seen, fpA, avoid))
+        avoid += fpA to genuine.addr
+        assertEquals(WifiChoice(real, "10.0.0.2:27183"), chooseWifiTarget(listOf(real), seen, fpA, avoid))
+        // Only avoided candidates left: still try one rather than never connecting.
+        avoid += fpA to "10.0.0.2:27183"
+        assertEquals(WifiChoice(real, spoof.addr), chooseWifiTarget(listOf(real), seen, fpA, avoid))
+        // Another host is preferred to an avoided address of the first.
+        val other = WifiHost("Other", fpB, shortFingerprint(fpB), "10.0.0.3:27183")
+        assertEquals(WifiChoice(other, "10.0.0.3:27183"), chooseWifiTarget(listOf(real, other), emptyList(), fpA, setOf(fpA to "10.0.0.2:27183")))
+    }
+
+    @Test fun failuresAreRememberedForAWhile() {
+        val f = WifiFailures(ttlMs = 60_000)
+        f.record(fpA, "1.2.3.4:1", 1_000)
+        assertEquals(setOf(fpA to "1.2.3.4:1"), f.active(30_000))
+        assertTrue(f.active(61_000).isEmpty())
+        f.record(fpA, "1.2.3.4:1", 100_000)
+        f.clear(fpA, "1.2.3.4:1")
+        assertTrue(f.active(100_001).isEmpty())
+    }
+
+    @Test fun localAddressesAreOnTheLocalNetwork() {
+        listOf(
+            "10.0.0.1", "10.255.0.1:1234", "172.16.0.1", "172.31.255.255", "192.168.1.5:27183", "169.254.1.1",
+            "100.64.0.1", "100.127.1.1", "[fc00::1]:27183", "fd12:3456::1", "fe80::1", "[febf::1]:5",
+        ).forEach { assertTrue(it, isLocalAddress(it)) }
+        listOf(
+            "8.8.8.8", "203.0.113.9:27183", "172.15.0.1", "172.32.0.1", "192.169.0.1", "100.63.0.1", "100.128.0.1",
+            "127.0.0.1", "2001:db8::1", "[2001:db8::1]:27183", "fec0::1", "::1", "::ffff:192.168.1.5", "garbage", "",
+        ).forEach { assertFalse(it, isLocalAddress(it)) }
+    }
+
+    @Test fun namesLoseControlAndFormatCharacters() {
+        val spoof = "Of\u202Efice\u202C\u2066 PC\u2069\u200E\u200F\u061C\u0007\n\uFEFF"
+        assertEquals("Office PC", cleanName(spoof))
+        assertEquals("Studio PC", cleanName("  Studio PC  "))
+        assertEquals(64, cleanName("x".repeat(100)).length)
+        val link = parsePairUri("ezd://pair?a=10.0.0.2:27183&fp=$fpA&pin=123456&n=Of%E2%80%AEfice%E2%80%AC%E2%81%A6%20PC")
+        assertEquals("Office PC", link!!.name)
+    }
 }

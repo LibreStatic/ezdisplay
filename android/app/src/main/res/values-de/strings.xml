@@ -101,10 +101,13 @@
     <string name="wifi_pair_action">Koppeln</string>
     <string name="wifi_manual_title">Per Adresse hinzufügen</string>
     <string name="wifi_manual_label">IP-Adresse (Standardport 27183)</string>
+    <string name="wifi_manual_public_warning">Diese Adresse liegt nicht in deinem lokalen Netzwerk. Koppele nur mit einem PC, dem du vertraust.</string>
     <string name="wifi_device_fp_title">Dieses Gerät</string>
     <string name="wifi_device_fp_desc">Fingerabdruck des Zertifikats</string>
     <string name="pair_dialog_title">Mit %1$s koppeln</string>
     <string name="pair_dialog_fingerprint">Fingerabdruck: %1$s</string>
+    <string name="pair_dialog_address">Adresse: %1$s</string>
+    <string name="pair_dialog_pin_check">Prüfe, ob dein PC diese PIN anzeigt.</string>
     <string name="pair_dialog_scanned">Prüfe, ob der Fingerabdruck mit dem auf deinem PC übereinstimmt, und koppele dann dieses Gerät.</string>
     <string name="pair_dialog_pin_label">6-stellige PIN</string>
     <string name="pair_dialog_pin_help">Wird auf dem PC angezeigt, wenn du die Kopplung startest.</string>
@@ -120,6 +123,7 @@
     <string name="pair_error_fingerprint">Das ist nicht der Host aus dem Code: Der Fingerabdruck weicht ab.</string>
     <string name="pair_error_invalid_pin">Die PIN hat 6 Ziffern.</string>
     <string name="pair_error_invalid_uri">Das ist kein ezdisplay-Kopplungscode.</string>
+    <string name="pair_error_not_local">Dieser Kopplungslink verweist nicht auf ein Gerät in deinem lokalen Netzwerk und wurde abgelehnt.</string>
     <string name="pair_error_invalid_address">Das ist keine gültige Adresse.</string>
     <string name="pair_error_other">Kopplung fehlgeschlagen.</string>
     <plurals name="connection_summary_wifi">

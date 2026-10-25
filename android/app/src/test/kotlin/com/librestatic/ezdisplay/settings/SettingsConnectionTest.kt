@@ -4,6 +4,8 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -12,6 +14,8 @@ import com.librestatic.ezdisplay.R
 import com.librestatic.ezdisplay.wifi.DiscoveredHost
 import com.librestatic.ezdisplay.wifi.PairLink
 import com.librestatic.ezdisplay.wifi.WifiHost
+import com.librestatic.ezdisplay.wifi.isLocalAddress
+import com.librestatic.ezdisplay.wifi.parsePairUri
 import com.librestatic.ezdisplay.wifi.shortFingerprint
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -158,12 +162,33 @@ class SettingsConnectionPhoneTest : SettingsUiTestBase() {
         rule.onNodeWithText(str(R.string.pair_dialog_title, "Studio PC")).assertExists()
         tag("pair_fp").assertTextContains(shortFingerprint(FP), substring = true)
         tag("pin_field").assertDoesNotExist()
+        tag("pair_addr").assertTextContains("192.168.1.9:27183", substring = true)
+        tag("pair_pin").assertTextEquals("424242")
+        rule.onNodeWithText(str(R.string.pair_dialog_pin_check)).assertExists()
         tag("pair_confirm").assertIsEnabled().performClick()
         rule.waitForIdle()
         val call = backend.calls.single()
         assertEquals(link.toUri(), call.second)
         tag("pair_dialog").assertDoesNotExist()
         assertEquals(1, store.state.value.wifiHosts.size)
+    }
+
+    @Test fun aManualPublicAddressShowsAWarning() {
+        openConnection()
+        tag("manual_field").performScrollTo().performTextInput("192.168.1.20")
+        rule.onNodeWithText(str(R.string.wifi_manual_public_warning)).assertDoesNotExist()
+        tag("manual_field").performTextClearance()
+        tag("manual_field").performTextInput("203.0.113.9")
+        rule.onNodeWithText(str(R.string.wifi_manual_public_warning)).assertExists()
+        // The address is still allowed: the user typed it.
+        tag("manual_pair").assertIsEnabled()
+    }
+
+    @Test fun aPublicAddressLinkIsRefusedWithAnError() {
+        val link = parsePairUri("ezd://pair?a=203.0.113.9:27183&fp=$FP&pin=424242&n=Office%20PC")!!
+        assertFalse(isLocalAddress(link.addr))
+        assertEquals(R.string.pair_error_not_local, wifiErrorText("not_local_address"))
+        assertTrue(str(R.string.pair_error_not_local).isNotEmpty())
     }
 
     @Test fun anUnreachableHostShowsItsMessage() {

@@ -121,6 +121,13 @@ class SettingsScreenshotTest {
     }
 
     @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
+    fun phone_pair_link_dialog_dark() {
+        val link = PairLink("192.168.1.9:27183", "3f2a91c077de0b14".padEnd(64, '0'), "424242", "Studio PC")
+        show(connectionState.copy(pairing = PairingState(link.name, link.shortFp, link.addr, link)))
+        capture("phone_pair_link_dialog_dark")
+    }
+
+    @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
     fun phone_editor_dark() {
         show(tabletState)
         rule.onNodeWithTag("shortcut_keys_hold").performClick()

@@ -101,10 +101,13 @@
     <string name="wifi_pair_action">Associer</string>
     <string name="wifi_manual_title">Ajouter par adresse</string>
     <string name="wifi_manual_label">Adresse IP (port 27183 par défaut)</string>
+    <string name="wifi_manual_public_warning">Cette adresse n\'est pas sur votre réseau local. Associez uniquement un PC de confiance.</string>
     <string name="wifi_device_fp_title">Cet appareil</string>
     <string name="wifi_device_fp_desc">Empreinte de son certificat</string>
     <string name="pair_dialog_title">Associer avec %1$s</string>
     <string name="pair_dialog_fingerprint">Empreinte : %1$s</string>
+    <string name="pair_dialog_address">Adresse : %1$s</string>
+    <string name="pair_dialog_pin_check">Vérifiez que votre PC affiche ce code PIN.</string>
     <string name="pair_dialog_scanned">Vérifiez que l\'empreinte correspond à celle de votre PC, puis associez cet appareil.</string>
     <string name="pair_dialog_pin_label">PIN à 6 chiffres</string>
     <string name="pair_dialog_pin_help">Affiché sur le PC au début de l\'association.</string>
@@ -120,6 +123,7 @@
     <string name="pair_error_fingerprint">Ce n\'est pas l\'hôte du code : son empreinte est différente.</string>
     <string name="pair_error_invalid_pin">Le PIN comporte 6 chiffres.</string>
     <string name="pair_error_invalid_uri">Ce n\'est pas un code d\'association ezdisplay.</string>
+    <string name="pair_error_not_local">Ce lien d\'association ne pointe pas vers un appareil de votre réseau local ; il a donc été refusé.</string>
     <string name="pair_error_invalid_address">Cette adresse n\'est pas valide.</string>
     <string name="pair_error_other">Échec de l\'association.</string>
     <plurals name="connection_summary_wifi">

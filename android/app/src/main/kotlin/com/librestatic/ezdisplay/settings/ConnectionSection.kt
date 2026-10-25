@@ -37,7 +37,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -48,6 +51,7 @@ import com.librestatic.ezdisplay.wifi.DiscoveredHost
 import com.librestatic.ezdisplay.wifi.PIN_LENGTH
 import com.librestatic.ezdisplay.wifi.WifiHost
 import com.librestatic.ezdisplay.wifi.fingerprintMatches
+import com.librestatic.ezdisplay.wifi.isLocalAddress
 import com.librestatic.ezdisplay.wifi.isValidPin
 import com.librestatic.ezdisplay.wifi.parseManualAddress
 
@@ -66,6 +70,7 @@ fun wifiErrorText(code: String?): Int = when (code) {
     "fingerprint_mismatch" -> R.string.pair_error_fingerprint
     "invalid_pin" -> R.string.pair_error_invalid_pin
     "invalid_uri" -> R.string.pair_error_invalid_uri
+    "not_local_address" -> R.string.pair_error_not_local
     "invalid_address" -> R.string.pair_error_invalid_address
     else -> R.string.pair_error_other
 }
@@ -331,6 +336,9 @@ private fun ManualAddress(actions: SettingsActions) {
                     label = { Text(stringResource(R.string.wifi_manual_label)) },
                     singleLine = true,
                     isError = text.isNotBlank() && addr == null,
+                    supportingText = if (addr != null && !isLocalAddress(addr)) {
+                        { Text(stringResource(R.string.wifi_manual_public_warning), Modifier.testTag("manual_warning")) }
+                    } else null,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
                 Button(
@@ -404,7 +412,20 @@ fun PairDialog(pairing: PairingState, actions: SettingsActions) {
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
-                if (scanned) {
+                if (pairing.link != null) {
+                    Text(
+                        stringResource(R.string.pair_dialog_address, pairing.link.addr),
+                        Modifier.testTag("pair_addr"),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        pairing.link.pin,
+                        Modifier.fillMaxWidth().testTag("pair_pin"),
+                        style = MaterialTheme.typography.displayMedium.copy(fontFamily = FontFamily.Monospace, letterSpacing = 6.sp),
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(stringResource(R.string.pair_dialog_pin_check), style = MaterialTheme.typography.bodyMedium)
                     Text(stringResource(R.string.pair_dialog_scanned), style = MaterialTheme.typography.bodyMedium)
                 } else {
                     OutlinedTextField(

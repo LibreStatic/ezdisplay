@@ -73,12 +73,51 @@ fun parsePairUri(uri: String?): PairLink? {
             "a" -> addr = value
             "fp" -> fp = value
             "pin" -> pin = value
-            "n" -> name = value.filter { !it.isISOControl() }.trim().take(64)
+            "n" -> name = cleanName(value)
         }
     }
     if (addr.isNullOrBlank() || parseManualAddress(addr) == null) return null
     if (fp == null || !HEX64.matches(fp) || pin == null || !isValidPin(pin)) return null
     return PairLink(parseManualAddress(addr)!!, fp.lowercase(), pin, name)
+}
+
+/**
+ * A display name safe to show: no control characters and no invisible or direction-changing format characters
+ * (Unicode category Cf, e.g. U+202A-U+202E, U+2066-U+2069, U+200E/F, U+061C), at most 64 characters. Twin of
+ * `clean_name` in `ezd-link`.
+ */
+fun cleanName(name: String): String {
+    val sb = StringBuilder()
+    var i = 0
+    while (i < name.length) {
+        val cp = name.codePointAt(i)
+        i += Character.charCount(cp)
+        if (Character.isISOControl(cp) || Character.getType(cp) == Character.FORMAT.toInt() || cp in EXTRA_FORMAT) continue
+        sb.appendCodePoint(cp)
+    }
+    return sb.toString().trim().let { t -> t.substring(0, t.offsetByCodePoints(0, minOf(64, t.codePointCount(0, t.length)))) }
+}
+
+/** Format characters of `clean_name` in `ezd-link` that older Unicode tables may not class as Cf. */
+private val EXTRA_FORMAT: Set<Int> =
+    (listOf(0x00AD, 0x061C, 0x180E, 0xFEFF) + (0x200B..0x200F) + (0x202A..0x202E) + (0x2060..0x206F) + (0xFFF9..0xFFFB))
+        .toSet()
+
+/**
+ * True when [addr] (`ip`, `ip:port` or `[ipv6]:port`) is on the local network: IPv4 private (10/8, 172.16/12,
+ * 192.168/16), link-local (169.254/16) or CGNAT (100.64/10, VPN overlays); IPv6 unique-local (fc00::/7) or
+ * link-local (fe80::/10). Twin of `is_local_ip` in `ezd-android`.
+ */
+fun isLocalAddress(addr: String): Boolean {
+    val normalized = parseManualAddress(addr) ?: return false
+    if (normalized.startsWith("[")) {
+        val ip = normalized.substring(1, normalized.indexOf(']'))
+        val first = ip.substringBefore(':').let { if (it.isEmpty()) 0 else it.toIntOrNull(16) ?: return false }
+        return (first and 0xFE00) == 0xFC00 || (first and 0xFFC0) == 0xFE80
+    }
+    val (a, b) = normalized.substringBefore(':').split('.').map { it.toInt() }
+    return a == 10 || (a == 172 && b in 16..31) || (a == 192 && b == 168) || (a == 169 && b == 254) ||
+        (a == 100 && b in 64..127)
 }
 
 private val IPV4 = Regex("""(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})""")
@@ -139,17 +178,48 @@ fun parsePairResultJson(json: String): PairResult = try {
     PairResult(null, "other", json)
 }
 
-/** Where to connect over Wi-Fi: the paired [host] at [addr] (`ip:port`). */
+/** Where to connect over Wi-Fi: the paired host at [addr] (`ip:port`). */
 data class WifiChoice(val host: WifiHost, val addr: String)
 
 /**
- * The paired host to try over Wi-Fi and its address. Prefers a host that is on the network now (address from
- * discovery), then the one used last ([lastFingerprint]) and its stored address, then any host with a stored
- * address. Null when no paired host has an address.
+ * The paired host to try over Wi-Fi and its address. Prefers a host that is on the network now (every address
+ * discovery reports for it), then the one used last ([lastFingerprint]) and its stored address, then any host with
+ * a stored address. Candidates in [avoid] (host fingerprint to address, recently failed) come last, so a spoofed
+ * announcement cannot keep winning; when only avoided candidates remain, the first of them is still returned so a
+ * transient failure never blocks the only real host. Null when no paired host has an address.
  */
-fun chooseWifiTarget(hosts: List<WifiHost>, discovered: List<DiscoveredHost>, lastFingerprint: String?): WifiChoice? {
-    fun live(h: WifiHost) = discovered.firstOrNull { fingerprintMatches(h.fingerprint, it.shortFp) }?.addr
+fun chooseWifiTarget(
+    hosts: List<WifiHost>,
+    discovered: List<DiscoveredHost>,
+    lastFingerprint: String?,
+    avoid: Set<Pair<String, String>> = emptySet(),
+): WifiChoice? {
     val ordered = hosts.sortedBy { if (it.fingerprint == lastFingerprint) 0 else 1 }
-    ordered.firstNotNullOfOrNull { h -> live(h)?.let { WifiChoice(h, it) } }?.let { return it }
-    return ordered.firstNotNullOfOrNull { h -> h.addr?.let { WifiChoice(h, it) } }
+    val live = ordered.flatMap { h ->
+        discovered.filter { fingerprintMatches(h.fingerprint, it.shortFp) }.map { WifiChoice(h, it.addr) }
+    }
+    val stored = ordered.mapNotNull { h -> h.addr?.let { WifiChoice(h, it) } }
+    val candidates = (live + stored).distinct()
+    return candidates.firstOrNull { (it.host.fingerprint to it.addr) !in avoid } ?: candidates.firstOrNull()
+}
+
+/** Wi-Fi attempts that failed recently (host fingerprint, address), kept in memory for [ttlMs]. */
+class WifiFailures(private val ttlMs: Long = 60_000) {
+    private val failed = LinkedHashMap<Pair<String, String>, Long>()
+
+    fun record(fingerprint: String, addr: String, nowMs: Long) {
+        failed.remove(fingerprint to addr)
+        failed[fingerprint to addr] = nowMs
+    }
+
+    /** A connection to this pair worked: forget its failures. */
+    fun clear(fingerprint: String, addr: String) {
+        failed.remove(fingerprint to addr)
+    }
+
+    /** The pairs to avoid at [nowMs]; expired ones are dropped. */
+    fun active(nowMs: Long): Set<Pair<String, String>> {
+        failed.values.removeAll { nowMs - it >= ttlMs }
+        return failed.keys.toSet()
+    }
 }

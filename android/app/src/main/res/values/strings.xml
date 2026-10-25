@@ -101,10 +101,13 @@
     <string name="wifi_pair_action">Pair</string>
     <string name="wifi_manual_title">Add by address</string>
     <string name="wifi_manual_label">IP address (port 27183 by default)</string>
+    <string name="wifi_manual_public_warning">This address is not on your local network. Only pair with a PC you trust.</string>
     <string name="wifi_device_fp_title">This device</string>
     <string name="wifi_device_fp_desc">Fingerprint of its certificate</string>
     <string name="pair_dialog_title">Pair with %1$s</string>
     <string name="pair_dialog_fingerprint">Fingerprint: %1$s</string>
+    <string name="pair_dialog_address">Address: %1$s</string>
+    <string name="pair_dialog_pin_check">Check that your PC shows this PIN.</string>
     <string name="pair_dialog_scanned">Check that the fingerprint matches the one on your PC, then pair this device.</string>
     <string name="pair_dialog_pin_label">6-digit PIN</string>
     <string name="pair_dialog_pin_help">Shown on the PC when you start pairing.</string>
@@ -120,6 +123,7 @@
     <string name="pair_error_fingerprint">This is not the host from the code: its fingerprint differs.</string>
     <string name="pair_error_invalid_pin">The PIN has 6 digits.</string>
     <string name="pair_error_invalid_uri">This is not an ezdisplay pairing code.</string>
+    <string name="pair_error_not_local">This pairing link does not point to a device on your local network, so it was refused.</string>
     <string name="pair_error_invalid_address">This is not a valid address.</string>
     <string name="pair_error_other">Pairing failed.</string>
     <plurals name="connection_summary_wifi">

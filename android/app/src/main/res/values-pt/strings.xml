@@ -101,10 +101,13 @@
     <string name="wifi_pair_action">Parear</string>
     <string name="wifi_manual_title">Adicionar por endereço</string>
     <string name="wifi_manual_label">Endereço IP (porta 27183 por padrão)</string>
+    <string name="wifi_manual_public_warning">Este endereço não está na sua rede local. Pareie apenas com um PC de confiança.</string>
     <string name="wifi_device_fp_title">Este dispositivo</string>
     <string name="wifi_device_fp_desc">Impressão digital do certificado</string>
     <string name="pair_dialog_title">Parear com %1$s</string>
     <string name="pair_dialog_fingerprint">Impressão digital: %1$s</string>
+    <string name="pair_dialog_address">Endereço: %1$s</string>
+    <string name="pair_dialog_pin_check">Confira se o seu PC mostra este PIN.</string>
     <string name="pair_dialog_scanned">Confira se a impressão digital é igual à do seu PC e depois pareie este dispositivo.</string>
     <string name="pair_dialog_pin_label">PIN de 6 dígitos</string>
     <string name="pair_dialog_pin_help">Exibido no PC ao iniciar o pareamento.</string>
@@ -120,6 +123,7 @@
     <string name="pair_error_fingerprint">Este não é o host do código: a impressão digital é diferente.</string>
     <string name="pair_error_invalid_pin">O PIN tem 6 dígitos.</string>
     <string name="pair_error_invalid_uri">Este não é um código de pareamento do ezdisplay.</string>
+    <string name="pair_error_not_local">Este link de pareamento não aponta para um dispositivo da sua rede local e foi recusado.</string>
     <string name="pair_error_invalid_address">Este endereço não é válido.</string>
     <string name="pair_error_other">Falha ao parear.</string>
     <plurals name="connection_summary_wifi">

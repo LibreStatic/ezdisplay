@@ -33,6 +33,7 @@ import com.librestatic.ezdisplay.settings.SettingsStore
 import com.librestatic.ezdisplay.wifi.HostDiscovery
 import com.librestatic.ezdisplay.wifi.NativeWifiBackend
 import com.librestatic.ezdisplay.wifi.WifiChoice
+import com.librestatic.ezdisplay.wifi.WifiFailures
 import com.librestatic.ezdisplay.wifi.chooseWifiTarget
 import org.json.JSONObject
 import java.nio.ByteBuffer
@@ -124,6 +125,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private lateinit var discovery: HostDiscovery
     private val wifi by lazy { NativeWifiBackend(this) }
     private var activeWifi: WifiChoice? = null // set while the current session is over Wi-Fi
+    private val wifiFailures = WifiFailures() // discovered or stored addresses that failed lately: tried last
     private var tryWifiNext = false // the loopback connection just failed: try the paired host
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -261,7 +263,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private fun wifiTarget(): WifiChoice? {
         if (!wifiEnabled()) return null
         val last = InputPrefs.prefs(this).getString(LAST_WIFI_HOST, null)
-        return chooseWifiTarget(wifi.hosts(), discovery.hosts, last)
+        return chooseWifiTarget(wifi.hosts(), discovery.hosts, last, wifiFailures.active(SystemClock.elapsedRealtime()))
     }
 
     private fun applyInputConfig() {
@@ -533,6 +535,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
                     ).trim()
                     if (wifiChoice != null) {
                         InputPrefs.prefs(this).edit().putString(LAST_WIFI_HOST, wifiChoice.host.fingerprint).apply()
+                        wifiFailures.clear(wifiChoice.host.fingerprint, wifiChoice.addr)
                         // Drawing over Wi-Fi works but feels different: say so, and keep it up a little longer.
                         setStatus(connected + "\n" + getString(R.string.status_wifi_latency))
                     } else {
@@ -576,6 +579,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private fun disconnected(message: String, failed: Boolean) {
         Log.i(TAG, "disconnected: $message")
         val wasWifi = activeWifi != null
+        // Any failure over Wi-Fi demotes that address, so the next attempt tries another candidate.
+        if (failed) activeWifi?.let { wifiFailures.record(it.host.fingerprint, it.addr, SystemClock.elapsedRealtime()) }
         stopSession()
         setStatus(message)
         // The loopback connection failed (no cable, no adb reverse): try the paired host over Wi-Fi right away.

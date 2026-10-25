@@ -101,10 +101,13 @@
     <string name="wifi_pair_action">Vincular</string>
     <string name="wifi_manual_title">Agregar por dirección</string>
     <string name="wifi_manual_label">Dirección IP (puerto 27183 por defecto)</string>
+    <string name="wifi_manual_public_warning">Esta dirección no está en tu red local. Vinculá solo con una PC de confianza.</string>
     <string name="wifi_device_fp_title">Este dispositivo</string>
     <string name="wifi_device_fp_desc">Huella de su certificado</string>
     <string name="pair_dialog_title">Vincular con %1$s</string>
     <string name="pair_dialog_fingerprint">Huella: %1$s</string>
+    <string name="pair_dialog_address">Dirección: %1$s</string>
+    <string name="pair_dialog_pin_check">Verificá que tu PC muestre este PIN.</string>
     <string name="pair_dialog_scanned">Verificá que la huella coincida con la de tu PC y luego vinculá este dispositivo.</string>
     <string name="pair_dialog_pin_label">PIN de 6 dígitos</string>
     <string name="pair_dialog_pin_help">Se muestra en la PC al iniciar la vinculación.</string>
@@ -120,6 +123,7 @@
     <string name="pair_error_fingerprint">Este no es el host del código: su huella es distinta.</string>
     <string name="pair_error_invalid_pin">El PIN tiene 6 dígitos.</string>
     <string name="pair_error_invalid_uri">Este no es un código de vinculación de ezdisplay.</string>
+    <string name="pair_error_not_local">Este enlace de vinculación no apunta a un dispositivo de tu red local, así que se rechazó.</string>
     <string name="pair_error_invalid_address">Esta no es una dirección válida.</string>
     <string name="pair_error_other">No se pudo vincular.</string>
     <plurals name="connection_summary_wifi">

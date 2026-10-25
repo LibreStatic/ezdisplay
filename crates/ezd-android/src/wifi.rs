@@ -49,6 +49,22 @@ pub fn parse_addr(s: &str) -> Option<SocketAddr> {
         .or_else(|| s.parse::<IpAddr>().ok().map(|ip| (ip, DEFAULT_PORT).into()))
 }
 
+/// True for an address on the local network: IPv4 private (RFC 1918), link-local and CGNAT
+/// (100.64/10, used by VPN overlays), IPv6 unique-local (fc00::/7) and link-local (fe80::/10).
+/// Pairing links must point here; the Kotlin twin is `isLocalAddress` in `WifiModel.kt`.
+pub fn is_local_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_private() || v4.is_link_local() || (a == 100 && (64..=127).contains(&b))
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
+
 /// The stable error code Kotlin maps to a localized message.
 fn error_code(e: &WifiError) -> &'static str {
     match e {
@@ -83,6 +99,13 @@ pub fn pair_json(addr: &str, pin_or_uri: &str, device_name: &str, state_dir: &Pa
         let Some(uri) = PairUri::parse(input) else {
             return failure("invalid_uri", "not a pairing link");
         };
+        // A link can come from any web page: it may only point at the local network.
+        if !is_local_ip(uri.addr.ip()) {
+            return failure(
+                "not_local_address",
+                "the pairing link is not on the local network",
+            );
+        }
         PairRequest {
             addr: uri.addr,
             pin: uri.pin,
@@ -179,6 +202,56 @@ mod tests {
 
     fn json(s: &str) -> serde_json::Value {
         serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn local_addresses_are_private_link_local_cgnat_and_ula() {
+        for ok in [
+            "10.0.0.1",
+            "10.255.255.255",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.5",
+            "169.254.3.4",
+            "100.64.0.1",
+            "100.127.255.255",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "febf::1",
+        ] {
+            assert!(is_local_ip(ok.parse().unwrap()), "{ok}");
+        }
+        for bad in [
+            "8.8.8.8",
+            "172.15.0.1",
+            "172.32.0.1",
+            "192.169.0.1",
+            "100.63.255.255",
+            "100.128.0.1",
+            "169.253.0.1",
+            "127.0.0.1",
+            "2001:db8::1",
+            "fec0::1",
+            "::1",
+            "::ffff:192.168.1.5",
+        ] {
+            assert!(!is_local_ip(bad.parse().unwrap()), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_link_to_a_public_address_is_refused_before_connecting() {
+        let dir = TempDir::new("public-link");
+        let uri = PairUri {
+            addr: "203.0.113.9:27183".parse().unwrap(),
+            fingerprint: [7; 32],
+            pin: "123456".into(),
+            name: "Office PC".into(),
+        };
+        let out = json(&pair_json("", &uri.to_uri(), "Tablet", &dir.0));
+        assert_eq!(out["ok"], false);
+        assert_eq!(out["error"], "not_local_address");
     }
 
     #[test]

@@ -12,6 +12,7 @@ import com.librestatic.ezdisplay.settings.SettingsTheme
 import com.librestatic.ezdisplay.settings.readAirActions
 import com.librestatic.ezdisplay.settings.wifiErrorText
 import com.librestatic.ezdisplay.wifi.HostDiscovery
+import com.librestatic.ezdisplay.wifi.isLocalAddress
 import com.librestatic.ezdisplay.wifi.parsePairUri
 
 /**
@@ -43,6 +44,11 @@ class SettingsActivity : ComponentActivity() {
         val link = parsePairUri(intent.dataString)
         if (link == null) {
             Toast.makeText(this, wifiErrorText("invalid_uri"), Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!isLocalAddress(link.addr)) {
+            // A link can come from any web page or app: it may only point at the local network.
+            Toast.makeText(this, wifiErrorText("not_local_address"), Toast.LENGTH_LONG).show()
             return
         }
         store.startPairing(link)
