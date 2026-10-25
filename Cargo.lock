@@ -1608,6 +1608,8 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "ezd-link",
  "ezd-proto",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -1628,8 +1630,6 @@ dependencies = [
  "i18n-embed",
  "i18n-embed-fl",
  "rust-embed",
- "serde",
- "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tracing",

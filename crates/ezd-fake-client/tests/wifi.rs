@@ -2,7 +2,7 @@
 //! with the stored pairing and no PIN.
 #![cfg(feature = "wifi")]
 
-use ezd_fake_client::wifi::{WifiError, WifiOptions, connect_wifi, load_host};
+use ezd_fake_client::wifi::{WifiError, WifiOptions, connect_wifi, load_hosts};
 use ezd_fake_client::{ClientEnd, FakeClientConfig, run_fake_client};
 use ezd_ffmpeg::{SwVideoSource, encoder_available};
 use ezd_host_core::run_host_session;
@@ -134,7 +134,7 @@ async fn pairs_with_a_pin_then_reconnects_without_one() {
     assert_eq!(report.end, ClientEnd::FramesReached);
     assert!(report.frames_decoded >= 30);
     assert_eq!(
-        load_host(&dir.0).unwrap().unwrap().fingerprint,
+        load_hosts(&dir.0).unwrap()[0].fingerprint,
         ezd_link::identity::fingerprint_hex(&host_id.fingerprint())
     );
 
@@ -168,7 +168,7 @@ async fn a_wrong_pin_is_refused_and_nothing_is_stored() {
         matches!(err, WifiError::Quic(QuicError::Refused(_))),
         "{err:?}"
     );
-    assert!(load_host(&dir.0).unwrap().is_none());
+    assert!(load_hosts(&dir.0).unwrap().is_empty());
     host.abort();
 }
 
@@ -201,7 +201,7 @@ async fn a_uri_pins_the_host_and_supplies_address_and_pin() {
         matches!(err, WifiError::Quic(QuicError::FingerprintMismatch)),
         "{err:?}"
     );
-    assert!(load_host(&dir.0).unwrap().is_none());
+    assert!(load_hosts(&dir.0).unwrap().is_empty());
 
     let (_link, outcome) = connect_wifi(&opts(uri(host_id.fingerprint())))
         .await
@@ -214,6 +214,6 @@ async fn a_uri_pins_the_host_and_supplies_address_and_pin() {
 fn a_corrupt_host_file_is_an_error() {
     let dir = TempDir::new("corrupt");
     std::fs::create_dir_all(&dir.0).unwrap();
-    std::fs::write(dir.0.join("host.json"), "nope").unwrap();
-    assert!(matches!(load_host(&dir.0), Err(WifiError::Corrupt { .. })));
+    std::fs::write(dir.0.join("hosts.json"), "nope").unwrap();
+    assert!(matches!(load_hosts(&dir.0), Err(WifiError::Corrupt { .. })));
 }

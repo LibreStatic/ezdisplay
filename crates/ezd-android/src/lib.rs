@@ -13,6 +13,7 @@ pub mod color;
 pub mod input;
 pub mod status;
 pub mod tracker;
+pub mod wifi;
 
 #[cfg(target_os = "android")]
 mod bridge;

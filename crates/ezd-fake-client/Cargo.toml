@@ -18,7 +18,7 @@ path = "src/main.rs"
 [features]
 default = ["wifi"]
 # Wi-Fi (QUIC) transport: `--wifi`, `--pin`, `--uri`.
-wifi = ["ezd-link/quic", "dep:dirs", "dep:serde", "dep:serde_json"]
+wifi = ["ezd-client-core/wifi", "ezd-link/quic", "dep:dirs"]
 
 [dependencies]
 dirs = { workspace = true, optional = true }
@@ -32,8 +32,6 @@ ezd-proto.workspace = true
 i18n-embed.workspace = true
 i18n-embed-fl.workspace = true
 rust-embed.workspace = true
-serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
