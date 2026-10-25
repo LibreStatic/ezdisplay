@@ -55,8 +55,8 @@ import androidx.compose.ui.unit.dp
 import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.R
 
-/** Settings sections; AirActions only exists while its card is shown. */
-enum class SettingsSection { Pen, Zoom, Touch, AirActions }
+/** Settings sections; AirActions only exists while its card is shown (and is always last). */
+enum class SettingsSection { Pen, Zoom, Touch, Connection, AirActions }
 
 private fun airCardShown(state: SettingsState) =
     state.airActions == AirActions.On || state.airActions == AirActions.Unknown
@@ -96,6 +96,7 @@ fun SettingsContent(state: SettingsState, actions: SettingsActions, modifier: Mo
             }
         }
     }
+    state.pairing?.let { PairDialog(it, actions) }
 }
 
 // ---------------------------------------------------------------- Shared content
@@ -176,6 +177,8 @@ private fun PhoneMain(state: SettingsState, actions: SettingsActions, onOpenEdit
             SectionTitle(stringResource(R.string.section_touch))
             PalmRow(state.palmRejection, actions::setPalmRejection)
             AirActionsCard(state.airActions, Modifier.padding(top = profileGap(2)))
+            SectionTitle(stringResource(R.string.section_connection))
+            ConnectionContent(state, actions)
         }
     }
 }
@@ -224,7 +227,7 @@ private fun ListDetailLayout(
 ) {
     val colors = MaterialTheme.colorScheme
     val sections = buildList {
-        add(SettingsSection.Pen); add(SettingsSection.Zoom); add(SettingsSection.Touch)
+        add(SettingsSection.Pen); add(SettingsSection.Zoom); add(SettingsSection.Touch); add(SettingsSection.Connection)
         if (airCardShown(state)) add(SettingsSection.AirActions)
     }
     val current = selected.takeIf { it in sections } ?: SettingsSection.Pen
@@ -283,6 +286,7 @@ private fun ListDetailLayout(
                     )
                     SettingsSection.Zoom -> ZoomGroup(state, actions)
                     SettingsSection.Touch -> PalmRow(state.palmRejection, actions::setPalmRejection)
+                    SettingsSection.Connection -> ConnectionContent(state, actions)
                     SettingsSection.AirActions -> AirActionsCard(state.airActions)
                 }
             }
@@ -294,6 +298,7 @@ private fun sectionTitle(s: SettingsSection) = when (s) {
     SettingsSection.Pen -> R.string.settings_profile
     SettingsSection.Zoom -> R.string.section_zoom
     SettingsSection.Touch -> R.string.settings_palm_title
+    SettingsSection.Connection -> R.string.section_connection
     SettingsSection.AirActions -> R.string.section_air_actions
 }
 
@@ -301,6 +306,7 @@ private fun sectionIcon(s: SettingsSection) = when (s) {
     SettingsSection.Pen -> R.drawable.ic_stylus
     SettingsSection.Zoom -> R.drawable.ic_zoom_in
     SettingsSection.Touch -> R.drawable.ic_back_hand
+    SettingsSection.Connection -> R.drawable.ic_wifi
     SettingsSection.AirActions -> R.drawable.ic_info
 }
 
@@ -309,6 +315,7 @@ private fun sectionValue(s: SettingsSection, state: SettingsState): String = whe
     SettingsSection.Pen -> stringResource(Profiles.firstOrNull { it.value == state.profile }?.title ?: R.string.profile_raw)
     SettingsSection.Zoom -> stringResource(R.string.settings_zoom_summary, formatZoom(state.zoomFactor), state.doubleClickMs)
     SettingsSection.Touch -> stringResource(if (state.palmRejection) R.string.settings_on else R.string.settings_off)
+    SettingsSection.Connection -> connectionSummary(state)
     SettingsSection.AirActions -> stringResource(R.string.section_air_actions_value)
 }
 
@@ -414,6 +421,10 @@ private fun WideLayout(
                                 PalmRow(state.palmRejection, actions::setPalmRejection)
                                 AirActionsCard(state.airActions, Modifier.padding(top = profileGap(3)))
                             }
+                            Column(Modifier.weight(1f)) {
+                                WideHeading(stringResource(R.string.section_connection))
+                                ConnectionSummary(state, actions)
+                            }
                         }
                     } else {
                         WideHeading(stringResource(R.string.section_zoom))
@@ -422,6 +433,9 @@ private fun WideLayout(
                         WideHeading(stringResource(R.string.section_touch))
                         PalmRow(state.palmRejection, actions::setPalmRejection)
                         AirActionsCard(state.airActions, Modifier.padding(top = profileGap(2)))
+                        Spacer(Modifier.height(20.dp))
+                        WideHeading(stringResource(R.string.section_connection))
+                        ConnectionSummary(state, actions)
                     }
                 }
             }

@@ -29,6 +29,11 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
+import com.librestatic.ezdisplay.settings.SettingsStore
+import com.librestatic.ezdisplay.wifi.HostDiscovery
+import com.librestatic.ezdisplay.wifi.NativeWifiBackend
+import com.librestatic.ezdisplay.wifi.WifiChoice
+import com.librestatic.ezdisplay.wifi.chooseWifiTarget
 import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -41,12 +46,17 @@ import java.util.Locale
  * While streaming, every pointer event is forwarded to the native input engine, which sends
  * touch/pen input to the host and drives the local zoom of the [stage] (surface + cursor).
  * Outside of streaming a settings button is shown.
+ *
+ * Connection order: USB first (the adb-reversed loopback port). When that fails and Wi-Fi is enabled in the settings
+ * with a paired host known, the next attempt goes to that host over Wi-Fi; if the Wi-Fi attempt fails the next one is
+ * USB again, so plugging the cable in always wins.
  */
 class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCallback {
     private companion object {
         const val TAG = "ezdisplay"
         const val HOST = "127.0.0.1"
         const val PORT = 27183
+        const val LAST_WIFI_HOST = "wifi_last_host"
         const val BACKOFF_MIN_MS = 1000L
         const val BACKOFF_MAX_MS = 5000L
         const val STATS_INTERVAL_MS = 250L
@@ -111,6 +121,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
 
     private val connectRunnable = Runnable { connect() }
 
+    private lateinit var discovery: HostDiscovery
+    private val wifi by lazy { NativeWifiBackend(this) }
+    private var activeWifi: WifiChoice? = null // set while the current session is over Wi-Fi
+    private var tryWifiNext = false // the loopback connection just failed: try the paired host
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -121,6 +136,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             }
         }
         pickDisplayMode()
+        discovery = HostDiscovery(this) { }
         buildUi()
         hideSystemBars()
     }
@@ -231,6 +247,21 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     override fun onResume() {
         super.onResume()
         applyInputConfig()
+        updateDiscovery()
+    }
+
+    private fun wifiEnabled() = InputPrefs.prefs(this).getBoolean(SettingsStore.WIFI_ENABLED, false)
+
+    /** Looks for hosts on the network while the waiting screen is up and Wi-Fi is enabled. */
+    private fun updateDiscovery() {
+        if (started && !inputActive() && wifiEnabled()) discovery.start() else discovery.stop()
+    }
+
+    /** The paired host to try over Wi-Fi, or null when Wi-Fi is off or no paired host has an address. */
+    private fun wifiTarget(): WifiChoice? {
+        if (!wifiEnabled()) return null
+        val last = InputPrefs.prefs(this).getString(LAST_WIFI_HOST, null)
+        return chooseWifiTarget(wifi.hosts(), discovery.hosts, last)
     }
 
     private fun applyInputConfig() {
@@ -241,8 +272,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         super.onStart()
         started = true
         backoffMs = BACKOFF_MIN_MS
+        tryWifiNext = false
         setStatus(getString(R.string.status_waiting, "$HOST:$PORT"))
         Choreographer.getInstance().postFrameCallback(this)
+        updateDiscovery()
         scheduleConnect(0)
     }
 
@@ -251,6 +284,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         handler.removeCallbacks(connectRunnable)
         Choreographer.getInstance().removeFrameCallback(this)
         stopSession()
+        discovery.stop()
         super.onStop()
     }
 
@@ -283,7 +317,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         if (!started || sessionActive) return
         if (!surfaceReady) return // surfaceCreated reschedules
         val caps = capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it }
-        val err = NativeBridge.start(surfaceView.holder.surface, HOST, PORT, caps)
+        val choice = if (tryWifiNext) wifiTarget() else null
+        tryWifiNext = false
+        val err = if (choice != null) {
+            NativeBridge.startWifi(
+                surfaceView.holder.surface, choice.addr, choice.host.fingerprint,
+                NativeWifiBackend.stateDir(this).absolutePath, caps,
+            )
+        } else {
+            NativeBridge.start(surfaceView.holder.surface, HOST, PORT, caps)
+        }
         if (err != null) {
             Log.w(TAG, "start failed: $err")
             setStatus(getString(R.string.status_bad_caps, err))
@@ -292,6 +335,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             return
         }
         sessionActive = true
+        activeWifi = choice
         applyInputConfig()
         wasStreaming = false
         lastInputNote = ""
@@ -303,14 +347,20 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         bufH = 0
         fitSurface()
         frameRateSet = 0
-        setStatus(getString(R.string.status_waiting, "$HOST:$PORT"))
+        setStatus(
+            if (choice != null) getString(R.string.status_wifi_connecting, hostLabel(choice))
+            else getString(R.string.status_waiting, "$HOST:$PORT"),
+        )
     }
+
+    private fun hostLabel(choice: WifiChoice) = choice.host.name.ifEmpty { choice.host.shortFp }
 
     private fun stopSession() {
         if (sessionActive) {
             NativeBridge.stop()
             sessionActive = false
         }
+        activeWifi = null
         cursorVisible = false
         cursorView.visibility = View.GONE
         cursorSeq = 0
@@ -327,6 +377,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     /** The settings button is only available while input is not being forwarded. */
     private fun updateChrome() {
         settingsButton.visibility = if (inputActive()) View.GONE else View.VISIBLE
+        updateDiscovery()
     }
 
     // --- Per-frame polling ---
@@ -458,10 +509,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             bufH = bh
             fitSurface()
         }
-        val addr = "$HOST:$PORT"
+        val wifiChoice = activeWifi
+        val addr = if (wifiChoice != null) hostLabel(wifiChoice) else "$HOST:$PORT"
         when (j.optString("phase")) {
-            "connecting" -> setStatus(getString(R.string.status_waiting, addr))
-            "handshaking" -> setStatus(getString(R.string.status_handshake, addr))
+            "connecting" -> setStatus(
+                if (wifiChoice != null) getString(R.string.status_wifi_connecting, addr)
+                else getString(R.string.status_waiting, addr),
+            )
+            "handshaking" -> setStatus(
+                getString(if (wifiChoice != null) R.string.status_wifi_handshake else R.string.status_handshake, addr),
+            )
             "streaming" -> {
                 if (!wasStreaming) {
                     wasStreaming = true
@@ -470,21 +527,26 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
                     streamW = j.optInt("width")
                     streamH = j.optInt("height")
                     val hz = formatHz(j.optInt("refresh_mhz"))
-                    setStatus(
-                        getString(
-                            R.string.status_connected, streamW, streamH, hz,
-                            j.optString("codec"), j.optString("decoder").takeIf { it != "null" }.orEmpty(),
-                        ).trim(),
-                    )
-                    statusHideAt = now + STATUS_HIDE_MS
+                    val connected = getString(
+                        R.string.status_connected, streamW, streamH, hz,
+                        j.optString("codec"), j.optString("decoder").takeIf { it != "null" }.orEmpty(),
+                    ).trim()
+                    if (wifiChoice != null) {
+                        InputPrefs.prefs(this).edit().putString(LAST_WIFI_HOST, wifiChoice.host.fingerprint).apply()
+                        // Drawing over Wi-Fi works but feels different: say so, and keep it up a little longer.
+                        setStatus(connected + "\n" + getString(R.string.status_wifi_latency))
+                    } else {
+                        setStatus(connected)
+                    }
+                    statusHideAt = now + if (wifiChoice != null) NOTE_SHOW_MS else STATUS_HIDE_MS
                     applyFrameRate(j.optInt("refresh_mhz"))
                 } else if (statusHideAt != 0L && now >= statusHideAt) {
                     statusHideAt = 0
                     statusView.visibility = View.GONE
                 }
             }
-            "ended" -> disconnected(getString(R.string.status_ended, j.optString("detail"), addr))
-            "failed" -> disconnected(getString(R.string.status_error, j.optString("detail")))
+            "ended" -> disconnected(getString(R.string.status_ended, j.optString("detail"), addr), false)
+            "failed" -> disconnected(getString(R.string.status_error, j.optString("detail")), true)
         }
         val flags = if (j.isNull("client_flags")) 0 else j.optInt("client_flags")
         telemetryOn = (flags and 1) != 0
@@ -511,10 +573,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         statusHideAt = SystemClock.uptimeMillis() + ms
     }
 
-    private fun disconnected(message: String) {
+    private fun disconnected(message: String, failed: Boolean) {
         Log.i(TAG, "disconnected: $message")
+        val wasWifi = activeWifi != null
         stopSession()
         setStatus(message)
+        // The loopback connection failed (no cable, no adb reverse): try the paired host over Wi-Fi right away.
+        if (failed && !wasWifi && wifiTarget() != null) {
+            tryWifiNext = true
+            scheduleConnect(0)
+            return
+        }
         scheduleConnect(backoffMs)
         backoffMs = (backoffMs * 2).coerceAtMost(BACKOFF_MAX_MS)
     }

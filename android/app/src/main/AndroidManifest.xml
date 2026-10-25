@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Raw TCP to the adb-reversed host port on localhost. -->
+    <!-- Raw TCP to the adb-reversed host port on localhost, and QUIC (UDP) to paired hosts on Wi-Fi. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Wi-Fi discovery (NsdManager) and the multicast lock that keeps mDNS replies coming in. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!--
+      Raising targetSdk to 37 will need android.permission.ACCESS_LOCAL_NETWORK (a runtime permission for
+      reaching LAN hosts and for mDNS discovery). Not requested while targetSdk is 36.
+    -->
 
     <application
         android:allowBackup="false"
@@ -27,6 +34,14 @@
             android:name=".SettingsActivity"
             android:exported="true"
             android:label="@string/settings_title"
-            android:theme="@style/Theme.EzDisplay.Settings" />
+            android:theme="@style/Theme.EzDisplay.Settings">
+            <!-- The pairing QR code of the PC host (ezd://pair?...) opened from the system camera. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ezd" android:host="pair" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

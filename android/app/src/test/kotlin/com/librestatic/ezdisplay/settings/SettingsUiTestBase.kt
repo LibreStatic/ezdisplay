@@ -12,13 +12,16 @@ import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.printToString
+import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.onRoot
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.librestatic.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.wifi.WifiBackend
 import org.junit.Before
 import org.junit.Rule
 import org.junit.runner.RunWith
+import java.util.concurrent.Executor
 
 /** Shared setup: a real [SettingsStore] on cleared Robolectric prefs, rendered inside [SettingsTheme]. */
 @RunWith(AndroidJUnit4::class)
@@ -34,14 +37,18 @@ abstract class SettingsUiTestBase {
     }
 
     /** Seeds [seed] into prefs, then shows the screen. */
-    protected fun launch(airActions: AirActions = AirActions.Off, seed: SharedPreferences.Editor.() -> Unit = {}) {
+    protected fun launch(
+        airActions: AirActions = AirActions.Off,
+        wifi: WifiBackend = WifiBackend.None,
+        seed: SharedPreferences.Editor.() -> Unit = {},
+    ) {
         prefs.edit().apply(seed).commit()
-        store = SettingsStore(prefs, airActions)
+        store = SettingsStore(prefs, airActions, wifi, "test tablet", io = Executor { it.run() })
         rule.setContent { SettingsTheme { SettingsScreen(store) } }
         rule.waitForIdle()
     }
 
-    protected fun str(id: Int): String = rule.activity.getString(id)
+    protected fun str(id: Int, vararg args: Any): String = rule.activity.getString(id, *args)
 
     protected fun tag(t: String): SemanticsNodeInteraction = rule.onNodeWithTag(t)
 
@@ -59,7 +66,7 @@ abstract class SettingsUiTestBase {
     }
 
     protected fun dumpTree(label: String) {
-        println("=== SEMANTICS $label ===\n" + rule.onRoot().printToString(maxDepth = 12) + "\n=== END $label ===")
+        println("=== SEMANTICS $label ===\n" + rule.onAllNodes(isRoot()).fetchSemanticsNodes().indices.joinToString("\n--- window ---\n") { rule.onAllNodes(isRoot())[it].printToString(maxDepth = 12) } + "\n=== END $label ===")
     }
 
     protected fun SharedPreferences.editor(block: SharedPreferences.Editor.() -> Unit) = edit().apply(block).commit()

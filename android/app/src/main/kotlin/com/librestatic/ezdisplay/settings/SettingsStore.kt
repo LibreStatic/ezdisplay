@@ -3,6 +3,8 @@ package com.librestatic.ezdisplay.settings
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.core.content.edit
 import androidx.compose.runtime.State
@@ -10,6 +12,15 @@ import androidx.compose.runtime.mutableStateOf
 import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.InputPrefs.KeyCombo
 import com.librestatic.ezdisplay.R
+import com.librestatic.ezdisplay.wifi.DiscoveredHost
+import com.librestatic.ezdisplay.wifi.NativeWifiBackend
+import com.librestatic.ezdisplay.wifi.PairLink
+import com.librestatic.ezdisplay.wifi.PairResult
+import com.librestatic.ezdisplay.wifi.WifiBackend
+import com.librestatic.ezdisplay.wifi.WifiHost
+import com.librestatic.ezdisplay.wifi.isValidPin
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 /** State of the Samsung S Pen "Air actions" system setting. */
@@ -86,6 +97,29 @@ data class SettingsState(
     val doubleClickMs: Int = 300,
     val palmRejection: Boolean = true,
     val airActions: AirActions = AirActions.NotSamsung,
+    /** Connect over Wi-Fi when the USB connection is not there. */
+    val wifiEnabled: Boolean = false,
+    val wifiHosts: List<WifiHost> = emptyList(),
+    /** Hosts seen on the network right now (only while discovery runs). */
+    val discovered: List<DiscoveredHost> = emptyList(),
+    /** This device's short certificate fingerprint, for the host to show; empty until known. */
+    val deviceFingerprint: String = "",
+    /** The pairing dialog, when one is open. */
+    val pairing: PairingState? = null,
+)
+
+/**
+ * A pairing in progress. [link] is set when it comes from a scanned code (no PIN to type: the code has it);
+ * [shortFp] is empty for a manually typed address (the host's fingerprint is not known yet).
+ */
+data class PairingState(
+    val name: String,
+    val shortFp: String,
+    val addr: String,
+    val link: PairLink? = null,
+    val busy: Boolean = false,
+    /** Error code of the last attempt (see `wifiErrorText`). */
+    val error: String? = null,
 )
 
 private fun defaultKeys(): Map<String, KeyCombo> = mapOf(
@@ -142,10 +176,30 @@ interface SettingsActions {
     fun setZoomFactor(factor: Float)
     fun setDoubleClickMs(ms: Int)
     fun setPalmRejection(on: Boolean)
+    fun setWifiEnabled(on: Boolean)
+
+    /** Opens the PIN dialog for a host that was found or typed. */
+    fun startPairing(name: String, shortFp: String, addr: String)
+
+    /** Opens the confirmation for a scanned pairing code. */
+    fun startPairing(link: PairLink)
+
+    /** Pairs with the open dialog's host; [pin] is ignored for a scanned code. */
+    fun submitPairing(pin: String)
+    fun cancelPairing()
+    fun forgetHost(fingerprint: String)
 }
 
 /** Holds [SettingsState] backed by the `input` prefs; every action persists at once with `apply()`. */
-class SettingsStore(private val prefs: SharedPreferences, airActions: AirActions) : SettingsActions {
+class SettingsStore(
+    private val prefs: SharedPreferences,
+    airActions: AirActions,
+    private val wifi: WifiBackend = WifiBackend.None,
+    private val deviceName: String = Build.MODEL,
+    /** Runs the blocking pairing; replaced by a direct executor in tests. */
+    private val io: Executor = Executors.newSingleThreadExecutor(),
+) : SettingsActions {
+    private val main = Handler(Looper.getMainLooper())
     private val _state = mutableStateOf(read(airActions))
     val state: State<SettingsState> get() = _state
 
@@ -158,6 +212,9 @@ class SettingsStore(private val prefs: SharedPreferences, airActions: AirActions
             .coerceIn(InputPrefs.DOUBLE_CLICK_MIN, InputPrefs.DOUBLE_CLICK_MAX),
         palmRejection = prefs.getBoolean(InputPrefs.PALM_REJECTION, true),
         airActions = airActions,
+        wifiEnabled = prefs.getBoolean(WIFI_ENABLED, false),
+        wifiHosts = wifi.hosts(),
+        deviceFingerprint = wifi.identity(),
     )
 
     override fun setProfile(profile: String) {
@@ -214,7 +271,78 @@ class SettingsStore(private val prefs: SharedPreferences, airActions: AirActions
         _state.value = _state.value.copy(palmRejection = on)
     }
 
+    override fun setWifiEnabled(on: Boolean) {
+        prefs.edit { putBoolean(WIFI_ENABLED, on) }
+        _state.value = _state.value.copy(wifiEnabled = on)
+    }
+
+    /** Hosts seen on the network changed. */
+    fun setDiscovered(hosts: List<DiscoveredHost>) {
+        _state.value = _state.value.copy(discovered = hosts)
+    }
+
+    /** Re-reads the paired hosts (they live in the native state, not in the prefs). */
+    fun reloadHosts() {
+        _state.value = _state.value.copy(wifiHosts = wifi.hosts(), deviceFingerprint = wifi.identity())
+    }
+
+    override fun startPairing(name: String, shortFp: String, addr: String) {
+        _state.value = _state.value.copy(pairing = PairingState(name, shortFp, addr))
+    }
+
+    override fun startPairing(link: PairLink) {
+        _state.value = _state.value.copy(
+            pairing = PairingState(link.name.ifEmpty { link.addr }, link.shortFp, link.addr, link),
+        )
+    }
+
+    override fun cancelPairing() {
+        _state.value = _state.value.copy(pairing = null)
+    }
+
+    override fun submitPairing(pin: String) {
+        val p = _state.value.pairing ?: return
+        if (p.busy) return
+        val input = p.link?.let { it.toUri() } ?: pin.trim()
+        if (p.link == null && !isValidPin(input)) {
+            _state.value = _state.value.copy(pairing = p.copy(error = "invalid_pin"))
+            return
+        }
+        _state.value = _state.value.copy(pairing = p.copy(busy = true, error = null))
+        io.execute {
+            val result = wifi.pair(p.addr, input, deviceName)
+            main.post { pairingDone(p, result) }
+        }
+    }
+
+    private fun pairingDone(p: PairingState, result: PairResult) {
+        // Ignore the answer of a dialog that was cancelled or replaced meanwhile (the host is paired anyway).
+        val current = _state.value.pairing
+        val hosts = wifi.hosts()
+        if (current?.addr != p.addr) {
+            _state.value = _state.value.copy(wifiHosts = hosts)
+            return
+        }
+        _state.value = if (result.ok) {
+            // Pairing means the user wants to use it: turn Wi-Fi on.
+            prefs.edit { putBoolean(WIFI_ENABLED, true) }
+            _state.value.copy(pairing = null, wifiHosts = hosts, wifiEnabled = true)
+        } else {
+            _state.value.copy(pairing = current.copy(busy = false, error = result.error ?: "other"))
+        }
+    }
+
+    override fun forgetHost(fingerprint: String) {
+        wifi.forget(fingerprint)
+        _state.value = _state.value.copy(wifiHosts = wifi.hosts())
+    }
+
     companion object {
-        fun create(context: Context) = SettingsStore(InputPrefs.prefs(context), readAirActions(context))
+        /** Pref key of the Wi-Fi switch, read by MainActivity. */
+        const val WIFI_ENABLED = "wifi_enabled"
+
+        fun create(context: Context) = SettingsStore(
+            InputPrefs.prefs(context), readAirActions(context), NativeWifiBackend(context),
+        )
     }
 }

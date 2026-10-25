@@ -4,14 +4,18 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.swipeUp
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.InputPrefs.KeyCombo
+import com.librestatic.ezdisplay.wifi.DiscoveredHost
+import com.librestatic.ezdisplay.wifi.PairLink
+import com.librestatic.ezdisplay.wifi.WifiHost
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -37,6 +41,12 @@ class SettingsScreenshotTest {
         override fun setZoomFactor(factor: Float) {}
         override fun setDoubleClickMs(ms: Int) {}
         override fun setPalmRejection(on: Boolean) {}
+        override fun setWifiEnabled(on: Boolean) {}
+        override fun startPairing(name: String, shortFp: String, addr: String) {}
+        override fun startPairing(link: PairLink) {}
+        override fun submitPairing(pin: String) {}
+        override fun cancelPairing() {}
+        override fun forgetHost(fingerprint: String) {}
     }
 
     private val tabletState = SettingsState(
@@ -60,8 +70,10 @@ class SettingsScreenshotTest {
     }
 
     private fun capture(name: String) {
-        println("=== SEMANTICS $name ===\n" + rule.onRoot().printToString(maxDepth = 14) + "\n=== END $name ===")
-        rule.onRoot().captureRoboImage("build/outputs/roborazzi/$name.png")
+        val roots = rule.onAllNodes(isRoot())
+        val last = roots[roots.fetchSemanticsNodes().size - 1]
+        println("=== SEMANTICS $name ===\n" + last.printToString(maxDepth = 14) + "\n=== END $name ===")
+        last.captureRoboImage("build/outputs/roborazzi/$name.png")
     }
 
     @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
@@ -74,6 +86,38 @@ class SettingsScreenshotTest {
         repeat(2) { rule.onNode(hasScrollAction()).performTouchInput { swipeUp() } }
         rule.waitForIdle()
         capture("phone_main_bottom_dark")
+    }
+
+    private val connectionState = SettingsState(
+        wifiEnabled = true,
+        wifiHosts = listOf(WifiHost("Laptop", "cd".repeat(32), "cdcd-cdcd-cdcd-cdcd", "10.0.0.7:27183")),
+        discovered = listOf(DiscoveredHost("desk", "Studio PC", "3f2a-91c0-77de-0b14", "192.168.1.9:27183")),
+        deviceFingerprint = "abcd-0123-4567-89ef",
+    )
+
+    @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
+    fun phone_connection_dark() {
+        show(connectionState)
+        rule.onNodeWithTag("connection_content").performScrollTo()
+        rule.waitForIdle()
+        capture("phone_connection_dark")
+    }
+
+    @Test @Config(sdk = [36], qualifiers = "w841dp-h701dp-night")
+    fun foldable_connection_dark() {
+        show(connectionState)
+        rule.onNodeWithTag("section_Connection").performClick()
+        rule.waitForIdle()
+        capture("foldable_connection_dark")
+    }
+
+    @Test @Config(sdk = [36], qualifiers = "w1691dp-h978dp-night-280dpi")
+    fun tablet_connection_dark() { show(connectionState.copy(profile = "graphics_tablet")); capture("tablet_connection_dark") }
+
+    @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
+    fun phone_pair_dialog_dark() {
+        show(connectionState.copy(pairing = PairingState("Studio PC", "3f2a-91c0-77de-0b14", "192.168.1.9:27183")))
+        capture("phone_pair_dialog_dark")
     }
 
     @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
