@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_PIPE_BUSY,
-    GENERIC_READ, GENERIC_WRITE, HANDLE,
+    ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
 };
 use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
 use windows::Win32::Storage::FileSystem::{
@@ -161,7 +161,12 @@ pub fn pipe_send(cmd: &Command, read_timeout: Duration) -> Result<PipeReply, Pip
     unsafe { WriteFile(h.0, Some(&bytes), Some(&mut written), None) }
         .map_err(|e| PipeError::Other(format!("write to pipe: {}", err_str(&e))))?;
 
-    let broken = ERROR_BROKEN_PIPE.to_hresult();
+    // The driver ends a reply with `DisconnectNamedPipe` + `CloseHandle`. Depending on which of
+    // the two the client sees first, the end shows up as either error.
+    let broken = |e: &windows::core::Error| {
+        e.code() == ERROR_BROKEN_PIPE.to_hresult()
+            || e.code() == ERROR_PIPE_NOT_CONNECTED.to_hresult()
+    };
     let more = ERROR_MORE_DATA.to_hresult();
     let deadline = Instant::now() + read_timeout;
     let mut reply = PipeReply::default();
@@ -169,7 +174,7 @@ pub fn pipe_send(cmd: &Command, read_timeout: Duration) -> Result<PipeReply, Pip
         let mut avail = 0u32;
         // SAFETY: valid handle and out-pointer.
         match unsafe { PeekNamedPipe(h.0, None, 0, None, Some(&mut avail), None) } {
-            Err(e) if e.code() == broken => break,
+            Err(e) if broken(&e) => break,
             Err(e) => return Err(PipeError::Other(format!("PeekNamedPipe: {}", err_str(&e)))),
             Ok(()) if avail == 0 => {
                 if Instant::now() >= deadline {
@@ -191,7 +196,7 @@ pub fn pipe_send(cmd: &Command, read_timeout: Duration) -> Result<PipeReply, Pip
             match r {
                 Ok(()) => break,
                 Err(e) if e.code() == more => continue,
-                Err(e) if e.code() == broken => {
+                Err(e) if broken(&e) => {
                     if !msg.is_empty() {
                         reply.messages.push(pipe_proto::decode_message(&msg));
                     }

@@ -17,7 +17,10 @@
 //!   which the driver mirrors to the connected client, and only when driver logging and
 //!   `SendLogsThroughPipe` are enabled. The one exception is `GETSETTINGS`, which writes
 //!   a UTF-16LE NUL-terminated `SETTINGS DEBUG=<bool> LOG=<bool>`.
-//! * End of response is the driver closing the pipe (the client sees `ERROR_BROKEN_PIPE`).
+//! * End of response is the driver closing the pipe (the client sees `ERROR_BROKEN_PIPE`, or
+//!   `ERROR_PIPE_NOT_CONNECTED` when it looks between the disconnect and the close). The
+//!   disconnect discards unread data, so a `PONG` can be lost: callers must not treat a missing
+//!   `PONG` as a dead driver.
 //!
 //! Consequence: `GETASSIGNEDGPU`/`IDDCXVERSION` may legitimately return nothing when the
 //! driver's logging is off, so callers fall back to `vdd_settings.xml` and to DXGI.
