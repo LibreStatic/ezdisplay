@@ -1,10 +1,12 @@
 name: Release
 
-# Push a tag `v<workspace version>` (see docs/releasing.md) to build everything and publish a
-# GitHub Release. "Run workflow" with dry_run builds the same set and uploads it as the
-# `release-preview` artifact without creating a release.
+# Every push to main publishes a GitHub pre-release tagged `v<workspace version>+<run number>`.
+# Pushing a tag `v<workspace version>` (see docs/releasing.md) publishes the release of that version.
+# "Run workflow" with dry_run builds the same set and uploads it as the `release-preview` artifact
+# without creating a release.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -16,6 +18,11 @@ on:
 permissions:
   contents: read
 
+# Releases of different pushes never cancel each other.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -25,18 +32,43 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      mode: ${{ steps.version.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
       - id: version
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml)
           [ -n "$version" ] || { echo "cannot read the workspace version from Cargo.toml"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Workspace version: $version"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match the workspace version (expected v$version)"
+          # mode: release (a v* tag), prerelease (a push to main) or preview (no release).
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the workspace version (expected v$version)"
+              exit 1
+            fi
+            tag=$GITHUB_REF_NAME
+            if [ "$GITHUB_EVENT_NAME" = push ] || [ "$DRY_RUN" = false ]; then mode=release; else mode=preview; fi
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            tag="v$version+$GITHUB_RUN_NUMBER"
+            mode=prerelease
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              echo "$tag already exists, building a preview only"
+              mode=preview
+            fi
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$DRY_RUN" = false ]; then
+            echo "::error::a real release needs a tag: run the workflow on a v* tag, not on $GITHUB_REF_NAME"
             exit 1
+          else
+            tag=
+            mode=preview
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Tag: ${tag:-none}, mode: $mode"
 
   ci:
     name: CI
@@ -61,20 +93,10 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      DRY_RUN: ${{ inputs.dry_run }}
+      TAG: ${{ needs.version.outputs.tag }}
+      MODE: ${{ needs.version.outputs.mode }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Decide between release and preview
-        id: mode
-        run: |
-          if [ "$GITHUB_REF_TYPE" = tag ] && { [ "$GITHUB_EVENT_NAME" = push ] || [ "$DRY_RUN" = false ]; }; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$DRY_RUN" = false ]; then
-            echo "::error::a real release needs a tag: run the workflow on a v* tag, not on $GITHUB_REF_NAME"
-            exit 1
-          else
-            echo "release=false" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/download-artifact@v4
         with:
           pattern: ezdisplay-*
@@ -109,14 +131,19 @@ jobs:
           ls -l release
           cat release/SHA256SUMS
       - name: Create the GitHub Release
-        if: steps.mode.outputs.release == 'true'
+        if: env.MODE == 'release'
         run: |
           prerelease=
-          case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+          case "$TAG" in *-*) prerelease=--prerelease ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "ezdisplay $VERSION" --generate-notes $prerelease release/*
+      - name: Create the GitHub pre-release of this build
+        if: env.MODE == 'prerelease'
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "ezdisplay $VERSION (build $GITHUB_RUN_NUMBER)" --generate-notes --prerelease release/*
       - name: Upload the preview
-        if: steps.mode.outputs.release != 'true'
+        if: env.MODE == 'preview'
         uses: actions/upload-artifact@v4
         with:
           name: release-preview

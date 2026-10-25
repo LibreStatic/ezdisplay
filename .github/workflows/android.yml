@@ -1,15 +1,7 @@
 name: Android
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "android/**"
-      - "crates/ezd-android/**"
-      - "crates/ezd-client-core/**"
-      - "crates/ezd-proto/**"
-      - "crates/ezd-link/**"
-      - ".github/workflows/android.yml"
+  # Pushes to main run through the release workflow, which calls this one.
   pull_request:
     paths:
       - "android/**"
