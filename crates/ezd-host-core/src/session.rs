@@ -491,6 +491,12 @@ pub async fn run_host_session_with(
                         }
                     }
                 },
+                Ok(Some(Message::ClientKeyboard(k))) => {
+                    tracing::debug!(attached = k.attached, "client keyboard");
+                    if let Some(t) = &input_tx {
+                        let _ = t.send(InputCmd::Keyboard(k.attached));
+                    }
+                }
                 Ok(Some(Message::Bye(b))) => break EndReason::ClientBye(b.reason),
                 Ok(Some(Message::Reject(r))) => break EndReason::ClientBye(r.reason),
                 Ok(Some(other)) => tracing::debug!(?other, "ignoring message"),

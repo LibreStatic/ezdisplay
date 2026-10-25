@@ -20,6 +20,7 @@ pub mod input_map;
 pub mod pipe_proto;
 pub mod policy;
 pub mod task_xml;
+pub mod touch_keyboard;
 pub mod vdd_install;
 pub mod vdd_xml;
 

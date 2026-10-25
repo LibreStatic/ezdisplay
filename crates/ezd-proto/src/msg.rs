@@ -90,6 +90,12 @@ impl Hello {
         self.proto_minor >= crate::MINOR_HDR
     }
 
+    /// True if the peer speaks at least protocol minor [`MINOR_KEYBOARD`](crate::MINOR_KEYBOARD)
+    /// (`ClientKeyboard`).
+    pub fn supports_keyboard(&self) -> bool {
+        self.proto_minor >= crate::MINOR_KEYBOARD
+    }
+
     /// Fails with [`ProtoError::VersionMismatch`] if the peer's major differs from ours.
     pub fn check_compatible(&self) -> Result<()> {
         if self.proto_major != crate::PROTOCOL_MAJOR {
@@ -477,6 +483,9 @@ impl Scroll {
 /// `usage` is a USB HID keyboard-page (0x07) usage id, i.e. a physical key
 /// position on a US layout; the host applies the user's layout like a real USB
 /// keyboard. Clients send it only when the host reports [`InputStatus::KEYS`].
+///
+/// A press of a key that is already down is an autorepeat: hosts inject another key-down, since
+/// they do not repeat on their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Key {
     /// Client monotonic clock, microseconds.
@@ -541,6 +550,17 @@ pub const H273_PRIMARIES_BT2020: u8 = 9;
 pub const H273_TRANSFER_PQ: u8 = 16;
 /// H.273 matrix coefficients code of BT.2020 non-constant luminance.
 pub const H273_MATRIX_BT2020_NCL: u8 = 9;
+
+/// Whether a hardware keyboard is attached to the client (client to host, protocol 0.6).
+///
+/// Sent when the state changes and right after the handshake, when the host `Hello` has minor >=
+/// [`MINOR_KEYBOARD`](crate::MINOR_KEYBOARD). The host may use it to adapt its desktop, for example
+/// to stop the on-screen keyboard from popping up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientKeyboard {
+    /// True while a hardware keyboard is attached and usable.
+    pub attached: bool,
+}
 
 /// What the client display and decoders can do with HDR10 (client to host, protocol 0.5).
 ///
@@ -678,7 +698,7 @@ impl Default for StreamColor {
 }
 
 /// Any message of protocol 0.x (0.2 added `FrameAck`, 0.3 the input messages,
-/// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`).
+/// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`, 0.6 `ClientKeyboard`).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
@@ -714,6 +734,8 @@ pub enum Message {
     ClientHdr(ClientHdr),
     /// Control/16 (0.5), host to client.
     StreamColor(StreamColor),
+    /// Control/17 (0.6), client to host.
+    ClientKeyboard(ClientKeyboard),
     /// Input/1 (0.3), client to host.
     Pen(PenSample),
     /// Input/2 (0.3), client to host.
@@ -766,6 +788,7 @@ impl Message {
             Message::ClientOptions(_) => 14,
             Message::ClientHdr(_) => 15,
             Message::StreamColor(_) => 16,
+            Message::ClientKeyboard(_) => 17,
             Message::Pen(_) => 1,
             Message::Touch(_) => 2,
             Message::PointerButton(_) => 3,
@@ -801,6 +824,7 @@ pub fn encode_message(msg: &Message) -> Result<(Channel, u8, Vec<u8>)> {
         Message::ClientOptions(m) => enc(m)?,
         Message::ClientHdr(m) => enc(m)?,
         Message::StreamColor(m) => enc(m)?,
+        Message::ClientKeyboard(m) => enc(m)?,
         Message::Pen(m) => enc(m)?,
         Message::Touch(m) => enc(m)?,
         Message::PointerButton(m) => enc(m)?,
@@ -846,6 +870,7 @@ pub fn decode_message(channel: u8, kind: u8, payload: &[u8]) -> Result<Option<Me
         (Channel::Control, 14) => Message::ClientOptions(dec(c, k, payload)?),
         (Channel::Control, 15) => Message::ClientHdr(dec(c, k, payload)?),
         (Channel::Control, 16) => Message::StreamColor(dec(c, k, payload)?),
+        (Channel::Control, 17) => Message::ClientKeyboard(dec(c, k, payload)?),
         (Channel::Input, 1) => Message::Pen(dec(c, k, payload)?),
         (Channel::Input, 2) => Message::Touch(dec(c, k, payload)?),
         (Channel::Input, 3) => Message::PointerButton(dec(c, k, payload)?),
@@ -963,6 +988,7 @@ mod tests {
                 1000,
                 400,
             )),
+            Message::ClientKeyboard(ClientKeyboard { attached: true }),
             Message::Pen(PenSample {
                 t_us: 1 << 40,
                 x: 65535,
@@ -1150,6 +1176,15 @@ mod tests {
         h.proto_minor = crate::MINOR_HDR - 1;
         assert!(!h.supports_hdr());
         assert!(h.supports_input());
+    }
+
+    #[test]
+    fn keyboard_support_by_minor() {
+        let mut h = Hello::new(Role::Client, "x", "y");
+        assert!(h.supports_keyboard());
+        h.proto_minor = crate::MINOR_KEYBOARD - 1;
+        assert!(!h.supports_keyboard());
+        assert!(h.supports_hdr());
     }
 
     #[test]
