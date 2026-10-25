@@ -85,6 +85,10 @@ impl Server {
                 .create_sync()
                 .map_err(|e| match e.kind() {
                     std::io::ErrorKind::AddrInUse => BindError::InUse,
+                    // The first pipe instance is created with FILE_FLAG_FIRST_PIPE_INSTANCE,
+                    // which fails with ERROR_ACCESS_DENIED when the name is taken.
+                    #[cfg(windows)]
+                    std::io::ErrorKind::PermissionDenied => BindError::InUse,
                     _ => BindError::Other(e),
                 })?;
         let (tx, requests) = channel();
