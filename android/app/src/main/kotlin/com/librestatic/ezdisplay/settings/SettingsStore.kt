@@ -1,4 +1,4 @@
-package io.github.facum.ezdisplay.settings
+package com.librestatic.ezdisplay.settings
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -7,9 +7,9 @@ import android.provider.Settings
 import androidx.core.content.edit
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
-import io.github.facum.ezdisplay.InputPrefs
-import io.github.facum.ezdisplay.InputPrefs.KeyCombo
-import io.github.facum.ezdisplay.R
+import com.librestatic.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.InputPrefs.KeyCombo
+import com.librestatic.ezdisplay.R
 import kotlin.math.roundToInt
 
 /** State of the Samsung S Pen "Air actions" system setting. */

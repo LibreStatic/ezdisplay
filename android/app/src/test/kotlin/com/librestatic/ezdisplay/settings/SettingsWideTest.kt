@@ -1,11 +1,11 @@
-package io.github.facum.ezdisplay.settings
+package com.librestatic.ezdisplay.settings
 
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import io.github.facum.ezdisplay.InputPrefs
-import io.github.facum.ezdisplay.R
+import com.librestatic.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.R
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

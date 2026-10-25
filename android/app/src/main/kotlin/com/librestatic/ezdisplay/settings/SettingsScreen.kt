@@ -1,4 +1,4 @@
-package io.github.facum.ezdisplay.settings
+package com.librestatic.ezdisplay.settings
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -52,8 +52,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import io.github.facum.ezdisplay.InputPrefs
-import io.github.facum.ezdisplay.R
+import com.librestatic.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.R
 
 /** Settings sections; AirActions only exists while its card is shown. */
 enum class SettingsSection { Pen, Zoom, Touch, AirActions }

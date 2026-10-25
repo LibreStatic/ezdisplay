@@ -1,7 +1,7 @@
-package io.github.facum.ezdisplay.settings
+package com.librestatic.ezdisplay.settings
 
-import io.github.facum.ezdisplay.InputPrefs
-import io.github.facum.ezdisplay.InputPrefs.KeyCombo
+import com.librestatic.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.InputPrefs.KeyCombo
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

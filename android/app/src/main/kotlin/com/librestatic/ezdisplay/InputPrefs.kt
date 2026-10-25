@@ -1,4 +1,4 @@
-package io.github.facum.ezdisplay
+package com.librestatic.ezdisplay
 
 import android.content.Context
 import android.content.SharedPreferences

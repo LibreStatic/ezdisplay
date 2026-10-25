@@ -1,4 +1,4 @@
-package io.github.facum.ezdisplay.settings
+package com.librestatic.ezdisplay.settings
 
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.hasScrollAction
@@ -10,8 +10,8 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.swipeUp
 import com.github.takahirom.roborazzi.captureRoboImage
-import io.github.facum.ezdisplay.InputPrefs
-import io.github.facum.ezdisplay.InputPrefs.KeyCombo
+import com.librestatic.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.InputPrefs.KeyCombo
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith

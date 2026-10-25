@@ -1,4 +1,4 @@
-package io.github.facum.ezdisplay.settings
+package com.librestatic.ezdisplay.settings
 
 import android.content.SharedPreferences
 import androidx.activity.ComponentActivity
@@ -15,7 +15,7 @@ import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.onRoot
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import io.github.facum.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.InputPrefs
 import org.junit.Before
 import org.junit.Rule
 import org.junit.runner.RunWith

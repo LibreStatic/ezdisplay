@@ -35,7 +35,7 @@ hostpid=
 if [ -z "$panel" ]; then
     serial=${ANDROID_SERIAL:?set ANDROID_SERIAL to the tablet serial}
     [ -x "$host" ] || { echo "no ezd-host at $host (set EZD_HOST)" >&2; exit 1; }
-    app=io.github.facum.ezdisplay
+    app=com.librestatic.ezdisplay
     adb -s "$serial" shell am force-stop $app
     (sleep 2; adb -s "$serial" shell am start -n $app/.MainActivity >/dev/null) &
     RUST_LOG=${EZD_LOG:-info,ezd_host_linux::source=trace,ezd_host_linux::encode=trace,ezd_host_linux::pw=trace} \

@@ -1,4 +1,4 @@
-package io.github.facum.ezdisplay.settings
+package com.librestatic.ezdisplay.settings
 
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color

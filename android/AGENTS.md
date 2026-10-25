@@ -3,7 +3,7 @@
 Repository-wide rules (languages and localization, naming) are in the root `AGENTS.md`.
 
 ## Layout
-- Package `io.github.facum.ezdisplay`, module `app`, flavors `full` and `play`. The Rust library is built by the
+- Package `com.librestatic.ezdisplay`, module `app`, flavors `full` and `play`. The Rust library is built by the
   cargo-ndk task as part of assemble (slow the first time).
 - `MainActivity` is Views (the streaming surface). `InputPrefs` is the contract with the native input engine:
   keep `toJson` output stable.

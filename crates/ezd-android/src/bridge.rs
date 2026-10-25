@@ -1,4 +1,4 @@
-//! JNI entry points of `io.github.facum.ezdisplay.NativeBridge`.
+//! JNI entry points of `com.librestatic.ezdisplay.NativeBridge`.
 //!
 //! Everything is polled from Kotlin (cursor, stats): native threads never call back into the JVM.
 
@@ -118,7 +118,7 @@ fn window_from(env: &jni::Env<'_>, surface: &JObject<'_>) -> Option<SendWindow> 
 
 /// `external fun start(surface: Surface?, host: String, port: Int, capsJson: String): String?`
 /// Returns null on success or an error message.
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn start<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -152,7 +152,7 @@ pub extern "system" fn start<'local>(
 }
 
 /// `external fun stop()`
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn stop<'local>(mut env: EnvUnowned<'local>, _class: JClass<'local>) {
     env.with_env(|_env| -> jni::errors::Result<()> {
         // Lift everything on the host before the session goes away; the next session starts
@@ -172,7 +172,7 @@ pub extern "system" fn stop<'local>(mut env: EnvUnowned<'local>, _class: JClass<
 }
 
 /// `external fun surfaceChanged(surface: Surface)`: a (new) surface is available.
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn surface_changed<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -188,7 +188,7 @@ pub extern "system" fn surface_changed<'local>(
 }
 
 /// `external fun surfaceDestroyed()`: blocks until the decoder released the surface.
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn surface_destroyed<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -203,7 +203,7 @@ pub extern "system" fn surface_destroyed<'local>(
 }
 
 /// `external fun requestKeyframe()`
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn request_keyframe<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -219,7 +219,7 @@ pub extern "system" fn request_keyframe<'local>(
 
 /// `external fun pollCursor(): LongArray` = `[seq, x, y, visible(0/1), shapeId]`.
 /// `seq == 0` means no cursor state has arrived yet.
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn poll_cursor<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -245,7 +245,7 @@ pub extern "system" fn poll_cursor<'local>(
 /// `external fun takeCursorShape(shapeId: Int): ByteArray?`
 /// Layout: width, height, hotX, hotY as u16 little endian, then `width*height*4` bytes of
 /// straight RGBA. Null if the shape is unknown.
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn take_cursor_shape<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -269,7 +269,7 @@ pub extern "system" fn take_cursor_shape<'local>(
 }
 
 /// `external fun pollStats(): String` JSON, see `Shared::to_json`. `{"phase":"idle"}` without a session.
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn poll_stats<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -290,7 +290,7 @@ pub extern "system" fn poll_stats<'local>(
 /// buttonState, flags, pointerCount, historySize]` + per pointer `[id, toolType]`; `floats` =
 /// `[vscroll, hscroll]` + per step (history oldest first, then current) per pointer
 /// `[x, y, pressure, tilt, orientation]`; `times` = one uptime-based nanosecond time per step.
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn input_event<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -325,7 +325,7 @@ pub extern "system" fn input_event<'local>(
 }
 
 /// `external fun inputTick()`: fires due gesture/pen timers.
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn input_tick<'local>(mut env: EnvUnowned<'local>, _class: JClass<'local>) {
     env.with_env(|_env| -> jni::errors::Result<()> {
         let now = now_us();
@@ -346,7 +346,7 @@ pub extern "system" fn input_tick<'local>(mut env: EnvUnowned<'local>, _class: J
 
 /// `external fun pollView(): FloatArray` = `[scale, tx, ty, penX, penY]`; pen position is
 /// normalized 0..=1 over the stream, or -1 when the pen is out of range.
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn poll_view<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -371,7 +371,7 @@ pub extern "system" fn poll_view<'local>(
 
 /// `external fun setInputConfig(json: String): String?`: null on success, else the error
 /// (the previous config stays).
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn set_input_config<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -395,7 +395,7 @@ pub extern "system" fn set_input_config<'local>(
 }
 
 /// `external fun setViewSize(width: Int, height: Int)`: size of the zoomed view in pixels.
-#[jni::jni_mangle("io.github.facum.ezdisplay.NativeBridge")]
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
 pub extern "system" fn set_view_size<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,

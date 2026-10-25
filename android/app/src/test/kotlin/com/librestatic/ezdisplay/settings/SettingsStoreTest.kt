@@ -1,10 +1,10 @@
-package io.github.facum.ezdisplay.settings
+package com.librestatic.ezdisplay.settings
 
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
-import io.github.facum.ezdisplay.InputPrefs
-import io.github.facum.ezdisplay.InputPrefs.KeyCombo
+import com.librestatic.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.InputPrefs.KeyCombo
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

@@ -1,4 +1,4 @@
-package io.github.facum.ezdisplay
+package com.librestatic.ezdisplay
 
 import android.app.Activity
 import android.media.MediaCodecInfo

@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Package of the Android app.
-pub const APP_PACKAGE: &str = "io.github.facum.ezdisplay";
+pub const APP_PACKAGE: &str = "com.librestatic.ezdisplay";
 /// Launcher activity of the Android app (see its manifest).
 pub const APP_ACTIVITY: &str = ".MainActivity";
 
@@ -331,7 +331,7 @@ mod tests {
     use super::*;
 
     const PORT: u16 = 27183;
-    const AM_START: &str = "shell R1 am start -n io.github.facum.ezdisplay/.MainActivity";
+    const AM_START: &str = "shell R1 am start -n com.librestatic.ezdisplay/.MainActivity";
 
     fn ready(s: &str) -> AdbDevice {
         device(s, AdbState::Device)
@@ -346,7 +346,7 @@ mod tests {
             adb.take_calls(),
             [
                 "reverse R1 27183 27183",
-                "shell R1 pm path io.github.facum.ezdisplay",
+                "shell R1 pm path com.librestatic.ezdisplay",
                 AM_START
             ]
         );
@@ -460,7 +460,7 @@ mod tests {
             adb.calls(),
             [
                 "reverse R1 27183 27183",
-                "shell R1 pm path io.github.facum.ezdisplay"
+                "shell R1 pm path com.librestatic.ezdisplay"
             ]
         );
     }

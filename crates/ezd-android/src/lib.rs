@@ -3,7 +3,7 @@
 //! The portable parts ([`caps`], [`input`], [`tracker`], [`status`]) build and test on the host. The JNI
 //! bridge, session and MediaCodec decoder only exist for `target_os = "android"`.
 //!
-//! Kotlin class: `io.github.facum.ezdisplay.NativeBridge` (see `bridge.rs`).
+//! Kotlin class: `com.librestatic.ezdisplay.NativeBridge` (see `bridge.rs`).
 
 // FFI with the JVM and the NDK needs unsafe; the workspace denies it by default.
 #![allow(unsafe_code)]

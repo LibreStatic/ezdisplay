@@ -24,12 +24,12 @@ val workspaceVersionCode: Int = workspaceVersion.substringBefore('-').split('.')
     .coerceAtLeast(1)
 
 android {
-    namespace = "io.github.facum.ezdisplay"
+    namespace = "com.librestatic.ezdisplay"
     compileSdk = 37
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        applicationId = "io.github.facum.ezdisplay"
+        applicationId = "com.librestatic.ezdisplay"
         minSdk = 26
         targetSdk = 36
         versionName = workspaceVersion

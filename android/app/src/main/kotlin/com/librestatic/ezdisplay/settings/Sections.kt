@@ -1,4 +1,4 @@
-package io.github.facum.ezdisplay.settings
+package com.librestatic.ezdisplay.settings
 
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.animateContentSize
@@ -67,9 +67,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.github.facum.ezdisplay.InputPrefs
-import io.github.facum.ezdisplay.InputPrefs.KeyCombo
-import io.github.facum.ezdisplay.R
+import com.librestatic.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.InputPrefs.KeyCombo
+import com.librestatic.ezdisplay.R
 import java.text.NumberFormat
 
 private val GroupEnd = 24.dp

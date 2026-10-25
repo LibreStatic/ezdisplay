@@ -8,7 +8,7 @@
         android:shortcutLongLabel="@string/shortcut_input_settings">
         <intent
             android:action="android.intent.action.VIEW"
-            android:targetPackage="io.github.facum.ezdisplay"
-            android:targetClass="io.github.facum.ezdisplay.SettingsActivity" />
+            android:targetPackage="com.librestatic.ezdisplay"
+            android:targetClass="com.librestatic.ezdisplay.SettingsActivity" />
     </shortcut>
 </shortcuts>

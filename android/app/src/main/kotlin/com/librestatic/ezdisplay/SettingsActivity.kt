@@ -1,13 +1,13 @@
-package io.github.facum.ezdisplay
+package com.librestatic.ezdisplay
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import io.github.facum.ezdisplay.settings.SettingsScreen
-import io.github.facum.ezdisplay.settings.SettingsStore
-import io.github.facum.ezdisplay.settings.SettingsTheme
-import io.github.facum.ezdisplay.settings.readAirActions
+import com.librestatic.ezdisplay.settings.SettingsScreen
+import com.librestatic.ezdisplay.settings.SettingsStore
+import com.librestatic.ezdisplay.settings.SettingsTheme
+import com.librestatic.ezdisplay.settings.readAirActions
 
 /** Pen and touch input settings, stored in [InputPrefs]; MainActivity re-reads them on resume. */
 class SettingsActivity : ComponentActivity() {
