@@ -425,6 +425,7 @@ fn run(
                     ClientEnd::HostBye(r) => format!("host: {r}"),
                     ClientEnd::HostEof => "host closed the connection".to_string(),
                     ClientEnd::TimedOut => "timed out".to_string(),
+                    ClientEnd::HostSilent => "host stopped responding".to_string(),
                 };
                 shared.set_phase(Phase::Ended, detail);
             }

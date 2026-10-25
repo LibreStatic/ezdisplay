@@ -73,6 +73,9 @@ pub struct ClientConfig {
     pub ping_interval: Duration,
     /// Give up if the session does not end within this time.
     pub max_duration: Option<Duration>,
+    /// End the session when nothing at all arrives from the host for this long. The host answers
+    /// every ping, so silence means it is gone; a USB accessory link never reports that itself.
+    pub host_silence: Option<Duration>,
     /// Handshake step timeout.
     pub handshake_timeout: Duration,
     /// Reason in the `Bye` sent when the client ends the session.
@@ -82,7 +85,7 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
-    /// Defaults (1 s stats, 500 ms pings, 10 s handshake steps) for `caps`.
+    /// Defaults (1 s stats, 500 ms pings, 5 s host silence, 10 s handshake steps) for `caps`.
     pub fn new(device_name: impl Into<String>, caps: ClientCaps) -> Self {
         ClientConfig {
             device_name: device_name.into(),
@@ -92,6 +95,7 @@ impl ClientConfig {
             stats_interval: Duration::from_secs(1),
             ping_interval: Duration::from_millis(500),
             max_duration: None,
+            host_silence: Some(Duration::from_secs(5)),
             handshake_timeout: Duration::from_secs(10),
             bye_reason: "client done".into(),
             proto_minor: None,
@@ -110,6 +114,8 @@ pub enum ClientEnd {
     HostEof,
     /// `max_duration` elapsed.
     TimedOut,
+    /// Nothing arrived from the host for `host_silence`.
+    HostSilent,
 }
 
 /// Result of a finished session.
@@ -272,14 +278,19 @@ pub async fn run_client<H: ClientHandler>(
     let mut last_stats = std::time::Instant::now();
     let deadline = cfg.max_duration.map(|d| tokio::time::Instant::now() + d);
     let mut loop_err: Option<ClientError> = None;
+    let mut last_rx = tokio::time::Instant::now();
 
     let end = loop {
         let sleep_until =
             deadline.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3600));
+        let silent_at = last_rx + cfg.host_silence.unwrap_or(Duration::from_secs(3600));
         let step: Result<Option<ClientEnd>, ClientError> = async {
             tokio::select! {
                 _ = tokio::time::sleep_until(sleep_until), if deadline.is_some() => {
                     Ok(Some(ClientEnd::TimedOut))
+                }
+                _ = tokio::time::sleep_until(silent_at), if cfg.host_silence.is_some() => {
+                    Ok(Some(ClientEnd::HostSilent))
                 }
                 _ = handle.0.notify.notified() => {
                     if handle.is_stopped() {
@@ -304,6 +315,7 @@ pub async fn run_client<H: ClientHandler>(
                 }
                 msg = rx.recv() => {
                     let Some(msg) = msg? else { return Ok(Some(ClientEnd::HostEof)) };
+                    last_rx = tokio::time::Instant::now();
                     on_message(msg, &tx, handle, handler)
                 }
             }
@@ -410,5 +422,115 @@ fn on_message<H: ClientHandler>(
             tracing::debug!(?other, "ignoring message");
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ezd_proto::{ClientCaps, Codec, DisplayInfo, EncoderCaps, HostCaps};
+
+    struct Nop;
+
+    impl ClientHandler for Nop {
+        fn on_stream_config(&mut self, _: &StreamConfig) -> HandlerResult {
+            Ok(Flow::Continue)
+        }
+        fn on_codec_config(&mut self, _: VideoFrame) -> HandlerResult {
+            Ok(Flow::Continue)
+        }
+        fn on_video_frame(&mut self, _: VideoFrame, _: u64) -> HandlerResult {
+            Ok(Flow::Continue)
+        }
+    }
+
+    fn caps() -> ClientCaps {
+        ClientCaps {
+            display: DisplayInfo {
+                width_px: 1280,
+                height_px: 800,
+                density_dpi: 160,
+                refresh_rates_mhz: vec![60000],
+                current_refresh_mhz: 60000,
+            },
+            decoders: vec![],
+            stylus: false,
+            max_touch_points: 0,
+        }
+    }
+
+    /// A host that completes the handshake, answers pings while `answer` holds, then goes quiet
+    /// without closing the link, like a host process that died behind a USB accessory.
+    async fn host(link: Link, answer: Duration) {
+        let (tx, mut rx, _task) = link.into_mux(ezd_proto::DEFAULT_CHUNK_LEN);
+        tx.send_control(Message::Hello(Hello::new(Role::Host, "0.1.0", "pc")))
+            .unwrap();
+        tx.send_control(Message::HostCaps(HostCaps {
+            os: "test".into(),
+            gpu: "none".into(),
+            encoders: vec![EncoderCaps {
+                codec: Codec::H264,
+                name: "test".into(),
+                hardware: false,
+            }],
+        }))
+        .unwrap();
+        tx.send_control(Message::StreamConfig(StreamConfig {
+            width: 1280,
+            height: 800,
+            refresh_mhz: 60000,
+            codec: Codec::H264,
+            bitrate_kbps: 1000,
+            encoder_name: "test".into(),
+        }))
+        .unwrap();
+        let quiet_at = tokio::time::Instant::now() + answer;
+        while let Ok(Some(m)) = rx.recv().await {
+            if let Message::Ping(p) = m
+                && tokio::time::Instant::now() < quiet_at
+            {
+                let _ = tx.send_control(Message::Pong(Pong {
+                    seq: p.seq,
+                    t0_us: p.t0_us,
+                    t1_us: 0,
+                    t2_us: 0,
+                }));
+            }
+        }
+    }
+
+    fn cfg() -> ClientConfig {
+        let mut cfg = ClientConfig::new("tablet", caps());
+        cfg.ping_interval = Duration::from_millis(20);
+        cfg.host_silence = Some(Duration::from_millis(300));
+        cfg
+    }
+
+    #[tokio::test]
+    async fn a_host_that_goes_quiet_ends_the_session() {
+        let (client, server) = Link::duplex_pair(64 * 1024);
+        let host = tokio::spawn(host(server, Duration::from_millis(500)));
+        let start = tokio::time::Instant::now();
+        let out = run_client(client, cfg(), &ClientHandle::new(), &mut Nop)
+            .await
+            .unwrap();
+        assert_eq!(out.end, ClientEnd::HostSilent);
+        // Pongs kept it alive until the host went quiet.
+        assert!(start.elapsed() >= Duration::from_millis(700));
+        host.abort();
+    }
+
+    #[tokio::test]
+    async fn no_silence_limit_keeps_waiting() {
+        let (client, server) = Link::duplex_pair(64 * 1024);
+        let host = tokio::spawn(host(server, Duration::ZERO));
+        let mut cfg = cfg();
+        cfg.host_silence = None;
+        cfg.max_duration = Some(Duration::from_millis(600));
+        let out = run_client(client, cfg, &ClientHandle::new(), &mut Nop)
+            .await
+            .unwrap();
+        assert_eq!(out.end, ClientEnd::TimedOut);
+        host.abort();
     }
 }
