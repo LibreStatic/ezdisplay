@@ -24,7 +24,9 @@ use ezd_ffmpeg::{ColorInfo, Encoder, EncoderConfig, HdrMeta, RawPixelFormat};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
+use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
@@ -99,10 +101,14 @@ pub struct GpuEncoder {
     name: String,
     params: Vec<u8>,
     sent_config: bool,
+    /// A frame has been submitted (the very first one is forced to be an IDR).
+    started: bool,
     hevc: bool,
-    /// Time spent in the last [`encode`](Self::encode): copy (or HDR render) into the encoder's
-    /// frame, sending the frame, receiving the packet. Paths that do not split the work put it
-    /// all in the middle entry.
+    /// Time spent in the last [`push`](Self::push) or [`finish`](Self::finish): copy (or HDR
+    /// render, or convert and read back) into the encoder's input, sending the frame, receiving
+    /// the packet. Paths that do not split the work put it all in the middle entry. On the
+    /// pipelined path the middle entry is the worker's encode time of the returned packet and the
+    /// last one the time spent blocked waiting for it; the first is not updated by `finish`.
     pub stages: [Duration; 3],
 }
 
@@ -239,6 +245,7 @@ impl GpuEncoder {
             name: name.to_string(),
             params,
             sent_config: false,
+            started: false,
             hevc,
             stages: [Duration::ZERO; 3],
         })
@@ -249,15 +256,60 @@ impl GpuEncoder {
         &self.name
     }
 
-    /// Encodes the texture `src` (BGRA, or FP16 scRGB for a ten-bit encoder). `Ok(None)` if the
-    /// encoder produced nothing yet.
+    /// True if the encoder works on a worker thread: [`push`](Self::push) then returns the packet
+    /// of the previous frame and [`finish`](Self::finish) collects the last one.
+    pub fn pipelined(&self) -> bool {
+        matches!(self.inner, Inner::Nv12(_))
+    }
+
+    /// True if a pushed frame's packet has not been returned yet (pipelined path only).
+    pub fn in_flight(&self) -> bool {
+        matches!(&self.inner, Inner::Nv12(p) if p.in_flight)
+    }
+
+    /// Encodes the texture `src` and waits for its packet. `Ok(None)` if the encoder produced
+    /// nothing yet.
     pub fn encode(
         &mut self,
         src: &ID3D11Texture2D,
         force_key: bool,
     ) -> Result<Option<Output>, String> {
+        let out = self.push(src, force_key)?;
+        if self.pipelined() {
+            // For callers that encode one frame at a time, nothing was in flight before: `out` is
+            // empty and the packet is this frame's.
+            return self.finish();
+        }
+        Ok(out)
+    }
+
+    /// Waits for the frame in flight and returns its packet; `Ok(None)` if there is none.
+    pub fn finish(&mut self) -> Result<Option<Output>, String> {
+        let packet = match &mut self.inner {
+            Inner::Nv12(path) => {
+                let p = path.collect()?;
+                self.stages[1] = path.times[1];
+                self.stages[2] = path.times[2];
+                p
+            }
+            _ => None,
+        };
+        self.finish_packet(packet)
+    }
+
+    /// Submits the texture `src` (BGRA, or FP16 scRGB for a ten-bit encoder).
+    ///
+    /// Synchronous paths return the packet of this frame, if the encoder produced one. The
+    /// pipelined path converts and reads the frame back, waits for the frame that was in flight
+    /// (if any) and returns its packet, and then hands this frame to the worker.
+    pub fn push(
+        &mut self,
+        src: &ID3D11Texture2D,
+        force_key: bool,
+    ) -> Result<Option<Output>, String> {
         // The very first frame is always an IDR.
-        let force = force_key || !self.sent_config;
+        let force = force_key || !self.started;
+        self.started = true;
         let packet = match &mut self.inner {
             Inner::Zero { enc, hdr } => {
                 let t0 = Instant::now();
@@ -285,9 +337,8 @@ impl GpuEncoder {
                 p
             }
             Inner::Nv12(path) => {
-                let t0 = Instant::now();
-                let p = path.encode(src, force)?;
-                self.stages = [Duration::ZERO, t0.elapsed(), Duration::ZERO];
+                let p = path.push(src, force)?;
+                self.stages = path.times;
                 p
             }
             Inner::P010(path) => {
@@ -297,6 +348,12 @@ impl GpuEncoder {
                 p
             }
         };
+        self.finish_packet(packet)
+    }
+
+    /// Adds the parameter sets to a keyframe and reports the codec config with the first packet.
+    /// Packets arrive in encode order, so the first one is the first frame's.
+    fn finish_packet(&mut self, packet: Option<(Vec<u8>, bool)>) -> Result<Option<Output>, String> {
         let Some((mut data, keyframe)) = packet else {
             return Ok(None);
         };
@@ -346,14 +403,88 @@ struct Nv12Path {
     out_view: ID3D11VideoProcessorOutputView,
     staging: ID3D11Texture2D,
     in_view: Option<(*mut c_void, ID3D11VideoProcessorInputView)>,
-    enc: Encoder,
+    worker: EncodeWorker,
     width: u32,
     height: u32,
+    /// The buffer the next frame is read back into.
     raw: Vec<u8>,
+    /// The second buffer, while the worker does not hold it.
+    spare: Option<Vec<u8>>,
+    /// A frame was handed to the worker and its packet not collected yet.
+    in_flight: bool,
+    /// Convert and read back (calling thread), encode (worker), blocked waiting for the worker.
+    /// The first is from the last [`push`](Self::push), the others from the last
+    /// [`collect`](Self::collect).
+    times: [Duration; 3],
+}
+
+/// A frame for the encode worker.
+struct Job {
+    raw: Vec<u8>,
+    force: bool,
+}
+
+/// The worker's answer: the buffer back, the packet (data, keyframe) and the encode time.
+struct Done {
+    raw: Vec<u8>,
+    packet: Result<Option<(Vec<u8>, bool)>, String>,
+    took: Duration,
+}
+
+/// Runs `ezd_ffmpeg::Encoder` on its own thread, one frame at a time. Packets are never dropped:
+/// every submitted frame is answered, in order.
+struct EncodeWorker {
+    jobs: Option<mpsc::Sender<Job>>,
+    done: mpsc::Receiver<Done>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl EncodeWorker {
+    fn spawn(mut enc: Encoder) -> Result<EncodeWorker, String> {
+        let (jobs, job_rx) = mpsc::channel::<Job>();
+        let (done_tx, done) = mpsc::channel::<Done>();
+        let thread = std::thread::Builder::new()
+            .name("ezd-encode".into())
+            .spawn(move || {
+                // Ends when the sender is dropped.
+                while let Ok(job) = job_rx.recv() {
+                    let t0 = Instant::now();
+                    let packet = enc
+                        .encode(&job.raw, job.force)
+                        .map(|p| p.map(|p| (p.data, p.keyframe)))
+                        .map_err(|e| e.to_string());
+                    let done = Done {
+                        raw: job.raw,
+                        packet,
+                        took: t0.elapsed(),
+                    };
+                    if done_tx.send(done).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|e| format!("encode thread: {e}"))?;
+        Ok(EncodeWorker {
+            jobs: Some(jobs),
+            done,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for EncodeWorker {
+    fn drop(&mut self) {
+        // Closing the channel ends the loop once the frame in flight (if any) is encoded.
+        self.jobs = None;
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }
 
 // SAFETY: the COM objects are only used from the thread that owns the encoder (the device is
 // multithread protected); the raw pointer in `in_view` is only an identity key, never dereferenced.
+// The `Encoder` lives on the worker thread.
 unsafe impl Send for Nv12Path {}
 
 impl Nv12Path {
@@ -443,6 +574,7 @@ impl Nv12Path {
             vctx.VideoProcessorSetStreamColorSpace(&vp, 0, &in_cs);
             vctx.VideoProcessorSetOutputColorSpace(&vp, &out_cs);
 
+            let len = (width * height * 3 / 2) as usize;
             Ok(Nv12Path {
                 ctx: ctx.clone(),
                 vctx,
@@ -453,19 +585,59 @@ impl Nv12Path {
                 out_view,
                 staging,
                 in_view: None,
-                enc,
+                worker: EncodeWorker::spawn(enc)?,
                 width,
                 height,
-                raw: vec![0; (width * height * 3 / 2) as usize],
+                raw: vec![0; len],
+                spare: Some(vec![0; len]),
+                in_flight: false,
+                times: [Duration::ZERO; 3],
             })
         }
     }
 
-    fn encode(
+    /// Converts and reads back `src`, waits for the frame in flight (if any) and returns its
+    /// packet, then hands the new frame to the worker.
+    fn push(
         &mut self,
         src: &ID3D11Texture2D,
         force: bool,
     ) -> Result<Option<(Vec<u8>, bool)>, String> {
+        let t0 = Instant::now();
+        self.convert(src)?;
+        self.times[0] = t0.elapsed();
+        // The D3D11 work above overlapped the worker's encode of the previous frame.
+        let prev = self.collect()?;
+        let spare = self.spare.take().ok_or("encode buffer missing")?;
+        let raw = std::mem::replace(&mut self.raw, spare);
+        self.worker
+            .jobs
+            .as_ref()
+            .and_then(|j| j.send(Job { raw, force }).ok())
+            .ok_or("encode thread ended")?;
+        self.in_flight = true;
+        Ok(prev)
+    }
+
+    /// Waits for the frame in flight and returns its packet (`None` if there is none).
+    fn collect(&mut self) -> Result<Option<(Vec<u8>, bool)>, String> {
+        if !self.in_flight {
+            self.times[1] = Duration::ZERO;
+            self.times[2] = Duration::ZERO;
+            return Ok(None);
+        }
+        let t0 = Instant::now();
+        let done = self.worker.done.recv();
+        self.times[2] = t0.elapsed();
+        self.in_flight = false;
+        let done = done.map_err(|_| "encode thread ended")?;
+        self.spare = Some(done.raw);
+        self.times[1] = done.took;
+        done.packet
+    }
+
+    /// BGRA `src` -> NV12 -> `self.raw`.
+    fn convert(&mut self, src: &ID3D11Texture2D) -> Result<(), String> {
         let key = src.as_raw();
         if self.in_view.as_ref().is_none_or(|(k, _)| *k != key) {
             let iv = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
@@ -507,12 +679,7 @@ impl Nv12Path {
             r
         };
         blt.map_err(|e| format!("VideoProcessorBlt: {}", err_str(&e)))?;
-        self.read_back()?;
-        let p = self
-            .enc
-            .encode(&self.raw, force)
-            .map_err(|e| e.to_string())?;
-        Ok(p.map(|p| (p.data, p.keyframe)))
+        self.read_back()
     }
 
     /// Copies the NV12 texture into `self.raw` (tightly packed Y plane then interleaved UV plane).

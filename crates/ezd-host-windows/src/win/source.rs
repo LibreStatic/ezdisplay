@@ -46,9 +46,10 @@ pub fn create_virtual_source(
 
 #[cfg(feature = "ffmpeg")]
 mod imp {
+    use super::super::capture::FrameTicket;
     use super::super::capture::{Capture, CaptureOutput, create_bgra_texture};
     use super::super::dxgi::{self, AdapterEntry};
-    use super::super::encode::{self, GpuEncoder};
+    use super::super::encode::{self, GpuEncoder, Output};
     use super::super::ffenc::StreamFormat;
     use super::super::hdr::{ScrgbToSdr, create_sdr_target};
     use super::super::{display, vdd};
@@ -111,7 +112,19 @@ mod imp {
         _device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
         output: OutputInfo,
         last_seq: u64,
+        /// The frame handed to the encoder whose packet has not been returned yet (pipelined
+        /// encoders only).
+        in_flight: Option<FrameMeta>,
         timing: PipelineTiming,
+    }
+
+    /// What a packet needs from the capture it came from.
+    #[derive(Clone, Copy)]
+    struct FrameMeta {
+        capture_us: u64,
+        seq: u64,
+        /// The frame was encoded as a forced keyframe.
+        forced: bool,
     }
 
     /// Per-stage times of the capture + encode loop, logged every few seconds so a slow stream
@@ -121,9 +134,13 @@ mod imp {
         /// When the previous `next_frame` returned: the time until the next call is spent by the
         /// session (sending, waiting for credit).
         returned: Option<Instant>,
+        /// Time between calls since the last frame was returned (`Ok(None)` calls included).
+        outside: Duration,
         captured: u64,
         frames: u32,
-        // Sum and maximum, in microseconds: outside, wait, copy, send, receive, frame age.
+        // Sum and maximum, in microseconds: outside, wait, copy, send, receive, frame age. With a
+        // pipelined encoder, copy is the convert and read back of the newest capture, send the
+        // worker's encode time of the returned packet and receive the time blocked waiting for it.
         sum: [u64; 6],
         max: [u64; 6],
     }
@@ -136,6 +153,7 @@ mod imp {
             PipelineTiming {
                 since: Instant::now(),
                 returned: None,
+                outside: Duration::ZERO,
                 captured: 0,
                 frames: 0,
                 sum: [0; 6],
@@ -458,9 +476,72 @@ mod imp {
                 _device: device,
                 output: output_info,
                 last_seq: 0,
+                in_flight: None,
                 timing: PipelineTiming::new(),
             })
         }
+    }
+
+    /// Converts the capture `t` and hands it to the encoder. Returns the packet that came out
+    /// with the frame it belongs to: the previous frame's on a pipelined encoder, this one's
+    /// otherwise.
+    fn submit(
+        run: &mut Running,
+        force: bool,
+        t: FrameTicket,
+    ) -> Result<Option<(Output, FrameMeta)>, SourceError> {
+        let src = match run.tonemap.as_mut() {
+            Some(t) => {
+                t.conv.set_white_nits(run.capture.sdr_white_nits());
+                t.conv
+                    .convert(&run.capture.latest, &t.rtv)
+                    .map_err(SourceError::msg)?;
+                &t.out
+            }
+            None => &run.capture.latest,
+        };
+        let out = run.encoder.push(src, force).map_err(SourceError::msg)?;
+        run.last_seq = t.seq;
+        run.timing.add(2, run.encoder.stages[0]);
+        let meta = FrameMeta {
+            capture_us: t.capture_us,
+            seq: t.seq,
+            forced: force,
+        };
+        let owner = if run.encoder.pipelined() {
+            run.in_flight.replace(meta)
+        } else {
+            Some(meta)
+        };
+        Ok(deliver(run, out, owner))
+    }
+
+    /// Waits for the packet of the frame in flight, if any.
+    fn finish(run: &mut Running) -> Result<Option<(Output, FrameMeta)>, SourceError> {
+        let out = run.encoder.finish().map_err(SourceError::msg)?;
+        let owner = run.in_flight.take();
+        Ok(deliver(run, out, owner))
+    }
+
+    /// Pairs a packet with its frame and records the timing of a frame leaving the pipeline.
+    fn deliver(
+        run: &mut Running,
+        out: Option<Output>,
+        meta: Option<FrameMeta>,
+    ) -> Option<(Output, FrameMeta)> {
+        let (o, m) = out.zip(meta)?;
+        let timing = &mut run.timing;
+        let outside = std::mem::take(&mut timing.outside);
+        timing.add(0, outside);
+        timing.add(3, run.encoder.stages[1]);
+        timing.add(4, run.encoder.stages[2]);
+        timing.add(
+            5,
+            Duration::from_micros(now_us().saturating_sub(m.capture_us)),
+        );
+        timing.frames += 1;
+        timing.maybe_log(run.encoder.name(), run.capture.stats().0);
+        Some((o, m))
     }
 
     impl VideoSource for WindowsSource {
@@ -521,42 +602,38 @@ mod imp {
                 return Err(SourceError::msg("next_frame before start"));
             };
             let called = Instant::now();
-            let ticket = run
-                .capture
-                .wait_frame(run.last_seq, self.want_key, timeout)
-                .map_err(SourceError::msg)?;
-            let Some(t) = ticket else {
-                run.timing.returned = Some(Instant::now());
-                return Ok(None);
-            };
-            let waited = called.elapsed();
-            let age = Duration::from_micros(now_us().saturating_sub(t.capture_us));
-            let force = self.want_key;
-            let src = match run.tonemap.as_mut() {
-                Some(t) => {
-                    t.conv.set_white_nits(run.capture.sdr_white_nits());
-                    t.conv
-                        .convert(&run.capture.latest, &t.rtv)
-                        .map_err(SourceError::msg)?;
-                    &t.out
+            if let Some(r) = run.timing.returned {
+                run.timing.outside += called - r;
+            }
+            // A forced keyframe already in flight covers the request.
+            let force = self.want_key && !run.in_flight.is_some_and(|m| m.forced);
+            let done = if run.encoder.in_flight() {
+                // Encoding the previous frame. Take a newer capture if there is one, so the D3D11
+                // work overlaps the encode; if not, return the packet now.
+                let ticket = run
+                    .capture
+                    .wait_frame(run.last_seq, false, Duration::ZERO)
+                    .map_err(SourceError::msg)?;
+                match ticket {
+                    Some(t) => submit(run, force, t)?,
+                    None => finish(run)?,
                 }
-                None => &run.capture.latest,
+            } else {
+                let ticket = run
+                    .capture
+                    .wait_frame(run.last_seq, self.want_key, timeout)
+                    .map_err(SourceError::msg)?;
+                let Some(t) = ticket else {
+                    run.timing.returned = Some(Instant::now());
+                    return Ok(None);
+                };
+                run.timing.add(1, called.elapsed());
+                // A pipelined encoder returns nothing for this frame: the session calls again at
+                // once, and the packet is collected then.
+                submit(run, force, t)?
             };
-            let out = run.encoder.encode(src, force).map_err(SourceError::msg)?;
-            run.last_seq = t.seq;
-            let timing = &mut run.timing;
-            if let Some(r) = timing.returned {
-                timing.add(0, called - r);
-            }
-            timing.add(1, waited);
-            for (i, d) in run.encoder.stages.into_iter().enumerate() {
-                timing.add(2 + i, d);
-            }
-            timing.add(5, age);
-            timing.frames += 1;
-            timing.maybe_log(run.encoder.name(), run.capture.stats().0);
-            timing.returned = Some(Instant::now());
-            let Some(o) = out else { return Ok(None) };
+            run.timing.returned = Some(Instant::now());
+            let Some((o, m)) = done else { return Ok(None) };
             if o.keyframe {
                 self.want_key = false;
             }
@@ -564,9 +641,9 @@ mod imp {
                 data: o.data,
                 keyframe: o.keyframe,
                 codec_config: o.codec_config,
-                capture_us: t.capture_us,
+                capture_us: m.capture_us,
                 encoded_us: now_us(),
-                frame_id: Some(t.seq),
+                frame_id: Some(m.seq),
             }))
         }
 
