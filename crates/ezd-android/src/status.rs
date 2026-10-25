@@ -29,6 +29,8 @@ struct State {
     detail: String,
     stream: Option<StreamConfig>,
     decoder: Option<String>,
+    /// Size of the decoder's output buffers, which can exceed the stream (coded vs cropped size).
+    buffer: Option<(i32, i32)>,
 }
 
 /// State shared between the client task, the decoder thread and the JNI poll calls.
@@ -41,6 +43,7 @@ impl Default for Shared {
             detail: String::new(),
             stream: None,
             decoder: None,
+            buffer: None,
         }))
     }
 }
@@ -71,6 +74,12 @@ impl Shared {
     /// Records the decoder in use.
     pub fn set_decoder(&self, name: Option<String>) {
         self.with(|s| s.decoder = name);
+    }
+
+    /// Records the decoder's output buffer size from its output format. It is kept across decoder
+    /// restarts: resizing the surface to it restarts the decoder, and clearing it would loop.
+    pub fn set_buffer_size(&self, width: i32, height: i32) {
+        self.with(|s| s.buffer = Some((width, height)));
     }
 
     /// Current phase.
@@ -115,6 +124,8 @@ impl Shared {
             "codec": codec,
             "encoder": s.stream.as_ref().map(|c| c.encoder_name.clone()),
             "decoder": s.decoder,
+            "buffer_width": s.buffer.map_or(0, |b| b.0),
+            "buffer_height": s.buffer.map_or(0, |b| b.1),
             "dynamic_range": if color.is_hdr() { "hdr10" } else { "sdr" },
             "bit_depth": color.bit_depth,
             "color_primaries": color.primaries,

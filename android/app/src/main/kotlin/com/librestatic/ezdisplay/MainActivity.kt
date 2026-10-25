@@ -3,6 +3,7 @@ package com.librestatic.ezdisplay
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.content.Intent
 import android.os.Build
@@ -78,6 +79,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private var lastStatsPoll = 0L
     private var streamW = 0
     private var streamH = 0
+    private var bufW = 0
+    private var bufH = 0
     private var frameRateSet = 0
     private var telemetryOn = false
     private var lastInputNote = ""
@@ -139,6 +142,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         stage = FrameLayout(this).apply {
             pivotX = 0f
             pivotY = 0f
+            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitSurface() }
         }
         root.addView(stage, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         surfaceView = SurfaceView(this).also { it.holder.addCallback(this) }
@@ -295,6 +299,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         airHintShown = false
         streamW = 0
         streamH = 0
+        bufW = 0
+        bufH = 0
+        fitSurface()
         frameRateSet = 0
         setStatus(getString(R.string.status_waiting, "$HOST:$PORT"))
     }
@@ -357,8 +364,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         if (seq != 0L && visible) {
             val shapeId = c[4].toInt()
             if (shapeId != cursorShapeId) loadCursorShape(shapeId)
-            val sx = surfaceView.width.toFloat() / streamW
-            val sy = surfaceView.height.toFloat() / streamH
+            // The stage shows the stream's visible area; the surface may extend past it (fitSurface).
+            val sx = stage.width.toFloat() / streamW
+            val sy = stage.height.toFloat() / streamH
             if (sx != cursorScaleX || sy != cursorScaleY) {
                 cursorScaleX = sx
                 cursorScaleY = sy
@@ -415,12 +423,40 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         cursorScaleY = 0f
     }
 
+    /**
+     * Sizes the surface so one decoded pixel maps to one view pixel along each axis. Decoders
+     * output buffers padded to the codec's block size (2960x1856 for a 2960x1848 stream) and the
+     * compositor scales the whole buffer to the view, which resamples every row. Growing the view
+     * by the same ratio keeps the visible area 1:1 and pushes the padding past the stage edge.
+     */
+    private fun fitSurface() {
+        val (vw, vh) = stage.width to stage.height
+        val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
+        val (w, h) = if (streamW > 0 && streamH > 0 && bufW >= streamW && bufH >= streamH && vw > 0 && vh > 0) {
+            (vw.toLong() * bufW / streamW).toInt() to (vh.toLong() * bufH / streamH).toInt()
+        } else {
+            ViewGroup.LayoutParams.MATCH_PARENT to ViewGroup.LayoutParams.MATCH_PARENT
+        }
+        if (lp.width == w && lp.height == h) return
+        lp.width = w
+        lp.height = h
+        surfaceView.layoutParams = lp
+        surfaceView.clipBounds = if (w > 0) Rect(0, 0, vw, vh) else null
+    }
+
     private fun updateStats(now: Long) {
         val j = try {
             JSONObject(NativeBridge.pollStats())
         } catch (e: Exception) {
             Log.w(TAG, "bad stats", e)
             return
+        }
+        val bw = j.optInt("buffer_width")
+        val bh = j.optInt("buffer_height")
+        if (bw > 0 && bh > 0 && (bw != bufW || bh != bufH)) {
+            bufW = bw
+            bufH = bh
+            fitSurface()
         }
         val addr = "$HOST:$PORT"
         when (j.optString("phase")) {

@@ -443,16 +443,19 @@ impl Worker {
                 self.tracker.clear();
                 let out_thread = {
                     let (codec, stop, outputs) = (codec.clone(), stop.clone(), outputs.clone());
-                    let (tracker, handle, tx, gen_) = (
+                    let (tracker, handle, tx, gen_, shared) = (
                         self.tracker.clone(),
                         self.handle.clone(),
                         self.tx.clone(),
                         self.generation,
+                        self.shared.clone(),
                     );
                     std::thread::Builder::new()
                         .name("ezd-decoder-out".into())
                         .spawn(move || {
-                            output_loop(&codec, &stop, &outputs, &tracker, &handle, &tx, gen_)
+                            output_loop(
+                                &codec, &stop, &outputs, &tracker, &handle, &tx, gen_, &shared,
+                            )
                         })
                         .ok()
                 };
@@ -503,6 +506,7 @@ impl Worker {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn output_loop(
     codec: &SyncCodec,
     stop: &AtomicBool,
@@ -511,6 +515,7 @@ fn output_loop(
     handle: &ClientHandle,
     tx: &Sender<Cmd>,
     generation: u64,
+    shared: &Shared,
 ) {
     while !stop.load(Ordering::Acquire) {
         match codec.0.dequeue_output_buffer(OUTPUT_POLL) {
@@ -534,7 +539,11 @@ fn output_loop(
             }
             Ok(DequeuedOutputBufferInfoResult::TryAgainLater) => {}
             Ok(DequeuedOutputBufferInfoResult::OutputFormatChanged) => {
-                tracing::info!("decoder output format changed");
+                let format = codec.0.output_format();
+                tracing::info!("decoder output format changed: {format}");
+                if let (Some(w), Some(h)) = (format.i32("width"), format.i32("height")) {
+                    shared.set_buffer_size(w, h);
+                }
             }
             Ok(DequeuedOutputBufferInfoResult::OutputBuffersChanged) => {}
             Err(e) => {
