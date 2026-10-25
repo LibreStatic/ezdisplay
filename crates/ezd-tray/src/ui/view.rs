@@ -1419,6 +1419,8 @@ fn wifi_card(
             );
             if wifi.paired.is_empty() {
                 widgets::empty_state(ui, pal, glyphs::TABLET, &fl!(l, "wifi-paired-none"), None);
+            } else {
+                ui.add_space(10.0);
             }
             for d in &wifi.paired {
                 widgets::row_divider(ui, pal);

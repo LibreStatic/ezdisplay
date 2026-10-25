@@ -1120,6 +1120,64 @@ mod snapshots {
         snap
     }
 
+    /// The Wi-Fi card on the Connection page, in each state.
+    fn wifi_snapshots(results: &mut egui_kittest::SnapshotResults) {
+        let off = WifiState {
+            supported: true,
+            ..WifiState::default()
+        };
+        let pairing = WifiState {
+            pairing: Some(PairingOffer {
+                pin: "123456".into(),
+                uri: "ezd://pair?a=192.168.1.20:27183&pin=123456".into(),
+                // Already over, so that the countdown reads the same on every run.
+                expires: Instant::now(),
+            }),
+            ..wifi_on()
+        };
+        let paired = WifiState {
+            paired: vec![
+                PairedEntry {
+                    name: "Galaxy Tab S9".into(),
+                    fingerprint: "b00b".repeat(16),
+                },
+                PairedEntry {
+                    name: "Pixel Tablet".into(),
+                    fingerprint: "c0de".repeat(16),
+                },
+            ],
+            notice: Some(WifiNotice::Paired("Galaxy Tab S9".into())),
+            ..wifi_on()
+        };
+        let size = egui::vec2(820.0, 1250.0);
+        let cases = [
+            ("wifi_off", off, egui::Theme::Light, "en"),
+            ("wifi_on", wifi_on(), egui::Theme::Light, "en"),
+            ("wifi_pairing", pairing.clone(), egui::Theme::Light, "en"),
+            ("wifi_pairing", pairing.clone(), egui::Theme::Dark, "en"),
+            ("wifi_pairing", pairing.clone(), egui::Theme::Light, "es"),
+            ("wifi_pairing", pairing, egui::Theme::Light, "de"),
+            ("wifi_paired", paired, egui::Theme::Dark, "en"),
+        ];
+        for (name, wifi, theme, lang) in cases {
+            let mut view = SettingsView::new(wifi_snapshot(wifi));
+            view.section = Section::Connection;
+            let t = if theme == egui::Theme::Dark {
+                "dark"
+            } else {
+                "light"
+            };
+            render(
+                view,
+                theme,
+                lang,
+                size,
+                &format!("{name}_{t}_{lang}"),
+                results,
+            );
+        }
+    }
+
     /// One snapshot per page, matching the mockups (`01` to `07`), the minimum size and the
     /// longest languages.
     fn page_snapshots(results: &mut egui_kittest::SnapshotResults) {
@@ -1241,6 +1299,7 @@ mod snapshots {
         input_permission_snapshots(&mut results);
         hdr_snapshots(&mut results);
         page_snapshots(&mut results);
+        wifi_snapshots(&mut results);
     }
 }
 

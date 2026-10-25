@@ -32,6 +32,13 @@ pub fn show(ui: &mut Ui, text: &str, side: f32, label: &str) {
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, 6.0, Color32::WHITE);
+    // The quiet zone is white on a white card in the light theme; an outline shows the square.
+    painter.rect_stroke(
+        rect,
+        6.0,
+        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+        egui::StrokeKind::Inside,
+    );
     let origin = rect.min + vec2(cell, cell) * QUIET_MODULES as f32;
     for (i, _) in dark.iter().enumerate().filter(|(_, d)| **d) {
         let (x, y) = ((i % width) as f32, (i / width) as f32);
