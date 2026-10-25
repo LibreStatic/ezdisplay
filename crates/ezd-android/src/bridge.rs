@@ -5,7 +5,7 @@
 use crate::caps::parse_caps;
 use crate::decoder::SendWindow;
 use crate::input::{mono_to_now_us, unpack_motion};
-use crate::session::{Session, Target};
+use crate::session::{AccessoryFd, Session, Target};
 use crate::wifi;
 use ezd_client_core::now_us;
 use ezd_input::{InputConfig, InputEngine, ViewTransform};
@@ -231,7 +231,7 @@ pub extern "system" fn startFd<'local>(
         start_session(
             window,
             Target::Accessory {
-                fd: std::sync::Arc::new(fd),
+                fd: AccessoryFd::new(fd),
             },
             caps,
         );

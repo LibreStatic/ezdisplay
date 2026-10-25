@@ -13,10 +13,11 @@ use ezd_link::{BlockingOptions, Link};
 use ezd_proto::pair::Fingerprint;
 use ezd_proto::{CursorShape, StreamColor, StreamConfig, VideoFrame};
 use std::fs::File;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -25,6 +26,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCESSORY_BUF: usize = 16 * 1024;
 /// Wi-Fi sessions retry while the host is busy or not reachable yet, up to this long.
 const WIFI_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long [`Session::stop`] lets the client say Bye over the accessory before revoking it.
+const ACCESSORY_BYE_GRACE: Duration = Duration::from_millis(500);
 
 /// Where a session connects to.
 #[derive(Debug, Clone)]
@@ -48,8 +51,104 @@ pub enum Target {
     /// The USB accessory file descriptor (Android Open Accessory). Owned: closed when the session ends.
     Accessory {
         /// Descriptor detached from the `ParcelFileDescriptor`.
-        fd: Arc<OwnedFd>,
+        fd: AccessoryFd,
     },
+}
+
+/// The accessory descriptor, shared by the link's read and write threads without duplicating it.
+///
+/// The gadget driver lets one opener at a time have `/dev/usb_accessory`, and the system opens it
+/// again on every new accessory handshake. A read blocks until the host sends something, even
+/// after the cable is pulled, and keeps the device open while it waits: closing the descriptor
+/// does not end it. [`AccessoryFd::revoke`] releases the device without waiting for that thread.
+#[derive(Debug, Clone)]
+pub struct AccessoryFd(Arc<AccessoryInner>);
+
+#[derive(Debug)]
+struct AccessoryInner {
+    file: File,
+    /// The thread inside `read`, if any.
+    reader: Mutex<Option<libc::pthread_t>>,
+}
+
+impl AccessoryFd {
+    pub fn new(fd: OwnedFd) -> Self {
+        AccessoryFd(Arc::new(AccessoryInner {
+            file: File::from(fd),
+            reader: Mutex::new(None),
+        }))
+    }
+
+    /// Points the descriptor at `/dev/null`, then interrupts a read in progress so it lets go of
+    /// the device; restarted, it reads end of file. The number stays allocated (this value holds
+    /// it), so a thread still using it never touches an unrelated descriptor.
+    fn revoke(&self) {
+        let null = match File::open("/dev/null") {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!("cannot release the accessory: /dev/null: {e}");
+                return;
+            }
+        };
+        // SAFETY: both descriptors are open and owned by live `File`s; dup2 replaces the target
+        // atomically, so its number is never free for another open to take.
+        if unsafe { libc::dup2(null.as_raw_fd(), self.0.file.as_raw_fd()) } < 0 {
+            tracing::warn!(
+                "cannot release the accessory: {}",
+                std::io::Error::last_os_error()
+            );
+            return;
+        }
+        let reader = self.0.reader.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(thread) = *reader {
+            install_wake_handler();
+            // SAFETY: the reader clears its entry under this lock before it exits, so `thread`
+            // is a live thread. The handler does nothing; the signal only ends the wait.
+            unsafe { libc::pthread_kill(thread, WAKE_SIGNAL) };
+        }
+    }
+}
+
+/// Interrupts a blocked accessory read. Nothing else in the app uses it, and its default action
+/// (ignore) would not interrupt anything, hence the handler.
+const WAKE_SIGNAL: libc::c_int = libc::SIGURG;
+
+fn install_wake_handler() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    extern "C" fn wake(_: libc::c_int) {}
+    ONCE.call_once(|| {
+        // SAFETY: a zeroed sigaction is valid; the handler is async-signal-safe (empty).
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = wake as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            sa.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut sa.sa_mask);
+            if libc::sigaction(WAKE_SIGNAL, &sa, std::ptr::null_mut()) < 0 {
+                tracing::warn!("cannot install the accessory wake handler");
+            }
+        }
+    });
+}
+
+impl Read for AccessoryFd {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let lock = || self.0.reader.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: pthread_self has no preconditions.
+        *lock() = Some(unsafe { libc::pthread_self() });
+        let r = (&self.0.file).read(buf);
+        *lock() = None;
+        r
+    }
+}
+
+impl Write for AccessoryFd {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        (&self.0.file).write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Target {
@@ -68,6 +167,7 @@ pub struct Session {
     shared: Arc<Shared>,
     dec: Arc<DecoderCtl>,
     thread: Option<JoinHandle<()>>,
+    accessory: Option<AccessoryFd>,
 }
 
 struct Handler {
@@ -136,6 +236,10 @@ impl Session {
         let handle = ClientHandle::new();
         let shared = Arc::new(Shared::default());
         shared.set_phase(Phase::Connecting, target.label());
+        let accessory = match &target {
+            Target::Accessory { fd } => Some(fd.clone()),
+            _ => None,
+        };
         let dec = DecoderCtl::spawn(caps.caps.clone(), handle.clone(), shared.clone(), window);
         let thread = {
             let (handle, shared, dec) = (handle.clone(), shared.clone(), dec.clone());
@@ -149,14 +253,25 @@ impl Session {
             shared,
             dec,
             thread: Some(thread),
+            accessory,
         }
     }
 
     /// Stops the session. The decoder is released before returning; the network teardown
     /// (Bye, drain) finishes on a background thread so the caller never waits for the socket.
+    /// An accessory is released before returning too: the app may be frozen right after.
     pub fn stop(mut self) {
         self.handle.stop();
         self.dec.shutdown(Duration::from_secs(2));
+        if let Some(fd) = self.accessory.take() {
+            let start = std::time::Instant::now();
+            while self.thread.as_ref().is_some_and(|t| !t.is_finished())
+                && start.elapsed() < ACCESSORY_BYE_GRACE
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            fd.revoke();
+        }
         if let Some(t) = self.thread.take() {
             let _ = std::thread::Builder::new()
                 .name("ezd-reaper".into())
@@ -243,17 +358,9 @@ async fn connect(target: &Target) -> Result<Link, ConnectError> {
             }),
         Target::Accessory { fd } => {
             let io = |what: &str, e: std::io::Error| ConnectError::from(format!("{what}: {e}"));
-            let reader = fd
-                .try_clone()
-                .map(File::from)
-                .map_err(|e| io("accessory fd", e))?;
-            let writer = fd
-                .try_clone()
-                .map(File::from)
-                .map_err(|e| io("accessory fd", e))?;
             Link::from_blocking(
-                reader,
-                writer,
+                fd.clone(),
+                fd.clone(),
                 "usb-accessory",
                 BlockingOptions {
                     read_buf: ACCESSORY_BUF,
@@ -327,5 +434,9 @@ fn run(
             }
         }
     });
+    // A session that ended on its own leaves the read thread waiting on the device.
+    if let Target::Accessory { fd } = &target {
+        fd.revoke();
+    }
     dec.shutdown(Duration::from_secs(2));
 }
