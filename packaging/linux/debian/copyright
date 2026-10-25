@@ -12,3 +12,9 @@ License: MIT or Apache-2.0
  On Debian systems the full text of the Apache License 2.0 is in
  /usr/share/common-licenses/Apache-2.0, and the texts of both licenses are installed in
  /usr/share/doc/ezdisplay/LICENSE-MIT and /usr/share/doc/ezdisplay/LICENSE-APACHE.
+
+Files: crates/ezd-tray/assets/fonts/fluent-icons-subset.ttf
+Copyright: 2020 Microsoft Corporation
+License: MIT
+ A subset of the Fluent System Icons font. The license text is installed in
+ /usr/share/doc/ezdisplay/FluentSystemIcons-LICENSE.txt.

@@ -56,8 +56,8 @@ stat-drops = Images perdues
 stat-rtt = Aller-retour
 mode-value = { $width }×{ $height } à { $hz } Hz, { $codec }
 encoder-value = { $encoder } à { $mbps } Mb/s
-value-fps = { $fps } i/s
-value-mbps = { $mbps } Mb/s
+unit-fps = i/s
+unit-mbps = Mb/s
 value-hz = { $hz } Hz
 value-ms = { $ms } ms
 value-ms-pair = { $p50 } ms (95e centile : { $p95 } ms)
@@ -95,7 +95,7 @@ hdr-reason-no-main10-encoder = Cette carte graphique ne peut pas encoder du HEVC
 ## Fenêtre : saisie
 input-enabled = Envoyer la saisie tactile et du stylet à cet ordinateur
 setting-pen = Le stylet fonctionne comme
-pen-tablet = Tablette graphique (pression et inclinaison)
+pen-tablet = Tablette graphique
 pen-mouse = Pointeur de souris
 telemetry = Afficher l'incrustation de télémétrie sur la tablette
 input-permission-denied = La saisie tactile et du stylet a besoin de l'autorisation de créer des périphériques d'entrée (/dev/uinput).
@@ -118,7 +118,7 @@ devices-count =
         [one] { $count } appareil
        *[other] { $count } appareils
     }
-devices-none = Aucun appareil. Branchez la tablette avec un câble USB et activez le débogage USB.
+devices-none = Branchez la tablette avec un câble USB et activez le débogage USB.
 samsung-driver = Pilote USB Android de Samsung
 device-line = { $name } ({ $serial }) : { $state }
 device-ready = prête
@@ -153,3 +153,34 @@ repair-restart = Redémarrez Windows pour terminer l'installation du pilote.
 repair-failed = La réparation a échoué (code { $code }).
 repair-log = Détails : { $path }
 repair-error = La réparation n'a pas pu s'exécuter : { $reason }
+
+## Window: cards and row descriptions
+devices-empty = Aucun appareil détecté
+stats-empty = Les statistiques apparaissent au début de la diffusion
+card-stream = Flux
+card-measurements = Mesures
+card-picture = Qualité d'image
+card-encoding = Encodage
+card-adb = Android Debug Bridge
+card-startup = Démarrage
+card-diagnostics = Diagnostic
+card-about = À propos
+card-driver = État du pilote
+card-maintenance = Maintenance
+scale-description = Des valeurs plus basses envoient moins de pixels à la tablette.
+refresh-description = Limite la fréquence de rafraîchissement proposée à la tablette.
+bitrate-description = Qualité vidéo du flux. En automatique, ezdisplay la choisit pour vous.
+encoder-description = L'encodeur vidéo qui compresse le flux.
+hdr-description = Envoie du HDR10 quand l'écran de la tablette le prend en charge.
+gpu-description = La carte graphique qui capture et encode l'écran.
+input-description = Utilisez la tablette comme écran tactile et comme stylet sur cet ordinateur.
+pen-description = Une tablette graphique ajoute la pression et l'inclinaison.
+telemetry-description = Affiche des mesures de performance en direct sur la tablette pendant la diffusion.
+use-adb-description = Trouve les tablettes dont le débogage USB est activé.
+autostart-description = Lance ezdisplay à l'ouverture de votre session.
+start-on-launch-description = Se met en attente de votre tablette dès l'ouverture d'ezdisplay.
+logs-title = Journaux
+logs-description = Ouvre le dossier où ezdisplay écrit ses journaux.
+about-description = Écran USB open source pour tablettes Android.
+repository = Code source
+driver-reinstall = Réinstaller le pilote

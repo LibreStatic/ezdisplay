@@ -129,7 +129,7 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
           $expected = 'ezdisplay.exe', 'ezd-host.exe', 'ffmpeg.sha256', 'driver\MttVDD.inf', 'driver\mttvdd.cat',
             'driver\nefconw.exe', 'adb\adb.exe', 'licenses\LICENSE-MIT', 'licenses\FFmpeg-NOTICE.txt',
-            'licenses\FFmpeg-LICENSE.txt'
+            'licenses\FFmpeg-LICENSE.txt', 'licenses\FluentSystemIcons-LICENSE.txt'
           foreach ($f in $expected) {
             if (-not (Test-Path (Join-Path $dir $f))) { throw "missing after install: $f" }
           }

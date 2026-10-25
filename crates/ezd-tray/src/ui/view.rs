@@ -2,12 +2,14 @@
 //! the configuration and records what the user asked for as [`Action`]s. It knows nothing about
 //! the tray or the service, so tests render it with fake state.
 
+use super::glyphs;
 use super::theme::{self, Palette};
+use super::widgets::{self, Tone};
 use crate::config::TrayConfig;
 use crate::menu_model;
 use crate::state::Lifecycle;
 use crate::text;
-use eframe::egui::{self, ComboBox, RichText, Ui};
+use eframe::egui::{self, ComboBox, Margin, RichText, Ui};
 use ezd_host_service::{
     AdbMode, DeviceInfo, DeviceState, HdrChoice, HostStatus, LiveSession, PenChoice,
 };
@@ -156,7 +158,31 @@ impl Section {
             Section::Driver => fl!(l, "section-driver"),
         }
     }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Section::Status => glyphs::PULSE,
+            Section::Display => glyphs::DESKTOP,
+            Section::Input => glyphs::PEN,
+            Section::Connection => glyphs::PLUG_CONNECTED,
+            Section::General => glyphs::SETTINGS,
+            Section::Driver => glyphs::DEVELOPER_BOARD,
+        }
+    }
 }
+
+/// Width of the nav column.
+const NAV_WIDTH: f32 = 200.0;
+/// Widest the content of a page grows.
+const CONTENT_WIDTH: f32 = 640.0;
+/// Space around the content of a page.
+const PAGE_PADDING: i8 = 24;
+/// Space between cards.
+const CARD_GAP: f32 = 12.0;
+/// Width of the drop-down controls of the rows.
+const COMBO_WIDTH: f32 = 130.0;
+/// Narrowest a stat tile gets before the grid drops a column.
+const TILE_MIN_WIDTH: f32 = 140.0;
 
 /// The window's state.
 pub struct SettingsView {
@@ -166,6 +192,36 @@ pub struct SettingsView {
     adapter_text: String,
     adapter_focused: bool,
     gpu_named: bool,
+    advanced_open: bool,
+}
+
+/// One measurement of the stat tile grid.
+struct Tile {
+    icon: &'static str,
+    label: String,
+    value: String,
+    unit: Option<String>,
+}
+
+/// The tone and icon of the status banner.
+fn status_look(life: Lifecycle, status: &HostStatus) -> (Tone, &'static str) {
+    if matches!(life, Lifecycle::Stopping { .. }) {
+        return (Tone::Neutral, glyphs::ARROW_SYNC);
+    }
+    match status {
+        HostStatus::Stopped => (Tone::Neutral, glyphs::STOP),
+        HostStatus::Waiting { devices } => {
+            let any_ready = devices.iter().any(|d| d.state == DeviceState::Ready);
+            let any_unauthorized = devices.iter().any(|d| d.state == DeviceState::Unauthorized);
+            if !any_ready && any_unauthorized {
+                (Tone::Warning, glyphs::WARNING)
+            } else {
+                (Tone::Warning, glyphs::PLUG_DISCONNECTED)
+            }
+        }
+        HostStatus::Streaming(_) => (Tone::Success, glyphs::CHECKMARK_CIRCLE),
+        HostStatus::Error(_) => (Tone::Error, glyphs::ERROR_CIRCLE),
+    }
 }
 
 impl SettingsView {
@@ -174,6 +230,7 @@ impl SettingsView {
             adapter_text: String::new(),
             adapter_focused: false,
             gpu_named: false,
+            advanced_open: false,
             section: Section::default(),
             actions: Vec::new(),
             snap: snap.clone(),
@@ -204,22 +261,34 @@ impl SettingsView {
         let before = self.snap.config.clone();
         let pal = theme::palette_of(ui);
         egui::Panel::left("sections")
-            .exact_size(200.0)
+            .exact_size(NAV_WIDTH)
             .resizable(false)
             .frame(
                 egui::Frame::new()
-                    .fill(pal.surface_container)
-                    .inner_margin(12.0),
+                    .fill(pal.nav_bg)
+                    .inner_margin(Margin::same(12)),
             )
             .show(ui, |ui| self.nav(ui, l, pal));
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(pal.surface).inner_margin(20.0))
+            .frame(egui::Frame::new().fill(pal.window_bg))
             .show(ui, |ui| {
+                if self.section == Section::Display {
+                    // Declared before the scroll area so that it keeps its place at the bottom.
+                    egui::Panel::bottom("apply-footer")
+                        .resizable(false)
+                        .show_separator_line(false)
+                        .frame(egui::Frame::new().fill(pal.window_bg))
+                        .show(ui, |ui| self.footer(ui, l, pal));
+                }
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_max_width(560.0);
-                        self.content(ui, l, pal);
+                        egui::Frame::new()
+                            .inner_margin(Margin::same(PAGE_PADDING))
+                            .show(ui, |ui| {
+                                ui.set_max_width(ui.available_width().min(CONTENT_WIDTH));
+                                self.content(ui, l, pal);
+                            });
                     });
             });
         if self.snap.config != before {
@@ -231,10 +300,24 @@ impl SettingsView {
     fn nav(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.add_space(NAV_INSET);
-            ui.label(RichText::new("ezdisplay").heading().color(pal.primary));
+            ui.add_space(6.0);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 7.0, pal.accent);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                glyphs::DESKTOP,
+                egui::FontId::proportional(18.0),
+                pal.on_accent,
+            );
+            ui.label(
+                RichText::new("ezdisplay")
+                    .size(18.0)
+                    .strong()
+                    .color(pal.text),
+            );
         });
-        ui.add_space(12.0);
+        ui.add_space(16.0);
         let mut sections = vec![
             Section::Status,
             Section::Display,
@@ -247,38 +330,21 @@ impl SettingsView {
         }
         for s in sections {
             let selected = self.section == s;
-            let text = RichText::new(s.title(l)).size(15.0);
-            let size = egui::vec2(ui.available_width(), 34.0);
-            // egui places a button's label by the layout it is in: start of the row, centred
-            // vertically.
-            let r = ui
-                .allocate_ui_with_layout(
-                    size,
-                    egui::Layout::left_to_right(egui::Align::Center)
-                        .with_main_align(egui::Align::Min),
-                    |ui| {
-                        ui.spacing_mut().button_padding.x = NAV_INSET;
-                        ui.add(
-                            egui::Button::selectable(selected, text)
-                                .fill(if selected {
-                                    pal.primary_container
-                                } else {
-                                    egui::Color32::TRANSPARENT
-                                })
-                                .min_size(size),
-                        )
-                    },
-                )
-                .inner;
-            if r.clicked() {
+            if widgets::nav_item(ui, pal, s.icon(), &s.title(l), selected).clicked() {
                 self.section = s;
             }
+            ui.add_space(2.0);
         }
     }
 
     fn content(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette) {
-        ui.heading(self.section.title(l));
-        ui.add_space(8.0);
+        ui.label(
+            RichText::new(self.section.title(l))
+                .size(26.0)
+                .strong()
+                .color(pal.text),
+        );
+        ui.add_space(16.0);
         match self.section {
             Section::Status => self.status(ui, l, pal),
             Section::Display => self.display(ui, l, pal),
@@ -293,339 +359,468 @@ impl SettingsView {
 
     fn status(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette) {
         let line = text::status_line(l, self.snap.lifecycle, &self.snap.status);
-        let is_error = matches!(self.snap.status, HostStatus::Error(_));
-        let rich = RichText::new(line).size(17.0).strong();
-        ui.label(if is_error {
-            rich.color(pal.error)
-        } else {
-            rich
-        });
-        ui.add_space(8.0);
-
+        let (tone, icon) = status_look(self.snap.lifecycle, &self.snap.status);
         let starts = !self.snap.lifecycle.wants_running();
         let label = if starts {
             fl!(l, "menu-start")
         } else {
             fl!(l, "menu-stop")
         };
-        let clicked = if starts {
-            primary_button(ui, pal, &label)
-        } else {
-            tonal_button(ui, pal, &label)
+        // "Streaming to <device> · <mode>": the device is the title, the mode the second line.
+        let (title, subtitle) = match (&self.snap.status, line.split_once(" \u{b7} ")) {
+            (HostStatus::Streaming(_), Some((title, mode))) => (title, Some(mode)),
+            _ => (line.as_str(), None),
         };
+        let clicked = widgets::banner(ui, pal, tone, icon, title, subtitle, |ui| {
+            if starts {
+                widgets::primary_button(ui, pal, &label).clicked()
+            } else {
+                widgets::secondary_button(ui, pal, &label).clicked()
+            }
+        })
+        .inner;
         if clicked {
             self.actions
                 .push(if starts { Action::Start } else { Action::Stop });
         }
-        ui.add_space(12.0);
         if self.input_blocked() {
-            ui.label(RichText::new(fl!(l, "input-notice")).color(pal.error));
-            self.enable_input_button(ui, l, pal);
-            ui.add_space(12.0);
+            ui.add_space(CARD_GAP);
+            self.enable_input_banner(ui, l, pal, &fl!(l, "input-notice"));
         }
+        ui.add_space(CARD_GAP);
 
-        match self.snap.status.clone() {
-            HostStatus::Streaming(live) => self.live(ui, l, pal, &live),
-            HostStatus::Waiting { devices } if !devices.is_empty() => {
-                subheading(ui, &fl!(l, "devices-heading"));
-                for d in &devices {
-                    ui.label(device_line(l, d));
+        let (devices, live) = match self.snap.status.clone() {
+            HostStatus::Waiting { devices } => (devices, None),
+            HostStatus::Streaming(live) => (live.devices.clone(), Some(live)),
+            _ => (Vec::new(), None),
+        };
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::TABLET, &fl!(l, "devices-heading"))),
+            |ui| {
+                if devices.is_empty() {
+                    widgets::empty_state(
+                        ui,
+                        pal,
+                        glyphs::PLUG_DISCONNECTED,
+                        &fl!(l, "devices-empty"),
+                        Some(&fl!(l, "devices-none")),
+                    );
                 }
+                for (i, d) in devices.iter().enumerate() {
+                    if i > 0 {
+                        widgets::row_divider(ui, pal);
+                    }
+                    device_row(ui, pal, l, d);
+                }
+            },
+        );
+        ui.add_space(CARD_GAP);
+        match live {
+            Some(live) => self.live(ui, l, pal, &live),
+            None => {
+                section_heading(ui, pal, &fl!(l, "stats-heading"));
+                widgets::card(ui, pal, None, |ui| {
+                    widgets::empty_state(
+                        ui,
+                        pal,
+                        glyphs::DATA_BAR_VERTICAL,
+                        &fl!(l, "stats-empty"),
+                        None,
+                    );
+                });
             }
-            _ => {}
         }
     }
 
     fn live(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette, live: &LiveSession) {
         let s = &live.stream;
-        egui::Grid::new("live")
-            .num_columns(2)
-            .spacing(GRID_SPACING)
-            .show(ui, |ui| {
-                row(ui, pal, &fl!(l, "stat-device"), &live.device_name);
-                let hz = text::decimal(l, text::hz(s.refresh_mhz));
-                let codec = format!("{:?}", s.codec);
-                let mode = if matches!(live.dynamic_range, DynamicRange::Hdr10 { .. }) {
-                    fl!(
-                        l,
-                        "mode-value-hdr",
-                        width = s.width,
-                        height = s.height,
-                        hz = hz,
-                        codec = codec
-                    )
-                } else {
-                    fl!(
-                        l,
-                        "mode-value",
-                        width = s.width,
-                        height = s.height,
-                        hz = hz,
-                        codec = codec
-                    )
-                };
-                row(ui, pal, &fl!(l, "stat-mode"), &mode);
-                if let DynamicRange::SdrToneMapped(reason) = live.dynamic_range {
-                    // The reason is a sentence: wrap it to the window instead of widening the grid.
-                    ui.label(RichText::new(fl!(l, "stat-hdr")).color(pal.on_surface_variant));
-                    let width = ui.available_width().max(160.0);
-                    ui.vertical(|ui| {
-                        ui.set_max_width(width);
-                        ui.add(egui::Label::new(sdr_reason_text(l, reason)).wrap());
-                    });
-                    ui.end_row();
-                }
-                row(
+        let hz = text::decimal(l, text::hz(s.refresh_mhz));
+        let codec = format!("{:?}", s.codec);
+        let mode = if matches!(live.dynamic_range, DynamicRange::Hdr10 { .. }) {
+            fl!(
+                l,
+                "mode-value-hdr",
+                width = s.width,
+                height = s.height,
+                hz = hz,
+                codec = codec
+            )
+        } else {
+            fl!(
+                l,
+                "mode-value",
+                width = s.width,
+                height = s.height,
+                hz = hz,
+                codec = codec
+            )
+        };
+        let mut session = vec![
+            (fl!(l, "stat-device"), live.device_name.clone()),
+            (fl!(l, "stat-mode"), mode),
+        ];
+        if let DynamicRange::SdrToneMapped(reason) = live.dynamic_range {
+            session.push((fl!(l, "stat-hdr"), sdr_reason_text(l, reason)));
+        }
+        session.push((
+            fl!(l, "stat-encoder"),
+            fl!(
+                l,
+                "encoder-value",
+                encoder = s.encoder_name.as_str(),
+                mbps = mbps(l, u64::from(s.bitrate_kbps) * 1000)
+            ),
+        ));
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::VIDEO, &fl!(l, "card-stream"))),
+            |ui| info_rows(ui, pal, &session),
+        );
+        ui.add_space(CARD_GAP);
+
+        section_heading(ui, pal, &fl!(l, "stats-heading"));
+        let Some(stats) = &live.stats else {
+            widgets::card(ui, pal, None, |ui| {
+                widgets::empty_state(
                     ui,
                     pal,
-                    &fl!(l, "stat-encoder"),
-                    &fl!(
-                        l,
-                        "encoder-value",
-                        encoder = s.encoder_name.as_str(),
-                        mbps = mbps(l, u64::from(s.bitrate_kbps) * 1000)
-                    ),
+                    glyphs::CLOCK,
+                    &fl!(l, "stats-waiting"),
+                    Some(&fl!(l, "stats-empty")),
                 );
-
-                // The statistics heading is a row of the same grid.
-                ui.end_row();
-                subheading(ui, &fl!(l, "stats-heading"));
-                ui.end_row();
-                let Some(stats) = &live.stats else {
-                    ui.label(RichText::new(fl!(l, "stats-waiting")).color(pal.on_surface_variant));
-                    ui.end_row();
-                    return;
-                };
-                let secs = stats.window.as_secs_f64();
-                if secs > 0.0 {
-                    row(
-                        ui,
-                        pal,
-                        &fl!(l, "stat-fps"),
-                        &fl!(
-                            l,
-                            "value-fps",
-                            fps = format!("{:.0}", stats.frames as f64 / secs)
-                        ),
-                    );
-                    row(
-                        ui,
-                        pal,
-                        &fl!(l, "stat-bitrate"),
-                        &fl!(
-                            l,
-                            "value-mbps",
-                            mbps = mbps(l, (stats.bytes as f64 * 8.0 / secs) as u64)
-                        ),
-                    );
-                }
-                if let Some(c) = &stats.client {
-                    row(
-                        ui,
-                        pal,
-                        &fl!(l, "stat-e2e"),
-                        &pair(l, Some(c.e2e_us_p50), Some(c.e2e_us_p95)),
-                    );
-                    row(
-                        ui,
-                        pal,
-                        &fl!(l, "stat-decode"),
-                        &pair(l, Some(c.decode_us_p50), Some(c.decode_us_p95)),
-                    );
-                    row(
-                        ui,
-                        pal,
-                        &fl!(l, "stat-drops"),
-                        &fl!(
-                            l,
-                            "value-drops",
-                            dropped = c.frames_dropped,
-                            late = stats.ack_timeouts
-                        ),
-                    );
-                }
-                if stats.transfer_us_p50.is_some() {
-                    row(
-                        ui,
-                        pal,
-                        &fl!(l, "stat-transfer"),
-                        &pair(l, stats.transfer_us_p50, stats.transfer_us_p95),
-                    );
-                }
-                if stats.input_latency_p50_us.is_some() {
-                    row(
-                        ui,
-                        pal,
-                        &fl!(l, "stat-input"),
-                        &pair(l, stats.input_latency_p50_us, stats.input_latency_p95_us),
-                    );
-                }
-                if let Some(rtt) = stats.rtt_us {
-                    row(
-                        ui,
-                        pal,
-                        &fl!(l, "stat-rtt"),
-                        &fl!(l, "value-ms", ms = ms(l, rtt.max(0) as u64)),
-                    );
-                }
             });
+            return;
+        };
+
+        let mut tiles = Vec::new();
+        let mut details = Vec::new();
+        let secs = stats.window.as_secs_f64();
+        if secs > 0.0 {
+            tiles.push(Tile {
+                icon: glyphs::GAUGE,
+                label: fl!(l, "stat-fps"),
+                value: format!("{:.0}", stats.frames as f64 / secs),
+                unit: Some(fl!(l, "unit-fps")),
+            });
+            tiles.push(Tile {
+                icon: glyphs::ARROW_SWAP,
+                label: fl!(l, "stat-bitrate"),
+                value: mbps(l, (stats.bytes as f64 * 8.0 / secs) as u64),
+                unit: Some(fl!(l, "unit-mbps")),
+            });
+        }
+        if let Some(rtt) = stats.rtt_us {
+            tiles.push(Tile {
+                icon: glyphs::TIMER,
+                label: fl!(l, "stat-rtt"),
+                value: ms(l, rtt.max(0) as u64),
+                unit: Some("ms".into()),
+            });
+        }
+        if let Some(c) = &stats.client {
+            details.push((
+                fl!(l, "stat-e2e"),
+                pair(l, Some(c.e2e_us_p50), Some(c.e2e_us_p95)),
+            ));
+            details.push((
+                fl!(l, "stat-decode"),
+                pair(l, Some(c.decode_us_p50), Some(c.decode_us_p95)),
+            ));
+            details.push((
+                fl!(l, "stat-drops"),
+                fl!(
+                    l,
+                    "value-drops",
+                    dropped = c.frames_dropped,
+                    late = stats.ack_timeouts
+                ),
+            ));
+        }
+        if stats.transfer_us_p50.is_some() {
+            details.push((
+                fl!(l, "stat-transfer"),
+                pair(l, stats.transfer_us_p50, stats.transfer_us_p95),
+            ));
+        }
+        if stats.input_latency_p50_us.is_some() {
+            details.push((
+                fl!(l, "stat-input"),
+                pair(l, stats.input_latency_p50_us, stats.input_latency_p95_us),
+            ));
+        }
+        tile_grid(ui, pal, &tiles);
+        if !details.is_empty() {
+            widgets::card(
+                ui,
+                pal,
+                Some((glyphs::DATA_BAR_VERTICAL, &fl!(l, "card-measurements"))),
+                |ui| info_rows(ui, pal, &details),
+            );
+        }
     }
 
     // --------------------------------------------------------------- display
 
     fn display(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette) {
-        hint(ui, pal, &fl!(l, "display-hint"));
         let windows = self.snap.windows;
         let cfg = &mut self.snap.config.service;
 
-        // Scale.
+        // Picture quality: scale, refresh rate, bitrate.
         let current = cfg.scale_permille;
-        labelled(ui, &fl!(l, "setting-scale"), |ui| {
-            ComboBox::from_id_salt("scale")
-                .selected_text(fl!(
-                    l,
-                    "menu-scale-option",
-                    percent = menu_model::percent(current)
-                ))
-                .show_ui(ui, |ui| {
-                    let mut options = menu_model::SCALES.to_vec();
-                    if !options.contains(&current) {
-                        options.push(current);
-                        options.sort_unstable_by(|a, b| b.cmp(a));
-                    }
-                    for p in options {
-                        let text = fl!(l, "menu-scale-option", percent = menu_model::percent(p));
-                        ui.selectable_value(&mut cfg.scale_permille, p, text);
-                    }
-                })
-                .response
-        });
-
-        // Refresh rate.
         let hz_now = cfg.max_refresh_mhz;
-        labelled(ui, &fl!(l, "setting-refresh"), |ui| {
-            ComboBox::from_id_salt("refresh")
-                .selected_text(fl!(l, "value-hz", hz = text::decimal(l, text::hz(hz_now))))
-                .show_ui(ui, |ui| {
-                    let mut options: Vec<u32> = REFRESH_HZ.iter().map(|h| h * 1000).collect();
-                    if !options.contains(&hz_now) {
-                        options.push(hz_now);
-                        options.sort_unstable();
-                    }
-                    for mhz in options {
-                        let text = fl!(l, "value-hz", hz = text::decimal(l, text::hz(mhz)));
-                        ui.selectable_value(&mut cfg.max_refresh_mhz, mhz, text);
-                    }
-                })
-                .response
-        });
-
-        // Bitrate.
         let mut auto = cfg.bitrate_kbps.is_none();
-        labelled(ui, &fl!(l, "setting-bitrate"), |ui| {
-            ui.horizontal(|ui| {
-                let r = ui.checkbox(&mut auto, fl!(l, "bitrate-auto"));
-                if let Some(kbps) = &mut cfg.bitrate_kbps {
-                    let mut m = (*kbps / 1000).max(1);
-                    if ui
-                        .add(egui::DragValue::new(&mut m).range(1..=200).suffix(" Mbps"))
-                        .changed()
-                    {
-                        *kbps = m * 1000;
-                    }
-                }
-                r
-            })
-            .inner
-        });
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::DESKTOP, &fl!(l, "card-picture"))),
+            |ui| {
+                widgets::labelled_row(
+                    ui,
+                    pal,
+                    &fl!(l, "setting-scale"),
+                    Some(&fl!(l, "scale-description")),
+                    None,
+                    |ui| {
+                        ComboBox::from_id_salt("scale")
+                            .width(COMBO_WIDTH)
+                            .selected_text(fl!(
+                                l,
+                                "menu-scale-option",
+                                percent = menu_model::percent(current)
+                            ))
+                            .show_ui(ui, |ui| {
+                                let mut options = menu_model::SCALES.to_vec();
+                                if !options.contains(&current) {
+                                    options.push(current);
+                                    options.sort_unstable_by(|a, b| b.cmp(a));
+                                }
+                                for p in options {
+                                    let text = fl!(
+                                        l,
+                                        "menu-scale-option",
+                                        percent = menu_model::percent(p)
+                                    );
+                                    ui.selectable_value(&mut cfg.scale_permille, p, text);
+                                }
+                            })
+                            .response
+                    },
+                );
+                widgets::row_divider(ui, pal);
+                widgets::labelled_row(
+                    ui,
+                    pal,
+                    &fl!(l, "setting-refresh"),
+                    Some(&fl!(l, "refresh-description")),
+                    None,
+                    |ui| {
+                        ComboBox::from_id_salt("refresh")
+                            .width(COMBO_WIDTH)
+                            .selected_text(fl!(
+                                l,
+                                "value-hz",
+                                hz = text::decimal(l, text::hz(hz_now))
+                            ))
+                            .show_ui(ui, |ui| {
+                                let mut options: Vec<u32> =
+                                    REFRESH_HZ.iter().map(|h| h * 1000).collect();
+                                if !options.contains(&hz_now) {
+                                    options.push(hz_now);
+                                    options.sort_unstable();
+                                }
+                                for mhz in options {
+                                    let text =
+                                        fl!(l, "value-hz", hz = text::decimal(l, text::hz(mhz)));
+                                    ui.selectable_value(&mut cfg.max_refresh_mhz, mhz, text);
+                                }
+                            })
+                            .response
+                    },
+                );
+                widgets::row_divider(ui, pal);
+                widgets::setting_row_wide(
+                    ui,
+                    pal,
+                    &fl!(l, "setting-bitrate"),
+                    Some(&fl!(l, "bitrate-description")),
+                    210.0,
+                    |ui| {
+                        widgets::toggle_switch(ui, pal, &mut auto, &fl!(l, "bitrate-auto"));
+                        widgets::static_text(ui, &fl!(l, "bitrate-auto"), 14.0, pal.text);
+                        if let Some(kbps) = &mut cfg.bitrate_kbps {
+                            let mut m = (*kbps / 1000).max(1);
+                            if ui
+                                .add(egui::DragValue::new(&mut m).range(1..=200).suffix(" Mbps"))
+                                .changed()
+                            {
+                                *kbps = m * 1000;
+                            }
+                        }
+                    },
+                );
+            },
+        );
         if auto && cfg.bitrate_kbps.is_some() {
             cfg.bitrate_kbps = None;
         } else if !auto && cfg.bitrate_kbps.is_none() {
             cfg.bitrate_kbps = Some(40_000);
         }
+        ui.add_space(CARD_GAP);
 
-        // Encoder.
+        // Encoding: encoder, HDR, graphics card.
         let auto_text = fl!(l, "encoder-auto");
-        labelled(ui, &fl!(l, "setting-encoder"), |ui| {
-            ComboBox::from_id_salt("encoder")
-                .selected_text(cfg.encoder.clone().unwrap_or_else(|| auto_text.clone()))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut cfg.encoder, None, auto_text.clone());
-                    let mut names: Vec<String> =
-                        ENCODERS.iter().map(|s| (*s).to_string()).collect();
-                    if let Some(c) = &cfg.encoder
-                        && !names.contains(c)
-                    {
-                        names.push(c.clone());
-                    }
-                    for n in names {
-                        ui.selectable_value(&mut cfg.encoder, Some(n.clone()), n);
-                    }
-                })
-                .response
-        });
-
-        // HDR.
         let hdr_text = |c: HdrChoice| match c {
             HdrChoice::Auto => fl!(l, "hdr-auto"),
             HdrChoice::Off => fl!(l, "hdr-off"),
         };
         let hdr_now = cfg.hdr;
-        labelled(ui, &fl!(l, "setting-hdr"), |ui| {
-            ComboBox::from_id_salt("hdr")
-                .selected_text(hdr_text(hdr_now))
-                .show_ui(ui, |ui| {
-                    for c in [HdrChoice::Auto, HdrChoice::Off] {
-                        ui.selectable_value(&mut cfg.hdr, c, hdr_text(c));
-                    }
-                })
-                .response
-        });
-        if cfg!(target_os = "linux") {
-            hint(ui, pal, &fl!(l, "hdr-hint-linux"));
-        }
-
-        // GPU (Windows).
-        if windows {
-            ui.add_space(6.0);
-            subheading(ui, &fl!(l, "setting-gpu"));
-            let named = self.gpu_named;
-            let prefer = cfg.prefer_dgpu;
-            if ui.radio(!named && !prefer, fl!(l, "gpu-auto")).clicked() {
-                self.gpu_named = false;
-                cfg.prefer_dgpu = false;
-                cfg.adapter = None;
-            }
-            if ui
-                .radio(!named && prefer, fl!(l, "gpu-prefer-dgpu"))
-                .clicked()
-            {
-                self.gpu_named = false;
-                cfg.prefer_dgpu = true;
-                cfg.adapter = None;
-            }
-            if ui.radio(named, fl!(l, "gpu-named")).clicked() {
-                self.gpu_named = true;
-                cfg.prefer_dgpu = false;
-            }
-            if self.gpu_named {
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut self.adapter_text)
-                        .hint_text(fl!(l, "gpu-name-hint"))
-                        .desired_width(280.0),
+        let hdr_description = if cfg!(target_os = "linux") {
+            fl!(l, "hdr-hint-linux")
+        } else {
+            fl!(l, "hdr-description")
+        };
+        let named = self.gpu_named;
+        let prefer = cfg.prefer_dgpu;
+        let gpu_texts = [
+            fl!(l, "gpu-auto"),
+            fl!(l, "gpu-prefer-dgpu"),
+            fl!(l, "gpu-named"),
+        ];
+        let gpu_mode = if named {
+            2
+        } else if prefer {
+            1
+        } else {
+            0
+        };
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::VIDEO, &fl!(l, "card-encoding"))),
+            |ui| {
+                widgets::labelled_row(
+                    ui,
+                    pal,
+                    &fl!(l, "setting-encoder"),
+                    Some(&fl!(l, "encoder-description")),
+                    None,
+                    |ui| {
+                        ComboBox::from_id_salt("encoder")
+                            .width(COMBO_WIDTH)
+                            .selected_text(cfg.encoder.clone().unwrap_or_else(|| auto_text.clone()))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut cfg.encoder, None, auto_text.clone());
+                                let mut names: Vec<String> =
+                                    ENCODERS.iter().map(|s| (*s).to_string()).collect();
+                                if let Some(c) = &cfg.encoder
+                                    && !names.contains(c)
+                                {
+                                    names.push(c.clone());
+                                }
+                                for n in names {
+                                    ui.selectable_value(&mut cfg.encoder, Some(n.clone()), n);
+                                }
+                            })
+                            .response
+                    },
                 );
-                self.adapter_focused = r.has_focus();
-                if r.changed() {
-                    let t = self.adapter_text.trim();
-                    cfg.adapter = (!t.is_empty()).then(|| t.to_string());
+                widgets::row_divider(ui, pal);
+                widgets::labelled_row(
+                    ui,
+                    pal,
+                    &fl!(l, "setting-hdr"),
+                    Some(&hdr_description),
+                    None,
+                    |ui| {
+                        ComboBox::from_id_salt("hdr")
+                            .width(COMBO_WIDTH)
+                            .selected_text(hdr_text(hdr_now))
+                            .show_ui(ui, |ui| {
+                                for c in [HdrChoice::Auto, HdrChoice::Off] {
+                                    ui.selectable_value(&mut cfg.hdr, c, hdr_text(c));
+                                }
+                            })
+                            .response
+                    },
+                );
+                if !windows {
+                    return;
                 }
-            }
-        }
+                widgets::row_divider(ui, pal);
+                widgets::labelled_row(
+                    ui,
+                    pal,
+                    &fl!(l, "setting-gpu"),
+                    Some(&fl!(l, "gpu-description")),
+                    None,
+                    |ui| {
+                        ComboBox::from_id_salt("gpu")
+                            .width(COMBO_WIDTH)
+                            .selected_text(gpu_texts[gpu_mode].clone())
+                            .show_ui(ui, |ui| {
+                                if ui.selectable_label(gpu_mode == 0, &gpu_texts[0]).clicked() {
+                                    self.gpu_named = false;
+                                    cfg.prefer_dgpu = false;
+                                    cfg.adapter = None;
+                                }
+                                if ui.selectable_label(gpu_mode == 1, &gpu_texts[1]).clicked() {
+                                    self.gpu_named = false;
+                                    cfg.prefer_dgpu = true;
+                                    cfg.adapter = None;
+                                }
+                                if ui.selectable_label(gpu_mode == 2, &gpu_texts[2]).clicked() {
+                                    self.gpu_named = true;
+                                    cfg.prefer_dgpu = false;
+                                }
+                            })
+                            .response
+                    },
+                );
+                if self.gpu_named {
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut self.adapter_text)
+                            .hint_text(fl!(l, "gpu-name-hint"))
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(12.0);
+                    self.adapter_focused = r.has_focus();
+                    if r.changed() {
+                        let t = self.adapter_text.trim();
+                        cfg.adapter = (!t.is_empty()).then(|| t.to_string());
+                    }
+                }
+            },
+        );
+    }
 
-        ui.add_space(14.0);
+    /// The bar below the Display page: what applying means and the button.
+    fn footer(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette) {
         let streaming = matches!(self.snap.status, HostStatus::Streaming(_));
-        let apply = ui.add_enabled(streaming, egui::Button::new(fl!(l, "apply-now")));
-        if apply.clicked() {
+        let mut apply = false;
+        widgets::footer_bar(ui, pal, |ui| {
+            apply = ui
+                .add_enabled_ui(streaming, |ui| {
+                    widgets::primary_button(ui, pal, &fl!(l, "apply-now")).clicked()
+                })
+                .inner;
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                // Keep clear of the button.
+                ui.set_max_width((ui.available_width() - 12.0).max(80.0));
+                // A row does not wrap its labels unless told to.
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(fl!(l, "display-hint"))
+                            .size(11.0)
+                            .color(pal.text_secondary),
+                    )
+                    .wrap(),
+                );
+            });
+        });
+        if apply {
             self.actions.push(Action::ApplyNow);
         }
     }
@@ -637,36 +832,52 @@ impl SettingsView {
         self.snap.config.service.input && self.snap.input_access != InputAccess::Ok
     }
 
-    /// The "Enable input" button and the outcome of the last attempt.
-    fn enable_input_button(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette) {
-        let running = self.snap.input_fix == InputFixState::Running;
-        if primary_button_enabled(ui, pal, &fl!(l, "input-enable"), !running) {
-            self.actions.push(Action::EnableInput);
-        }
+    /// What happened to the last "Enable input" attempt, if there is something to say.
+    fn input_fix_message(&self, l: &FluentLanguageLoader) -> Option<String> {
         match &self.snap.input_fix {
-            InputFixState::Idle | InputFixState::Done => {}
-            InputFixState::Running => {
-                ui.label(fl!(l, "input-enable-running"));
-            }
-            InputFixState::Cancelled => {
-                ui.label(fl!(l, "input-enable-cancelled"));
-            }
-            InputFixState::NoAgent => {
-                ui.colored_label(pal.error, fl!(l, "input-enable-no-agent"));
-            }
-            InputFixState::StillDenied => {
-                ui.colored_label(pal.error, fl!(l, "input-enable-still-denied"));
-            }
+            InputFixState::Idle | InputFixState::Done => None,
+            InputFixState::Running => Some(fl!(l, "input-enable-running")),
+            InputFixState::Cancelled => Some(fl!(l, "input-enable-cancelled")),
+            InputFixState::NoAgent => Some(fl!(l, "input-enable-no-agent")),
+            InputFixState::StillDenied => Some(fl!(l, "input-enable-still-denied")),
             InputFixState::Failed(code) => {
                 let code = i64::from(*code);
-                ui.colored_label(pal.error, fl!(l, "input-enable-failed", code = code));
+                Some(fl!(l, "input-enable-failed", code = code))
             }
             InputFixState::Error(reason) => {
-                ui.colored_label(
-                    pal.error,
-                    fl!(l, "input-enable-error", reason = reason.as_str()),
-                );
+                Some(fl!(l, "input-enable-error", reason = reason.as_str()))
             }
+        }
+    }
+
+    /// The warning with the "Enable input" button; the outcome of the last attempt is its second
+    /// line.
+    fn enable_input_banner(
+        &mut self,
+        ui: &mut Ui,
+        l: &FluentLanguageLoader,
+        pal: Palette,
+        title: &str,
+    ) {
+        let running = self.snap.input_fix == InputFixState::Running;
+        let message = self.input_fix_message(l);
+        let clicked = widgets::banner(
+            ui,
+            pal,
+            Tone::Warning,
+            glyphs::WARNING,
+            title,
+            message.as_deref(),
+            |ui| {
+                ui.add_enabled_ui(!running, |ui| {
+                    widgets::primary_button(ui, pal, &fl!(l, "input-enable")).clicked()
+                })
+                .inner
+            },
+        )
+        .inner;
+        if clicked {
+            self.actions.push(Action::EnableInput);
         }
     }
 
@@ -677,148 +888,243 @@ impl SettingsView {
             } else {
                 fl!(l, "input-permission-denied")
             };
-            egui::Frame::new()
-                .fill(pal.surface_container)
-                .corner_radius(12.0)
-                .inner_margin(12.0)
-                .show(ui, |ui| {
-                    ui.label(RichText::new(text).color(pal.error));
-                    ui.add_space(6.0);
-                    self.enable_input_button(ui, l, pal);
-                });
-            ui.add_space(12.0);
+            self.enable_input_banner(ui, l, pal, &text);
+            ui.add_space(CARD_GAP);
         } else if self.snap.input_fix == InputFixState::Done {
-            ui.label(fl!(l, "input-enable-done"));
-            ui.add_space(8.0);
+            widgets::banner(
+                ui,
+                pal,
+                Tone::Success,
+                glyphs::CHECKMARK_CIRCLE,
+                &fl!(l, "input-enable-done"),
+                None,
+                |_| {},
+            );
+            ui.add_space(CARD_GAP);
         }
         let cfg = &mut self.snap.config.service;
-        ui.checkbox(&mut cfg.input, fl!(l, "input-enabled"));
-        let selected = match cfg.pen_mode {
-            PenChoice::Tablet => fl!(l, "pen-tablet"),
-            PenChoice::Mouse => fl!(l, "pen-mouse"),
-        };
-        ui.add_enabled_ui(cfg.input, |ui| {
-            labelled(ui, &fl!(l, "setting-pen"), |ui| {
-                ComboBox::from_id_salt("pen-mode")
-                    .selected_text(selected)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut cfg.pen_mode,
-                            PenChoice::Tablet,
-                            fl!(l, "pen-tablet"),
-                        );
-                        ui.selectable_value(
-                            &mut cfg.pen_mode,
-                            PenChoice::Mouse,
-                            fl!(l, "pen-mouse"),
-                        );
-                    })
-                    .response
+        let tablet = fl!(l, "pen-tablet");
+        let mouse = fl!(l, "pen-mouse");
+        let pen_options = [
+            (PenChoice::Tablet, tablet.as_str()),
+            (PenChoice::Mouse, mouse.as_str()),
+        ];
+        let pen_width = widgets::segmented_width(ui, &[tablet.as_str(), mouse.as_str()]);
+        widgets::card(ui, pal, None, |ui| {
+            widgets::toggle_row(
+                ui,
+                pal,
+                &fl!(l, "input-enabled"),
+                Some(&fl!(l, "input-description")),
+                &mut cfg.input,
+            );
+            widgets::row_divider(ui, pal);
+            ui.add_enabled_ui(cfg.input, |ui| {
+                widgets::setting_row_wide(
+                    ui,
+                    pal,
+                    &fl!(l, "setting-pen"),
+                    Some(&fl!(l, "pen-description")),
+                    pen_width,
+                    |ui| widgets::segmented(ui, pal, &mut cfg.pen_mode, &pen_options),
+                );
             });
+            widgets::row_divider(ui, pal);
+            widgets::toggle_row(
+                ui,
+                pal,
+                &fl!(l, "telemetry"),
+                Some(&fl!(l, "telemetry-description")),
+                &mut cfg.telemetry,
+            );
         });
-        ui.checkbox(&mut cfg.telemetry, fl!(l, "telemetry"));
     }
 
     // ------------------------------------------------------------ connection
 
     fn connection(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette) {
-        // adb.
-        egui::Grid::new("adb-info")
-            .num_columns(2)
-            .spacing(GRID_SPACING)
-            .show(ui, |ui| {
-                let value = match &self.snap.adb.path {
-                    Some(p) if self.snap.adb.bundled => {
-                        fl!(l, "adb-bundled", path = p.display().to_string())
-                    }
-                    Some(p) => fl!(l, "adb-sdk", path = p.display().to_string()),
-                    None => fl!(l, "error-adb-not-found"),
-                };
-                row(ui, pal, "adb", &value);
-            });
-        ui.add_space(10.0);
-
-        // Devices.
+        let adb_value = match &self.snap.adb.path {
+            Some(p) if self.snap.adb.bundled => {
+                fl!(l, "adb-bundled", path = p.display().to_string())
+            }
+            Some(p) => fl!(l, "adb-sdk", path = p.display().to_string()),
+            None => fl!(l, "error-adb-not-found"),
+        };
         let devices: Vec<DeviceInfo> = match &self.snap.status {
             HostStatus::Waiting { devices } => devices.clone(),
             HostStatus::Streaming(s) => s.devices.clone(),
             _ => Vec::new(),
         };
-        subheading(ui, &fl!(l, "devices-count", count = devices.len()));
-        if devices.is_empty() {
-            ui.label(RichText::new(fl!(l, "devices-none")).color(pal.on_surface_variant));
-            if self.snap.windows && ui.link(fl!(l, "samsung-driver")).clicked() {
-                self.actions
-                    .push(Action::OpenUrl(SAMSUNG_DRIVER_URL.into()));
-            }
-        }
-        for d in &devices {
-            ui.label(device_line(l, d));
-        }
-        ui.add_space(10.0);
-
+        let windows = self.snap.windows;
         let cfg = &mut self.snap.config.service;
-        ui.checkbox(&mut cfg.open_app_on_connect, fl!(l, "open-app"));
-        let adb_off = cfg.adb == AdbMode::Off;
-        let mut use_adb = !adb_off;
-        if ui.checkbox(&mut use_adb, fl!(l, "use-adb")).changed() {
-            cfg.adb = if use_adb { AdbMode::Auto } else { AdbMode::Off };
-        }
 
-        ui.add_space(8.0);
-        egui::CollapsingHeader::new(fl!(l, "advanced")).show(ui, |ui| {
-            let mut port = cfg.listen.port();
-            labelled(ui, &fl!(l, "setting-port"), |ui| {
-                ui.add(egui::DragValue::new(&mut port).range(1024..=65535))
-            });
-            if port != cfg.listen.port() {
-                cfg.listen.set_port(port);
-            }
-            hint(ui, pal, &fl!(l, "port-hint"));
-        });
+        // Android Debug Bridge.
+        let mut use_adb = cfg.adb != AdbMode::Off;
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::PLUG_CONNECTED, &fl!(l, "card-adb"))),
+            |ui| {
+                widgets::info_row(ui, pal, "adb", &adb_value);
+                widgets::row_divider(ui, pal);
+                if widgets::toggle_row(
+                    ui,
+                    pal,
+                    &fl!(l, "use-adb"),
+                    Some(&fl!(l, "use-adb-description")),
+                    &mut use_adb,
+                )
+                .changed()
+                {
+                    cfg.adb = if use_adb { AdbMode::Auto } else { AdbMode::Off };
+                }
+                widgets::row_divider(ui, pal);
+                widgets::toggle_row(
+                    ui,
+                    pal,
+                    &fl!(l, "open-app"),
+                    None,
+                    &mut cfg.open_app_on_connect,
+                );
+            },
+        );
+        ui.add_space(CARD_GAP);
+
+        // Devices.
+        let actions = &mut self.actions;
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::TABLET, &fl!(l, "devices-heading"))),
+            |ui| {
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(fl!(l, "devices-count", count = devices.len()))
+                        .size(13.0)
+                        .color(pal.text_secondary),
+                );
+                if devices.is_empty() {
+                    widgets::empty_state(
+                        ui,
+                        pal,
+                        glyphs::PLUG_DISCONNECTED,
+                        &fl!(l, "devices-empty"),
+                        Some(&fl!(l, "devices-none")),
+                    );
+                    if windows && ui.link(fl!(l, "samsung-driver")).clicked() {
+                        actions.push(Action::OpenUrl(SAMSUNG_DRIVER_URL.into()));
+                    }
+                }
+                for d in &devices {
+                    widgets::row_divider(ui, pal);
+                    device_row(ui, pal, l, d);
+                }
+            },
+        );
+        ui.add_space(CARD_GAP);
+
+        // Advanced.
+        widgets::disclosure(
+            ui,
+            pal,
+            glyphs::SETTINGS,
+            &fl!(l, "advanced"),
+            &mut self.advanced_open,
+            |ui| {
+                let mut port = cfg.listen.port();
+                widgets::labelled_row(
+                    ui,
+                    pal,
+                    &fl!(l, "setting-port"),
+                    Some(&fl!(l, "port-hint")),
+                    None,
+                    |ui| ui.add(egui::DragValue::new(&mut port).range(1024..=65535)),
+                );
+                if port != cfg.listen.port() {
+                    cfg.listen.set_port(port);
+                }
+            },
+        );
     }
 
     // --------------------------------------------------------------- general
 
     fn general(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette) {
         let mut autostart = self.snap.autostart;
-        if ui
-            .checkbox(&mut autostart, fl!(l, "menu-autostart"))
-            .changed()
-        {
-            self.snap.autostart = autostart;
-            self.actions.push(Action::SetAutostart(autostart));
-        }
-        ui.checkbox(
-            &mut self.snap.config.start_on_launch,
-            fl!(l, "start-on-launch"),
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::PLAY, &fl!(l, "card-startup"))),
+            |ui| {
+                if widgets::toggle_row(
+                    ui,
+                    pal,
+                    &fl!(l, "menu-autostart"),
+                    Some(&fl!(l, "autostart-description")),
+                    &mut autostart,
+                )
+                .changed()
+                {
+                    self.snap.autostart = autostart;
+                    self.actions.push(Action::SetAutostart(autostart));
+                }
+                widgets::row_divider(ui, pal);
+                widgets::toggle_row(
+                    ui,
+                    pal,
+                    &fl!(l, "start-on-launch"),
+                    Some(&fl!(l, "start-on-launch-description")),
+                    &mut self.snap.config.start_on_launch,
+                );
+            },
         );
-        ui.add_space(10.0);
-        if ui.button(fl!(l, "menu-logs")).clicked() {
-            self.actions.push(Action::OpenLogs);
-        }
-        ui.add_space(14.0);
-        ui.label(
-            RichText::new(fl!(
-                l,
-                "about-version",
-                version = self.snap.version.as_str()
-            ))
-            .strong(),
+        ui.add_space(CARD_GAP);
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::FOLDER_OPEN, &fl!(l, "card-diagnostics"))),
+            |ui| {
+                let logs = fl!(l, "menu-logs");
+                widgets::setting_row_wide(
+                    ui,
+                    pal,
+                    &fl!(l, "logs-title"),
+                    Some(&fl!(l, "logs-description")),
+                    widgets::button_width(ui, &logs),
+                    |ui| {
+                        if widgets::secondary_button(ui, pal, &logs).clicked() {
+                            self.actions.push(Action::OpenLogs);
+                        }
+                    },
+                );
+            },
         );
-        ui.horizontal(|ui| {
-            if ui.button(fl!(l, "licenses")).clicked() {
-                self.actions.push(if self.snap.has_licenses_dir {
-                    Action::OpenLicenses
-                } else {
-                    Action::OpenUrl(REPOSITORY_URL.into())
-                });
-            }
-            if ui.link(REPOSITORY_URL).clicked() {
-                self.actions.push(Action::OpenUrl(REPOSITORY_URL.into()));
-            }
+        ui.add_space(CARD_GAP);
+        widgets::card(ui, pal, Some((glyphs::INFO, &fl!(l, "card-about"))), |ui| {
+            let licenses = fl!(l, "licenses");
+            widgets::setting_row_wide(
+                ui,
+                pal,
+                &fl!(l, "about-version", version = self.snap.version.as_str()),
+                Some(&fl!(l, "about-description")),
+                widgets::button_width(ui, &licenses),
+                |ui| {
+                    if widgets::secondary_button(ui, pal, &licenses).clicked() {
+                        self.actions.push(if self.snap.has_licenses_dir {
+                            Action::OpenLicenses
+                        } else {
+                            Action::OpenUrl(REPOSITORY_URL.into())
+                        });
+                    }
+                },
+            );
+            widgets::row_divider(ui, pal);
+            widgets::setting_row(ui, pal, &fl!(l, "repository"), None, |ui| {
+                if ui.link(REPOSITORY_URL).clicked() {
+                    self.actions.push(Action::OpenUrl(REPOSITORY_URL.into()));
+                }
+            });
         });
-        let _ = pal;
     }
 
     // ---------------------------------------------------------------- driver
@@ -827,140 +1133,164 @@ impl SettingsView {
         let Some(info) = self.snap.vdd.clone() else {
             return;
         };
-        egui::Grid::new("driver-info")
-            .num_columns(2)
-            .spacing(GRID_SPACING)
-            .show(ui, |ui| {
-                let state = if info.present {
-                    fl!(l, "driver-installed")
-                } else {
-                    fl!(l, "driver-missing")
-                };
-                row(ui, pal, &fl!(l, "driver-state"), &state);
-                let owner = if !info.present {
-                    fl!(l, "driver-owner-none")
-                } else if info.owned {
-                    fl!(l, "driver-owner-ours")
-                } else {
-                    fl!(l, "driver-owner-other")
-                };
-                row(ui, pal, &fl!(l, "driver-owner"), &owner);
-                if let Some(dir) = &info.driver_dir {
-                    row(ui, pal, &fl!(l, "driver-folder"), dir);
-                }
-            });
-        ui.add_space(12.0);
-        hint(ui, pal, &fl!(l, "driver-hint"));
-        let running = self.snap.repair == RepairState::Running;
-        if ui
-            .add_enabled(!running, egui::Button::new(fl!(l, "driver-repair")))
-            .clicked()
-        {
-            self.actions.push(Action::Repair);
+        let state = if info.present {
+            fl!(l, "driver-installed")
+        } else {
+            fl!(l, "driver-missing")
+        };
+        let owner = if !info.present {
+            fl!(l, "driver-owner-none")
+        } else if info.owned {
+            fl!(l, "driver-owner-ours")
+        } else {
+            fl!(l, "driver-owner-other")
+        };
+        let mut rows = vec![
+            (fl!(l, "driver-state"), state),
+            (fl!(l, "driver-owner"), owner),
+        ];
+        if let Some(dir) = &info.driver_dir {
+            rows.push((fl!(l, "driver-folder"), dir.clone()));
         }
-        ui.add_space(6.0);
-        match &self.snap.repair {
-            RepairState::Idle => {}
-            RepairState::Running => {
-                ui.label(fl!(l, "repair-running"));
-            }
-            RepairState::Cancelled => {
-                ui.label(fl!(l, "repair-cancelled"));
-            }
-            RepairState::Finished(0) => {
-                ui.label(fl!(l, "repair-done"));
-            }
-            RepairState::Finished(EXIT_REBOOT_REQUIRED) => {
-                ui.label(fl!(l, "repair-restart"));
-            }
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::DEVELOPER_BOARD, &fl!(l, "card-driver"))),
+            |ui| info_rows(ui, pal, &rows),
+        );
+        ui.add_space(CARD_GAP);
+
+        let running = self.snap.repair == RepairState::Running;
+        let result = match &self.snap.repair {
+            RepairState::Idle => None,
+            RepairState::Running => Some((fl!(l, "repair-running"), false)),
+            RepairState::Cancelled => Some((fl!(l, "repair-cancelled"), false)),
+            RepairState::Finished(0) => Some((fl!(l, "repair-done"), false)),
+            RepairState::Finished(EXIT_REBOOT_REQUIRED) => Some((fl!(l, "repair-restart"), false)),
             RepairState::Finished(code) => {
                 let code = i64::from(*code);
-                ui.colored_label(pal.error, fl!(l, "repair-failed", code = code));
-                ui.label(fl!(
-                    l,
-                    "repair-log",
-                    path = r"%ProgramData%\ezdisplay\logs\vdd-install.log"
-                ));
+                Some((fl!(l, "repair-failed", code = code), true))
             }
             RepairState::Failed(reason) => {
-                ui.colored_label(pal.error, fl!(l, "repair-error", reason = reason.as_str()));
+                Some((fl!(l, "repair-error", reason = reason.as_str()), true))
             }
-        }
+        };
+        let log_line = matches!(
+            self.snap.repair,
+            RepairState::Finished(code) if code != 0 && code != EXIT_REBOOT_REQUIRED
+        )
+        .then(|| {
+            fl!(
+                l,
+                "repair-log",
+                path = r"%ProgramData%\ezdisplay\logs\vdd-install.log"
+            )
+        });
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::WRENCH, &fl!(l, "card-maintenance"))),
+            |ui| {
+                let repair = fl!(l, "driver-repair");
+                widgets::setting_row_wide(
+                    ui,
+                    pal,
+                    &fl!(l, "driver-reinstall"),
+                    Some(&fl!(l, "driver-hint")),
+                    widgets::button_width(ui, &repair),
+                    |ui| {
+                        let r = ui.add_enabled_ui(!running, |ui| {
+                            widgets::primary_button(ui, pal, &repair).clicked()
+                        });
+                        if r.inner {
+                            self.actions.push(Action::Repair);
+                        }
+                    },
+                );
+                if let Some((text, failed)) = result {
+                    widgets::row_divider(ui, pal);
+                    ui.add_space(10.0);
+                    let (icon, color) = if failed {
+                        (glyphs::ERROR_CIRCLE, pal.error)
+                    } else if running {
+                        (glyphs::ARROW_SYNC, pal.text_secondary)
+                    } else {
+                        (glyphs::CHECKMARK_CIRCLE, pal.success)
+                    };
+                    ui.horizontal_top(|ui| {
+                        ui.label(RichText::new(icon).size(18.0).color(color));
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(text).size(14.0).color(pal.text));
+                            if let Some(line) = &log_line {
+                                ui.label(RichText::new(line).size(12.0).color(pal.text_secondary));
+                            }
+                        });
+                    });
+                    ui.add_space(10.0);
+                }
+            },
+        );
     }
 }
 
 // ------------------------------------------------------------------- helpers
 
-/// Left inset of the sidebar title and item labels.
-const NAV_INSET: f32 = 12.0;
-
-/// Column gap and row gap of the two-column grids.
-const GRID_SPACING: [f32; 2] = [28.0, 6.0];
-
-/// A filled button for the main action of a page.
-fn primary_button(ui: &mut Ui, pal: Palette, text: &str) -> bool {
-    primary_button_enabled(ui, pal, text, true)
-}
-
-fn primary_button_enabled(ui: &mut Ui, pal: Palette, text: &str, enabled: bool) -> bool {
-    action_button(
-        ui,
-        RichText::new(text).color(pal.on_primary),
-        pal.primary,
-        enabled,
-    )
-}
-
-/// A tonal button: the main action of a page when it is not a call to act, such as Stop.
-fn tonal_button(ui: &mut Ui, pal: Palette, text: &str) -> bool {
-    action_button(
-        ui,
-        RichText::new(text).color(pal.on_surface),
-        pal.primary_container,
-        true,
-    )
-}
-
-fn action_button(ui: &mut Ui, text: RichText, fill: egui::Color32, enabled: bool) -> bool {
-    // In a row, so the label is centred in the button's minimum width.
-    ui.horizontal(|ui| {
-        ui.add_enabled(
-            enabled,
-            egui::Button::new(text.strong())
-                .fill(fill)
-                .min_size(egui::vec2(96.0, 32.0)),
-        )
-    })
-    .inner
-    .clicked()
-}
-
-/// Heading of a group inside a page.
-fn subheading(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(16.0).strong());
-}
-
-/// Secondary explanation text.
-fn hint(ui: &mut Ui, pal: Palette, text: &str) {
-    ui.label(RichText::new(text).color(pal.on_surface_variant));
+/// Heading of a group of cards inside a page.
+fn section_heading(ui: &mut Ui, pal: Palette, text: &str) {
+    ui.label(RichText::new(text).size(17.0).strong().color(pal.text));
     ui.add_space(8.0);
 }
 
-/// `label  [widget]` on one line, with the label tied to the widget for screen readers.
-fn labelled(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> egui::Response) {
-    ui.horizontal(|ui| {
-        let name = ui.label(label);
-        let r = add(ui);
-        r.labelled_by(name.id);
-    });
-    ui.add_space(4.0);
+/// Read-only lines separated by dividers.
+fn info_rows(ui: &mut Ui, pal: Palette, rows: &[(String, String)]) {
+    for (i, (name, value)) in rows.iter().enumerate() {
+        if i > 0 {
+            widgets::row_divider(ui, pal);
+        }
+        widgets::info_row(ui, pal, name, value);
+    }
 }
 
-/// One line of a two-column grid.
-fn row(ui: &mut Ui, pal: Palette, name: &str, value: &str) {
-    ui.label(RichText::new(name).color(pal.on_surface_variant));
-    ui.label(value);
-    ui.end_row();
+/// An adb device: an icon coloured by its state and the line describing it.
+fn device_row(ui: &mut Ui, pal: Palette, l: &FluentLanguageLoader, d: &DeviceInfo) {
+    let color = match d.state {
+        DeviceState::Ready => pal.success,
+        DeviceState::Unauthorized => pal.warning,
+        _ => pal.text_secondary,
+    };
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(glyphs::TABLET).size(20.0).color(color));
+        ui.label(RichText::new(device_line(l, d)).size(14.0).color(pal.text));
+    });
+    ui.add_space(10.0);
+}
+
+/// Stat tiles in as many columns (up to three) as fit.
+fn tile_grid(ui: &mut Ui, pal: Palette, tiles: &[Tile]) {
+    if tiles.is_empty() {
+        return;
+    }
+    let width = ui.available_width();
+    let columns = (((width + CARD_GAP) / (TILE_MIN_WIDTH + CARD_GAP)) as usize).clamp(1, 3);
+    let tile_width = (width - CARD_GAP * (columns - 1) as f32) / columns as f32;
+    for row in tiles.chunks(columns) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = CARD_GAP;
+            for t in row {
+                widgets::stat_tile(
+                    ui,
+                    pal,
+                    t.icon,
+                    &t.label,
+                    &t.value,
+                    t.unit.as_deref(),
+                    tile_width,
+                );
+            }
+        });
+        ui.add_space(CARD_GAP);
+    }
 }
 
 /// Why an HDR source is streamed as converted SDR.

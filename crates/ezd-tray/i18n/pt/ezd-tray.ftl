@@ -56,8 +56,8 @@ stat-drops = Quadros descartados
 stat-rtt = Ida e volta
 mode-value = { $width }×{ $height } a { $hz } Hz, { $codec }
 encoder-value = { $encoder } a { $mbps } Mbps
-value-fps = { $fps } fps
-value-mbps = { $mbps } Mbps
+unit-fps = fps
+unit-mbps = Mbps
 value-hz = { $hz } Hz
 value-ms = { $ms } ms
 value-ms-pair = { $p50 } ms (percentil 95: { $p95 } ms)
@@ -95,7 +95,7 @@ hdr-reason-no-main10-encoder = Esta placa de vídeo não consegue codificar HEVC
 ## Janela: entrada
 input-enabled = Enviar a entrada por toque e caneta para este computador
 setting-pen = A caneta funciona como
-pen-tablet = Mesa digitalizadora (pressão e inclinação)
+pen-tablet = Mesa digitalizadora
 pen-mouse = Ponteiro de mouse
 telemetry = Mostrar a sobreposição de telemetria no tablet
 input-permission-denied = A entrada por toque e caneta precisa de permissão para criar dispositivos de entrada (/dev/uinput).
@@ -118,7 +118,7 @@ devices-count =
         [one] { $count } dispositivo
        *[other] { $count } dispositivos
     }
-devices-none = Nenhum dispositivo listado. Conecte o tablet com um cabo USB e ative a depuração USB.
+devices-none = Conecte o tablet com um cabo USB e ative a depuração USB.
 samsung-driver = Driver USB Android da Samsung
 device-line = { $name } ({ $serial }): { $state }
 device-ready = pronto
@@ -153,3 +153,34 @@ repair-restart = Reinicie o Windows para concluir a instalação do driver.
 repair-failed = O reparo falhou (código { $code }).
 repair-log = Detalhes: { $path }
 repair-error = Não foi possível executar o reparo: { $reason }
+
+## Window: cards and row descriptions
+devices-empty = Nenhum dispositivo detectado
+stats-empty = As estatísticas aparecem quando a transmissão começa
+card-stream = Transmissão
+card-measurements = Medições
+card-picture = Qualidade de imagem
+card-encoding = Codificação
+card-adb = Android Debug Bridge
+card-startup = Inicialização
+card-diagnostics = Diagnóstico
+card-about = Sobre
+card-driver = Estado do driver
+card-maintenance = Manutenção
+scale-description = Valores menores enviam menos pixels para o tablet.
+refresh-description = Limita a taxa de atualização oferecida ao tablet.
+bitrate-description = Qualidade do vídeo da transmissão. No automático, o ezdisplay escolhe para você.
+encoder-description = O codificador de vídeo que comprime a transmissão.
+hdr-description = Envia HDR10 quando a tela do tablet oferece suporte.
+gpu-description = A placa de vídeo que captura e codifica a tela.
+input-description = Use o tablet como tela de toque e caneta neste computador.
+pen-description = Uma mesa digitalizadora adiciona pressão e inclinação.
+telemetry-description = Mostra números de desempenho ao vivo no tablet durante a transmissão.
+use-adb-description = Encontra tablets com a depuração USB ativada.
+autostart-description = Inicia o ezdisplay quando você entra na sessão.
+start-on-launch-description = Começa a esperar pelo tablet assim que o ezdisplay abre.
+logs-title = Logs
+logs-description = Abre a pasta onde o ezdisplay grava seus logs.
+about-description = Tela USB de código aberto para tablets Android.
+repository = Código-fonte
+driver-reinstall = Reinstalar o driver

@@ -56,8 +56,8 @@ stat-drops = Dropped frames
 stat-rtt = Round trip
 mode-value = { $width }×{ $height } at { $hz } Hz, { $codec }
 encoder-value = { $encoder } at { $mbps } Mbps
-value-fps = { $fps } fps
-value-mbps = { $mbps } Mbps
+unit-fps = fps
+unit-mbps = Mbps
 value-hz = { $hz } Hz
 value-ms = { $ms } ms
 value-ms-pair = { $p50 } ms (95th percentile: { $p95 } ms)
@@ -95,7 +95,7 @@ hdr-reason-no-main10-encoder = This graphics card can't encode 10-bit HEVC; conv
 ## Window: input
 input-enabled = Send touch and pen input to this computer
 setting-pen = Pen acts as
-pen-tablet = Graphics tablet (pressure and tilt)
+pen-tablet = Graphics tablet
 pen-mouse = Mouse pointer
 telemetry = Show the telemetry overlay on the tablet
 input-permission-denied = Touch and pen need permission to create input devices (/dev/uinput).
@@ -118,7 +118,7 @@ devices-count =
         [one] { $count } device
        *[other] { $count } devices
     }
-devices-none = No devices listed. Connect the tablet with a USB cable and turn on USB debugging.
+devices-none = Connect the tablet with a USB cable and turn on USB debugging.
 samsung-driver = Samsung Android USB driver
 device-line = { $name } ({ $serial }): { $state }
 device-ready = ready
@@ -153,3 +153,34 @@ repair-restart = Restart Windows to finish installing the driver.
 repair-failed = The repair failed (code { $code }).
 repair-log = Details: { $path }
 repair-error = The repair could not run: { $reason }
+
+## Window: cards and row descriptions
+devices-empty = No devices detected
+stats-empty = Statistics appear when streaming starts
+card-stream = Stream
+card-measurements = Measurements
+card-picture = Picture quality
+card-encoding = Encoding
+card-adb = Android Debug Bridge
+card-startup = Startup
+card-diagnostics = Diagnostics
+card-about = About
+card-driver = Driver status
+card-maintenance = Maintenance
+scale-description = Lower values send fewer pixels to the tablet.
+refresh-description = Limits the refresh rate offered to the tablet.
+bitrate-description = Video quality of the stream. Automatic picks it for you.
+encoder-description = The video encoder that compresses the stream.
+hdr-description = Sends HDR10 when the tablet's screen supports it.
+gpu-description = The graphics card that captures and encodes the screen.
+input-description = Use the tablet as a touch screen and a pen on this computer.
+pen-description = A graphics tablet adds pressure and tilt.
+telemetry-description = Shows live performance numbers on the tablet while streaming.
+use-adb-description = Finds tablets that have USB debugging turned on.
+autostart-description = Starts ezdisplay when you sign in.
+start-on-launch-description = Starts waiting for your tablet as soon as ezdisplay opens.
+logs-title = Logs
+logs-description = Open the folder where ezdisplay writes its logs.
+about-description = Open-source USB display for Android tablets.
+repository = Source code
+driver-reinstall = Reinstall the driver

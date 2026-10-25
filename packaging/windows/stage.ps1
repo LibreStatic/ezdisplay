@@ -105,6 +105,7 @@ Copy-Required (Join-Path $RepoRoot 'LICENSE-APACHE') (Join-Path $lic 'LICENSE-AP
 Copy-Required (Join-Path $packaging 'licenses\VirtualDisplayDriver-LICENSE.txt') (Join-Path $lic 'VirtualDisplayDriver-LICENSE.txt')
 Copy-Required (Join-Path $packaging 'licenses\nefcon-LICENSE.txt') (Join-Path $lic 'nefcon-LICENSE.txt')
 Copy-Required (Join-Path $packaging 'licenses\FFmpeg-NOTICE.txt') (Join-Path $lic 'FFmpeg-NOTICE.txt')
+Copy-Required (Join-Path $packaging 'licenses\FluentSystemIcons-LICENSE.txt') (Join-Path $lic 'FluentSystemIcons-LICENSE.txt')
 Copy-Required (Join-Path $pt 'platform-tools\NOTICE.txt') (Join-Path $lic 'adb-NOTICE.txt')
 
 Write-Host "Staging folder ready: $OutDir"

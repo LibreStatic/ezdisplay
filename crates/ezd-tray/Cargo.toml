@@ -82,4 +82,5 @@ assets = [
     ["../../packaging/linux/com.librestatic.ezdisplay.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["../../LICENSE-MIT", "usr/share/doc/ezdisplay/", "644"],
     ["../../LICENSE-APACHE", "usr/share/doc/ezdisplay/", "644"],
+    ["../../packaging/windows/licenses/FluentSystemIcons-LICENSE.txt", "usr/share/doc/ezdisplay/", "644"],
 ]

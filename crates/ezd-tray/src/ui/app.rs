@@ -1,7 +1,7 @@
 //! The settings window as an eframe app, wired to the [`Controller`].
 
-use super::theme;
 use super::view::SettingsView;
+use super::{fonts, theme};
 use crate::controller::Controller;
 use crate::icons;
 use eframe::egui;
@@ -66,6 +66,7 @@ pub fn run_settings(controller: &mut Controller) -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| {
             theme::install(&cc.egui_ctx);
+            fonts::install_fonts(&cc.egui_ctx);
             waker.set_context(Some(cc.egui_ctx.clone()));
             Ok(Box::new(SettingsApp {
                 controller,

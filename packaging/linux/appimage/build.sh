@@ -188,6 +188,7 @@ fi
 # Licenses (the app reads them from <exe dir>/licenses).
 L=$APPDIR/usr/bin/licenses
 install -m644 "$REPO/LICENSE-MIT" "$REPO/LICENSE-APACHE" "$L/"
+install -m644 "$REPO/packaging/windows/licenses/FluentSystemIcons-LICENSE.txt" "$L/"
 install -m644 "$SRC/ffmpeg/COPYING.GPLv2" "$SRC/ffmpeg/COPYING.GPLv3" "$SRC/ffmpeg/LICENSE.md" "$L/"
 install -m644 "$SRC/x264/COPYING" "$L/x264-COPYING"
 for pkg in glslang-dev glslang-tools spirv-tools; do

@@ -44,4 +44,6 @@ package() {
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/com.librestatic.ezdisplay.svg"
   install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
   install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+  install -Dm644 packaging/windows/licenses/FluentSystemIcons-LICENSE.txt \
+    "$pkgdir/usr/share/licenses/$pkgname/FluentSystemIcons-LICENSE.txt"
 }
