@@ -52,7 +52,7 @@ and no telemetry, and everything travels through the cable.
 
 ## Status
 
-ezdisplay is in **alpha** ([`v0.1.0-alpha.1`](https://github.com/LibreStatic/ezdisplay/releases)).
+ezdisplay is in **alpha** (see the [releases](https://github.com/LibreStatic/ezdisplay/releases); every change merged to `main` is published as a pre-release).
 Working today, over USB with ADB:
 
 | | Windows | KDE Plasma 6 (Wayland) |
