@@ -118,6 +118,7 @@
     <string name="pair_error_closed">La PC no acepta vinculaciones. Iniciá primero la vinculación en la PC.</string>
     <string name="pair_error_attempts">Demasiados intentos fallidos. Iniciá la vinculación de nuevo en la PC.</string>
     <string name="pair_error_busy">El host está ocupado. Probá de nuevo en un momento.</string>
+    <string name="pair_error_not_paired">La PC olvidó este dispositivo. Vinculalo de nuevo.</string>
     <string name="pair_error_unreachable">No se puede llegar al host. Revisá la dirección y que ambos dispositivos estén en la misma red.</string>
     <string name="pair_error_timeout">El host no respondió a tiempo.</string>
     <string name="pair_error_fingerprint">Este no es el host del código: su huella es distinta.</string>

@@ -65,6 +65,7 @@ fun wifiErrorText(code: String?): Int = when (code) {
     "pairing_closed" -> R.string.pair_error_closed
     "too_many_attempts" -> R.string.pair_error_attempts
     "busy" -> R.string.pair_error_busy
+    "not_paired" -> R.string.pair_error_not_paired
     "unreachable" -> R.string.pair_error_unreachable
     "timeout" -> R.string.pair_error_timeout
     "fingerprint_mismatch" -> R.string.pair_error_fingerprint

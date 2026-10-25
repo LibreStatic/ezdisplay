@@ -118,6 +118,7 @@
     <string name="pair_error_closed">O PC não está aceitando pareamentos. Inicie primeiro o pareamento no PC.</string>
     <string name="pair_error_attempts">Muitas tentativas incorretas. Inicie o pareamento de novo no PC.</string>
     <string name="pair_error_busy">O host está ocupado. Tente novamente em instantes.</string>
+    <string name="pair_error_not_paired">O PC esqueceu este dispositivo. Pareie-o novamente.</string>
     <string name="pair_error_unreachable">Não foi possível alcançar o host. Confira o endereço e se os dois dispositivos estão na mesma rede.</string>
     <string name="pair_error_timeout">O host não respondeu a tempo.</string>
     <string name="pair_error_fingerprint">Este não é o host do código: a impressão digital é diferente.</string>

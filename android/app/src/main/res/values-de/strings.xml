@@ -118,6 +118,7 @@
     <string name="pair_error_closed">Der PC akzeptiert keine Kopplung. Starte zuerst die Kopplung auf dem PC.</string>
     <string name="pair_error_attempts">Zu viele Fehlversuche. Starte die Kopplung auf dem PC neu.</string>
     <string name="pair_error_busy">Der Host ist beschäftigt. Versuche es gleich noch einmal.</string>
+    <string name="pair_error_not_paired">Der PC hat dieses Gerät vergessen. Koppele es erneut.</string>
     <string name="pair_error_unreachable">Der Host ist nicht erreichbar. Prüfe die Adresse und ob beide Geräte im selben Netzwerk sind.</string>
     <string name="pair_error_timeout">Der Host hat nicht rechtzeitig geantwortet.</string>
     <string name="pair_error_fingerprint">Das ist nicht der Host aus dem Code: Der Fingerabdruck weicht ab.</string>

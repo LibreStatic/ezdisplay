@@ -118,6 +118,7 @@
     <string name="pair_error_closed">Le PC n\'accepte pas d\'association. Lancez d\'abord l\'association sur le PC.</string>
     <string name="pair_error_attempts">Trop de tentatives échouées. Relancez l\'association sur le PC.</string>
     <string name="pair_error_busy">L\'hôte est occupé. Réessayez dans un instant.</string>
+    <string name="pair_error_not_paired">Ce PC a oublié cet appareil. Associez-le à nouveau.</string>
     <string name="pair_error_unreachable">Impossible de joindre l\'hôte. Vérifiez l\'adresse et que les deux appareils sont sur le même réseau.</string>
     <string name="pair_error_timeout">L\'hôte n\'a pas répondu à temps.</string>
     <string name="pair_error_fingerprint">Ce n\'est pas l\'hôte du code : son empreinte est différente.</string>

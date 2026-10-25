@@ -3,6 +3,7 @@
 use crate::caps::ParsedCaps;
 use crate::decoder::{Cmd, DecoderCtl, SendWindow};
 use crate::status::{Phase, Shared};
+use crate::wifi::error_code;
 use ezd_client_core::wifi::connect_paired;
 use ezd_client_core::{
     ClientConfig, ClientEnd, ClientHandle, ClientHandler, CursorSnapshot, Flow, HandlerResult,
@@ -196,15 +197,28 @@ impl Session {
     }
 }
 
-/// Opens the link to `target`; the error is the text for the status.
-async fn connect(target: &Target) -> Result<Link, String> {
+/// Why a connection failed: English text for the status detail and logs, plus a stable code
+/// Kotlin localizes (Wi-Fi only).
+struct ConnectError {
+    detail: String,
+    code: Option<&'static str>,
+}
+
+impl From<String> for ConnectError {
+    fn from(detail: String) -> Self {
+        ConnectError { detail, code: None }
+    }
+}
+
+/// Opens the link to `target`.
+async fn connect(target: &Target) -> Result<Link, ConnectError> {
     match target {
         Target::Tcp { host, port } => {
             let addr = format!("{host}:{port}");
             match tokio::time::timeout(CONNECT_TIMEOUT, Link::connect_tcp(addr.as_str())).await {
                 Ok(Ok(l)) => Ok(l),
-                Ok(Err(e)) => Err(format!("connect {addr}: {e}")),
-                Err(_) => Err(format!("connect {addr}: timed out")),
+                Ok(Err(e)) => Err(format!("connect {addr}: {e}").into()),
+                Err(_) => Err(format!("connect {addr}: timed out").into()),
             }
         }
         Target::Wifi {
@@ -213,7 +227,10 @@ async fn connect(target: &Target) -> Result<Link, String> {
             state_dir,
         } => connect_paired(state_dir, *addr, *fingerprint, WIFI_CONNECT_TIMEOUT)
             .await
-            .map_err(|e| format!("connect {addr}: {e}")),
+            .map_err(|e| ConnectError {
+                detail: format!("connect {addr}: {e}"),
+                code: Some(error_code(&e)),
+            }),
     }
 }
 
@@ -239,7 +256,11 @@ fn run(
         let link = match connect(&target).await {
             Ok(l) => l,
             Err(e) => {
-                shared.set_phase(Phase::Failed, e);
+                tracing::warn!("{}", e.detail);
+                match e.code {
+                    Some(code) => shared.set_failed_code(e.detail, code),
+                    None => shared.set_phase(Phase::Failed, e.detail),
+                }
                 return;
             }
         };

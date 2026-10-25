@@ -30,6 +30,7 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
 import com.librestatic.ezdisplay.settings.SettingsStore
+import com.librestatic.ezdisplay.settings.wifiErrorText
 import com.librestatic.ezdisplay.wifi.HostDiscovery
 import com.librestatic.ezdisplay.wifi.NativeWifiBackend
 import com.librestatic.ezdisplay.wifi.WifiChoice
@@ -127,6 +128,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private var activeWifi: WifiChoice? = null // set while the current session is over Wi-Fi
     private val wifiFailures = WifiFailures() // discovered or stored addresses that failed lately: tried last
     private var tryWifiNext = false // the loopback connection just failed: try the paired host
+    private var pairingLost: String? = null // the host forgot this device: kept above later retry messages
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -524,6 +526,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             "streaming" -> {
                 if (!wasStreaming) {
                     wasStreaming = true
+                    pairingLost = null
                     updateChrome()
                     backoffMs = BACKOFF_MIN_MS
                     streamW = j.optInt("width")
@@ -549,7 +552,19 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
                 }
             }
             "ended" -> disconnected(getString(R.string.status_ended, j.optString("detail"), addr), false)
-            "failed" -> disconnected(getString(R.string.status_error, j.optString("detail")), true)
+            "failed" -> {
+                // A Wi-Fi failure carries a stable code; the detail is English text for the log.
+                val code = if (j.isNull("code")) null else j.optString("code")
+                val message = if (code != null && activeWifi != null) {
+                    getString(wifiErrorText(code))
+                } else {
+                    getString(R.string.status_error, j.optString("detail"))
+                }
+                // On not_paired the native layer already forgot the host, so wifiTarget() finds no
+                // address for it and the retries go back to USB only.
+                if (code == "not_paired" && activeWifi != null) pairingLost = message
+                disconnected(message, true)
+            }
         }
         val flags = if (j.isNull("client_flags")) 0 else j.optInt("client_flags")
         telemetryOn = (flags and 1) != 0
@@ -582,6 +597,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         // Any failure over Wi-Fi demotes that address, so the next attempt tries another candidate.
         if (failed) activeWifi?.let { wifiFailures.record(it.host.fingerprint, it.addr, SystemClock.elapsedRealtime()) }
         stopSession()
+        // Keep telling the user why Wi-Fi stopped until a host is paired again.
+        if (wifiTarget() != null) pairingLost = null
         setStatus(message)
         // The loopback connection failed (no cable, no adb reverse): try the paired host over Wi-Fi right away.
         if (failed && !wasWifi && wifiTarget() != null) {
@@ -594,7 +611,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     }
 
     private fun setStatus(text: String) {
-        statusView.text = text
+        val notice = pairingLost?.takeIf { it != text }
+        statusView.text = if (notice != null) "$notice\n$text" else text
         statusView.visibility = View.VISIBLE
         statusHideAt = 0
     }

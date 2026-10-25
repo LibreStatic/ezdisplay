@@ -58,6 +58,8 @@ class SettingsActivity : ComponentActivity() {
         super.onResume()
         // The user may have changed Samsung's Air actions while away.
         store.setAirActions(readAirActions(this))
+        // The host may have refused this device meanwhile, which forgets it.
+        store.reloadHosts()
         discovery.start()
     }
 

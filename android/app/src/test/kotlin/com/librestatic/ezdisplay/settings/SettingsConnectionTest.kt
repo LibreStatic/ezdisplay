@@ -205,7 +205,7 @@ class SettingsConnectionPhoneTest : SettingsUiTestBase() {
 
     @Test fun everyErrorCodeHasItsOwnMessage() {
         val codes = listOf(
-            "wrong_pin", "pairing_closed", "too_many_attempts", "busy", "unreachable", "timeout",
+            "wrong_pin", "pairing_closed", "too_many_attempts", "busy", "not_paired", "unreachable", "timeout",
             "fingerprint_mismatch", "invalid_pin", "invalid_uri", "invalid_address",
         )
         assertEquals(codes.size, codes.map { wifiErrorText(it) }.toSet().size)

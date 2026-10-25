@@ -118,6 +118,7 @@
     <string name="pair_error_closed">Il PC non accetta associazioni. Avvia prima l\'associazione sul PC.</string>
     <string name="pair_error_attempts">Troppi tentativi errati. Avvia di nuovo l\'associazione sul PC.</string>
     <string name="pair_error_busy">L\'host è occupato. Riprova tra un momento.</string>
+    <string name="pair_error_not_paired">Il PC ha dimenticato questo dispositivo. Associalo di nuovo.</string>
     <string name="pair_error_unreachable">Impossibile raggiungere l\'host. Controlla l\'indirizzo e che i due dispositivi siano sulla stessa rete.</string>
     <string name="pair_error_timeout">L\'host non ha risposto in tempo.</string>
     <string name="pair_error_fingerprint">Questo non è l\'host del codice: l\'impronta è diversa.</string>

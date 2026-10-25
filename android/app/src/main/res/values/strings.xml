@@ -118,6 +118,7 @@
     <string name="pair_error_closed">The PC is not accepting pairings. Start pairing on the PC first.</string>
     <string name="pair_error_attempts">Too many wrong attempts. Start pairing again on the PC.</string>
     <string name="pair_error_busy">The host is busy. Try again in a moment.</string>
+    <string name="pair_error_not_paired">This PC forgot this device. Pair it again.</string>
     <string name="pair_error_unreachable">Cannot reach the host. Check the address and that both devices are on the same network.</string>
     <string name="pair_error_timeout">The host did not answer in time.</string>
     <string name="pair_error_fingerprint">This is not the host from the code: its fingerprint differs.</string>

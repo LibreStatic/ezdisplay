@@ -195,6 +195,15 @@ pub async fn connect_paired(
                 tracing::debug!("connect failed ({e}), retrying");
                 tokio::time::sleep(RETRY_DELAY).await;
             }
+            Err(QuicError::Refused(Refusal::NotPaired)) => {
+                // The connection is pinned to the host's certificate, so only the real host can
+                // say this: it forgot this device, and the pairing is gone for good.
+                tracing::info!("the host no longer knows this device, forgetting it");
+                if let Err(e) = forget_host(dir, &fingerprint_hex(&host)) {
+                    tracing::warn!("cannot forget the host: {e}");
+                }
+                return Err(QuicError::Refused(Refusal::NotPaired).into());
+            }
             Err(e) => return Err(e.into()),
         }
     };
@@ -303,6 +312,53 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(load_hosts(&dir.0), Err(WifiError::Corrupt { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_host_that_forgot_us_is_forgotten_without_retrying() {
+        let dir = TempDir::new("not-paired");
+        let host_id = Identity::generate().unwrap();
+        let server = ezd_link::quic::QuicServer::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            &host_id,
+            Congestion::default(),
+        )
+        .unwrap();
+        let addr = server.local_addr().unwrap();
+        let fp = host_id.fingerprint();
+        add_host(
+            &dir.0,
+            StoredHost {
+                name: "desk".into(),
+                fingerprint: fingerprint_hex(&fp),
+                addr: Some(addr.to_string()),
+            },
+        )
+        .unwrap();
+        add_host(&dir.0, host("laptop", 2, None)).unwrap();
+        let served = tokio::spawn(async move {
+            let mut refused = 0;
+            while let Some(Ok(conn)) = server.accept().await {
+                if let Ok(opened) = conn.accept_open().await {
+                    opened.refuse(Refusal::NotPaired).await;
+                    refused += 1;
+                }
+                if refused > 0 {
+                    break;
+                }
+            }
+            refused
+        });
+        let err = connect_paired(&dir.0, addr, fp, Duration::from_secs(5))
+            .await
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(err, WifiError::Quic(QuicError::Refused(Refusal::NotPaired))),
+            "{err:?}"
+        );
+        assert_eq!(served.await.unwrap(), 1, "the refusal must not be retried");
+        assert_eq!(load_hosts(&dir.0).unwrap(), vec![host("laptop", 2, None)]);
     }
 
     #[test]

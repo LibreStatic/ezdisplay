@@ -66,7 +66,7 @@ pub fn is_local_ip(ip: IpAddr) -> bool {
 }
 
 /// The stable error code Kotlin maps to a localized message.
-fn error_code(e: &WifiError) -> &'static str {
+pub fn error_code(e: &WifiError) -> &'static str {
     match e {
         WifiError::Quic(QuicError::Refused(r)) => match r {
             Refusal::WrongPin => "wrong_pin",
