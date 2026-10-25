@@ -74,6 +74,7 @@ pair-closed-attempts = Die Kopplung ist geschlossen: zu viele falsche PINs.
 pair-closed-expired = Die Kopplung ist geschlossen: Die Zeit ist abgelaufen. Starte mit `--pair` neu, um erneut zu koppeln.
 wifi-listening = WLAN: lauscht auf { $addr } (UDP). Fingerabdruck des Hosts: { $fingerprint }
 wifi-firewall-hint = Wenn sich Tablets nicht verbinden können, erlaube eingehenden UDP-Port { $port } in der Windows-Firewall (private Netzwerke).
+wifi-firewall-hint-linux = Eine Firewall ist aktiv. Wenn sich Tablets nicht verbinden können, erlaube eingehenden UDP-Port { $port } (ufw oder firewalld; siehe den Wi-Fi-Abschnitt der README).
 err-paired-not-found = kein gekoppeltes Tablet passt zu `{ $query }`
 err-paired-ambiguous = { $count } gekoppelte Tablets passen zu `{ $query }`; gib mehr Stellen des Fingerabdrucks an
 err-no-config-dir = Konfigurationsordner nicht gefunden

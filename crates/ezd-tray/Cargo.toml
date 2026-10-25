@@ -87,6 +87,8 @@ assets = [
     ["target/release/ezdisplay", "usr/bin/", "755"],
     ["target/release/ezd-host", "usr/bin/", "755"],
     ["../../packaging/linux/70-ezdisplay-uinput.rules", "usr/lib/udev/rules.d/", "644"],
+    ["../../packaging/linux/ufw/ezdisplay", "etc/ufw/applications.d/", "644"],
+    ["../../packaging/linux/firewalld/ezdisplay.xml", "usr/lib/firewalld/services/", "644"],
     ["../../packaging/linux/com.librestatic.ezdisplay.desktop", "usr/share/applications/", "644"],
     ["../../packaging/linux/com.librestatic.ezdisplay.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["../../LICENSE-MIT", "usr/share/doc/ezdisplay/", "644"],

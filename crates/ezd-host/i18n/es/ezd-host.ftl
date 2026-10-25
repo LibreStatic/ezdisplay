@@ -74,6 +74,7 @@ pair-closed-attempts = La vinculación está cerrada: demasiados PIN incorrectos
 pair-closed-expired = La vinculación está cerrada: se acabó el tiempo. Reiniciá con `--pair` para vincular de nuevo.
 wifi-listening = Wi-Fi: escuchando en { $addr } (UDP). Huella del host: { $fingerprint }
 wifi-firewall-hint = Si las tabletas no pueden conectarse, permití el puerto UDP { $port } de entrada en el Firewall de Windows (redes privadas).
+wifi-firewall-hint-linux = Hay un firewall activo. Si las tabletas no pueden conectarse, permití el puerto UDP { $port } de entrada (ufw o firewalld; mirá la sección Wi-Fi del README).
 err-paired-not-found = ninguna tableta vinculada coincide con `{ $query }`
 err-paired-ambiguous = { $count } tabletas vinculadas coinciden con `{ $query }`; usá más dígitos de la huella
 err-no-config-dir = no se encontró la carpeta de configuración

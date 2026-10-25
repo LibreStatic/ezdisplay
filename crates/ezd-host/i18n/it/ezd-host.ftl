@@ -74,6 +74,7 @@ pair-closed-attempts = L'associazione è chiusa: troppi PIN errati.
 pair-closed-expired = L'associazione è chiusa: tempo scaduto. Riavvia con `--pair` per associare di nuovo.
 wifi-listening = Wi-Fi: in ascolto su { $addr } (UDP). Impronta dell'host: { $fingerprint }
 wifi-firewall-hint = Se i tablet non riescono a connettersi, consenti la porta UDP { $port } in ingresso nel Firewall di Windows (reti private).
+wifi-firewall-hint-linux = Un firewall è attivo. Se i tablet non riescono a connettersi, consenti la porta UDP { $port } in ingresso (ufw o firewalld; vedi la sezione Wi-Fi del README).
 err-paired-not-found = nessun tablet associato corrisponde a `{ $query }`
 err-paired-ambiguous = { $count } tablet associati corrispondono a `{ $query }`; usa più cifre dell'impronta
 err-no-config-dir = impossibile trovare la cartella di configurazione

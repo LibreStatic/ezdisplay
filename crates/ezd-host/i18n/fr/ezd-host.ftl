@@ -74,6 +74,7 @@ pair-closed-attempts = L'appairage est fermé : trop de PIN incorrects.
 pair-closed-expired = L'appairage est fermé : le temps est écoulé. Relancez avec `--pair` pour appairer à nouveau.
 wifi-listening = Wi-Fi : écoute sur { $addr } (UDP). Empreinte de l'hôte : { $fingerprint }
 wifi-firewall-hint = Si les tablettes ne parviennent pas à se connecter, autorisez le port UDP { $port } en entrée dans le Pare-feu Windows (réseaux privés).
+wifi-firewall-hint-linux = Un pare-feu est actif. Si les tablettes ne parviennent pas à se connecter, autorisez le port UDP { $port } en entrée (ufw ou firewalld ; voir la section Wi-Fi du README).
 err-paired-not-found = aucune tablette appairée ne correspond à `{ $query }`
 err-paired-ambiguous = { $count } tablettes appairées correspondent à `{ $query }` ; utilisez plus de chiffres de l'empreinte
 err-no-config-dir = dossier de configuration introuvable

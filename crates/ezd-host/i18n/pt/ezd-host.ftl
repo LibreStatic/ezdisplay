@@ -74,6 +74,7 @@ pair-closed-attempts = O pareamento está fechado: PINs incorretos demais.
 pair-closed-expired = O pareamento está fechado: o tempo acabou. Reinicie com `--pair` para parear de novo.
 wifi-listening = Wi-Fi: escutando em { $addr } (UDP). Impressão digital do host: { $fingerprint }
 wifi-firewall-hint = Se os tablets não conseguirem se conectar, permita a porta UDP { $port } de entrada no Firewall do Windows (redes privadas).
+wifi-firewall-hint-linux = Há um firewall ativo. Se os tablets não conseguirem se conectar, permita a porta UDP { $port } de entrada (ufw ou firewalld; veja a seção Wi-Fi do README).
 err-paired-not-found = nenhum tablet pareado corresponde a `{ $query }`
 err-paired-ambiguous = { $count } tablets pareados correspondem a `{ $query }`; use mais dígitos da impressão digital
 err-no-config-dir = não foi possível encontrar a pasta de configuração

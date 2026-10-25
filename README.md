@@ -164,7 +164,37 @@ The fake client pairs the same way, then streams:
 cargo run --release -p ezd-fake-client -- --wifi 127.0.0.1:27183 --pin 123456 --frames 300
 ```
 
-On Windows, allow inbound UDP port 27183 in Windows Defender Firewall for private networks.
+### Firewall (Linux)
+
+A host firewall such as ufw or firewalld usually blocks inbound UDP 27183, so tablets cannot
+connect. `ezd-host diag` reports the state (`firewall` key) and `ezd-host run --wifi` prints a hint
+when one is active. The Arch package and the `.deb` install a ufw application profile and a firewalld
+service named `ezdisplay` but never open the port: that is your decision. Allow it only for your LAN.
+
+ufw (replace the network with yours):
+
+```sh
+sudo ufw allow from 192.168.0.0/24 to any app ezdisplay
+# without the profile (AppImage, source builds):
+sudo ufw allow from <your LAN>/24 to any port 27183 proto udp
+```
+
+firewalld:
+
+```sh
+sudo firewall-cmd --permanent --add-service=ezdisplay && sudo firewall-cmd --reload
+```
+
+The service is added to the default zone; to limit it to your home network, add `--zone=home` (or
+`trusted`) to both commands, and make sure your Wi-Fi interface is in that zone. Without the
+packaged service, use `--add-port=27183/udp` instead. The AppImage cannot install the profiles; copy
+them from `packaging/linux/` (see its README) or use the port forms above.
+
+### Firewall (Windows)
+
+The Windows installer already adds an inbound UDP 27183 rule for private networks. For a portable
+build, allow that port in Windows Defender Firewall for private networks.
+
 Wi-Fi also works without pairing through ADB wireless debugging:
 `ezd-host run --adb <ip:port> --link network`.
 

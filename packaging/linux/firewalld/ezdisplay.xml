@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>ezdisplay</short>
+  <description>Use an Android tablet as an extended monitor over Wi-Fi. Tablets connect to the host on UDP port 27183 (QUIC).</description>
+  <port protocol="udp" port="27183"/>
+</service>

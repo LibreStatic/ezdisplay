@@ -74,6 +74,7 @@ pair-closed-attempts = Pairing is closed: too many wrong PINs.
 pair-closed-expired = Pairing is closed: time ran out. Restart with `--pair` to pair again.
 wifi-listening = Wi-Fi: listening on { $addr } (UDP). Host fingerprint: { $fingerprint }
 wifi-firewall-hint = If tablets cannot connect, allow inbound UDP port { $port } in Windows Firewall (private networks).
+wifi-firewall-hint-linux = A firewall is active. If tablets cannot connect, allow inbound UDP port { $port } (ufw or firewalld; see the Wi-Fi section of the README).
 err-paired-not-found = no paired tablet matches `{ $query }`
 err-paired-ambiguous = { $count } paired tablets match `{ $query }`; use more of the fingerprint
 err-no-config-dir = cannot find the config folder

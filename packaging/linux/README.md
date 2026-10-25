@@ -9,6 +9,7 @@ Only KDE Plasma 6 on Wayland is supported today. CI builds all of this in
 | Path | What it is |
 | --- | --- |
 | `70-ezdisplay-uinput.rules` | udev rule that lets the logged-in user create uinput devices (touch and pen input). |
+| `ufw/ezdisplay`, `firewalld/ezdisplay.xml` | ufw application profile and firewalld service for the Wi-Fi port (UDP 27183). The Arch package and the `.deb` install them to `/etc/ufw/applications.d/` and `/usr/lib/firewalld/services/`; nothing is enabled or opened automatically. |
 | `com.librestatic.ezdisplay.desktop`, `.svg` | Desktop entry and icon. |
 | `arch/PKGBUILD`, `arch/ezdisplay.install` | Arch package built from this checkout (no source download). |
 | `debian/postinst` | Maintainer script of the `.deb`: reloads udev and re-triggers `/dev/uinput`. The package metadata is `[package.metadata.deb]` in `crates/ezd-tray/Cargo.toml`. |
@@ -87,3 +88,8 @@ packaging/linux/appimage/smoke.sh out/ezdisplay-*.AppImage
 
 Inside the image, `AppRun` starts the tray app; `AppRun host ...` runs `ezd-host`. The bundled adb
 is at `usr/bin/adb/adb` and the licence texts at `usr/bin/licenses/`, where the app looks for them.
+
+An AppImage cannot install system files. To use the firewall profiles with it, copy them from
+this directory (`ufw/ezdisplay` to `/etc/ufw/applications.d/`, `firewalld/ezdisplay.xml` to
+`/etc/firewalld/services/`), or open the port directly; see the Wi-Fi section of the
+[README](../../README.md#firewall-linux).

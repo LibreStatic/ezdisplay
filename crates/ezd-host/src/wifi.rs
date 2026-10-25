@@ -222,6 +222,10 @@ pub fn print_listening(addr: std::net::SocketAddr, fingerprint: &str) {
     );
     #[cfg(windows)]
     eprintln!("{}", fl!("wifi-firewall-hint", port = addr.port()));
+    #[cfg(target_os = "linux")]
+    if crate::firewall::detect().any_active() {
+        eprintln!("{}", fl!("wifi-firewall-hint-linux", port = addr.port()));
+    }
 }
 
 #[cfg(test)]

@@ -1,8 +1,14 @@
 post_install() {
   # pacman's own hook reloads the udev rules; apply the uaccess tag to an existing /dev/uinput.
   udevadm trigger --name-match=uinput 2>/dev/null || true
+  cat <<'MSG'
+==> ezdisplay: nothing was opened in your firewall. To let tablets reach the host over Wi-Fi
+    (UDP port 27183), allow it yourself, scoped to your LAN:
+      ufw:       sudo ufw allow from 192.168.0.0/24 to any app ezdisplay
+      firewalld: sudo firewall-cmd --permanent --add-service=ezdisplay && sudo firewall-cmd --reload
+MSG
 }
 
 post_upgrade() {
-  post_install
+  udevadm trigger --name-match=uinput 2>/dev/null || true
 }

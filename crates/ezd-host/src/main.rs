@@ -6,6 +6,8 @@
 //! * `ezd-host diag`: print a JSON report about the machine (GPUs, encoders, adb).
 
 mod diag;
+#[cfg(target_os = "linux")]
+mod firewall;
 mod i18n;
 mod run;
 #[cfg(windows)]
