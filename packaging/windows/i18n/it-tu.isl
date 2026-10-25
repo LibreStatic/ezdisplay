@@ -1,0 +1,34 @@
+﻿; Informal ("tu") overrides for the stock (formal) Italian.isl. Only messages seen in the normal flow.
+[Messages]
+WelcomeLabel1=Benvenuto nell'installazione di [name]
+WelcomeLabel2=Questo programma installerà [name/ver] sul tuo computer.%n%nTi consigliamo di chiudere tutte le altre applicazioni prima di continuare.
+SelectDirDesc=Dove vuoi installare [name]?
+SelectDirLabel3=L'installazione installerà [name] nella cartella seguente.
+SelectDirBrowseLabel=Per continuare, fai clic su Avanti. Se vuoi scegliere un'altra cartella, fai clic su Sfoglia.
+DiskSpaceGBLabel=Sono necessari almeno [gb] GB di spazio libero sul disco.
+DiskSpaceMBLabel=Sono necessari almeno [mb] MB di spazio libero sul disco.
+SelectTasksDesc=Quali operazioni aggiuntive vuoi eseguire?
+SelectTasksLabel2=Seleziona le operazioni aggiuntive che vuoi eseguire durante l'installazione di [name], poi fai clic su Avanti.
+ReadyLabel1=Tutto è pronto per installare [name] sul tuo computer.
+ReadyLabel2a=Fai clic su Installa per continuare con l'installazione, oppure su Indietro se vuoi rivedere o modificare le impostazioni.
+ReadyLabel2b=Fai clic su Installa per continuare con l'installazione.
+PreparingDesc=Preparazione dell'installazione di [name] sul tuo computer.
+InstallingLabel=Attendi mentre [name] viene installato sul tuo computer.
+FinishedHeadingLabel=Installazione di [name] completata
+FinishedLabelNoIcons=L'installazione di [name] sul tuo computer è stata completata.
+FinishedLabel=L'installazione di [name] sul tuo computer è stata completata. Puoi avviare l'applicazione tramite le icone installate.
+ClickFinish=Fai clic su Fine per uscire dall'installazione.
+FinishedRestartLabel=Per completare l'installazione di [name] è necessario riavviare il computer. Vuoi riavviare adesso?
+FinishedRestartMessage=Per completare l'installazione di [name] è necessario riavviare il computer.%n%nVuoi riavviare adesso?
+ExitSetupMessage=L'installazione non è completa. Se esci adesso, il programma non verrà installato.%n%nPuoi eseguire di nuovo l'installazione in un secondo momento per completarla.%n%nVuoi uscire?
+ConfirmUninstall=Vuoi davvero rimuovere completamente %1 e tutti i suoi componenti?
+UninstallStatusLabel=Attendi mentre %1 viene rimosso dal tuo computer.
+UninstalledAll=%1 è stato rimosso dal tuo computer.
+UninstalledAndNeedsRestart=Per completare la disinstallazione di %1 è necessario riavviare il computer.%n%nVuoi riavviare adesso?
+AdminPrivilegesRequired=Per installare questo programma devi accedere come amministratore.
+SetupAppRunningError=%1 è attualmente in esecuzione.%n%nChiudi tutte le sue istanze, poi fai clic su OK per continuare oppure su Annulla per uscire.
+UninstallAppRunningError=%1 è attualmente in esecuzione.%n%nChiudi tutte le sue istanze, poi fai clic su OK per continuare oppure su Annulla per uscire.
+ApplicationsFound=Le seguenti applicazioni stanno usando file che devono essere aggiornati dall'installazione. Ti consigliamo di permettere all'installazione di chiuderle automaticamente.
+ApplicationsFound2=Le seguenti applicazioni stanno usando file che devono essere aggiornati dall'installazione. Ti consigliamo di permettere all'installazione di chiuderle automaticamente. Al termine, l'installazione tenterà di riavviarle.
+CloseApplications=Chiudi &automaticamente le applicazioni
+DontCloseApplications=&Non chiudere le applicazioni

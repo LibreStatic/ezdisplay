@@ -1,0 +1,5 @@
+# Link the C runtime statically on Windows: a clean machine may lack the VC++ redistributable, and
+# the installer does not ship it. CI sets RUSTFLAGS, which replaces these flags, so the Windows
+# job repeats this one there.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

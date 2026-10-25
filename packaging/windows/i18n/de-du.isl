@@ -1,0 +1,34 @@
+﻿; Informal ("du") overrides for the stock (formal) German.isl. Only messages seen in the normal flow.
+[Messages]
+WelcomeLabel1=Willkommen beim Setup-Assistenten von [name]
+WelcomeLabel2=Dieser Assistent installiert [name/ver] auf deinem Computer.%n%nSchließe am besten alle anderen Anwendungen, bevor du fortfährst.
+SelectDirDesc=Wohin soll [name] installiert werden?
+SelectDirLabel3=Das Setup installiert [name] in den folgenden Ordner.
+SelectDirBrowseLabel=Klicke auf Weiter, um fortzufahren. Wenn du einen anderen Ordner auswählen möchtest, klicke auf Durchsuchen.
+DiskSpaceGBLabel=Mindestens [gb] GB freier Speicherplatz sind erforderlich.
+DiskSpaceMBLabel=Mindestens [mb] MB freier Speicherplatz sind erforderlich.
+SelectTasksDesc=Welche zusätzlichen Aufgaben sollen ausgeführt werden?
+SelectTasksLabel2=Wähle die zusätzlichen Aufgaben aus, die das Setup während der Installation von [name] ausführen soll, und klicke dann auf Weiter.
+ReadyLabel1=Das Setup ist jetzt bereit, [name] auf deinem Computer zu installieren.
+ReadyLabel2a=Klicke auf Installieren, um mit der Installation fortzufahren, oder auf Zurück, wenn du Einstellungen überprüfen oder ändern möchtest.
+ReadyLabel2b=Klicke auf Installieren, um mit der Installation fortzufahren.
+PreparingDesc=Das Setup bereitet die Installation von [name] auf deinem Computer vor.
+InstallingLabel=Bitte warte, während [name] auf deinem Computer installiert wird.
+FinishedHeadingLabel=Die Installation von [name] ist abgeschlossen
+FinishedLabelNoIcons=Das Setup hat die Installation von [name] auf deinem Computer abgeschlossen.
+FinishedLabel=Das Setup hat die Installation von [name] auf deinem Computer abgeschlossen. Du kannst die Anwendung über die installierten Verknüpfungen starten.
+ClickFinish=Klicke auf Fertigstellen, um das Setup zu beenden.
+FinishedRestartLabel=Damit die Installation von [name] abgeschlossen werden kann, muss dein Computer neu gestartet werden. Möchtest du jetzt neu starten?
+FinishedRestartMessage=Damit die Installation von [name] abgeschlossen werden kann, muss dein Computer neu gestartet werden.%n%nMöchtest du jetzt neu starten?
+ExitSetupMessage=Die Installation ist nicht abgeschlossen. Wenn du das Setup jetzt beendest, wird das Programm nicht installiert.%n%nDu kannst das Setup später erneut ausführen, um die Installation abzuschließen.%n%nSetup beenden?
+ConfirmUninstall=Möchtest du %1 und alle zugehörigen Komponenten wirklich entfernen?
+UninstallStatusLabel=Bitte warte, während %1 von deinem Computer entfernt wird.
+UninstalledAll=%1 wurde erfolgreich von deinem Computer entfernt.
+UninstalledAndNeedsRestart=Damit die Deinstallation von %1 abgeschlossen werden kann, muss dein Computer neu gestartet werden.%n%nMöchtest du jetzt neu starten?
+AdminPrivilegesRequired=Du musst als Administrator angemeldet sein, um dieses Programm zu installieren.
+SetupAppRunningError=Das Setup hat festgestellt, dass %1 zurzeit ausgeführt wird.%n%nSchließe jetzt alle Instanzen und klicke dann auf OK, um fortzufahren, oder auf Abbrechen, um das Setup zu beenden.
+UninstallAppRunningError=Die Deinstallation hat festgestellt, dass %1 zurzeit ausgeführt wird.%n%nSchließe jetzt alle Instanzen und klicke dann auf OK, um fortzufahren, oder auf Abbrechen, um die Deinstallation zu beenden.
+ApplicationsFound=Die folgenden Anwendungen verwenden Dateien, die vom Setup aktualisiert werden müssen. Wir empfehlen dir, das Setup diese Anwendungen automatisch schließen zu lassen.
+ApplicationsFound2=Die folgenden Anwendungen verwenden Dateien, die vom Setup aktualisiert werden müssen. Wir empfehlen dir, das Setup diese Anwendungen automatisch schließen zu lassen. Nach der Installation versucht das Setup, die Anwendungen neu zu starten.
+CloseApplications=Anwendungen &automatisch schließen
+DontCloseApplications=Anwendungen &nicht schließen

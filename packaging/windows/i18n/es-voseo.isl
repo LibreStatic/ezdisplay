@@ -1,0 +1,34 @@
+﻿; Rioplatense voseo overrides for the stock (formal) Spanish.isl. Only messages seen in the normal flow.
+[Messages]
+WelcomeLabel1=Te damos la bienvenida al asistente de instalación de [name]
+WelcomeLabel2=Este asistente instalará [name/ver] en tu equipo.%n%nTe recomendamos cerrar el resto de las aplicaciones antes de continuar.
+SelectDirDesc=¿Dónde querés instalar [name]?
+SelectDirLabel3=El asistente instalará [name] en la siguiente carpeta.
+SelectDirBrowseLabel=Para continuar, hacé clic en Siguiente. Si querés elegir otra carpeta, hacé clic en Examinar.
+DiskSpaceGBLabel=Se necesitan al menos [gb] GB de espacio libre en disco.
+DiskSpaceMBLabel=Se necesitan al menos [mb] MB de espacio libre en disco.
+SelectTasksDesc=¿Qué tareas adicionales querés que se realicen?
+SelectTasksLabel2=Elegí las tareas adicionales que querés que se realicen durante la instalación de [name] y después hacé clic en Siguiente.
+ReadyLabel1=Todo está listo para comenzar la instalación de [name] en tu equipo.
+ReadyLabel2a=Hacé clic en Instalar para continuar con la instalación, o en Atrás si querés revisar o cambiar alguna configuración.
+ReadyLabel2b=Hacé clic en Instalar para continuar con la instalación.
+PreparingDesc=El asistente se está preparando para instalar [name] en tu equipo.
+InstallingLabel=Esperá mientras se instala [name] en tu equipo.
+FinishedHeadingLabel=Finalizando la instalación de [name]
+FinishedLabelNoIcons=Se terminó de instalar [name] en tu equipo.
+FinishedLabel=Se terminó de instalar [name] en tu equipo. Podés iniciar la aplicación con los accesos directos instalados.
+ClickFinish=Hacé clic en Finalizar para salir del asistente.
+FinishedRestartLabel=Para completar la instalación de [name], hay que reiniciar tu equipo. ¿Querés reiniciar ahora?
+FinishedRestartMessage=Para completar la instalación de [name], hay que reiniciar tu equipo.%n%n¿Querés reiniciar ahora?
+ExitSetupMessage=La instalación no está completa. Si salís ahora, el programa no se instalará.%n%nPodés volver a ejecutar el asistente en otro momento para completar la instalación.%n%n¿Querés salir?
+ConfirmUninstall=¿Seguro que querés eliminar completamente %1 y todos sus componentes?
+UninstallStatusLabel=Esperá mientras se elimina %1 de tu equipo.
+UninstalledAll=%1 se eliminó correctamente de tu equipo.
+UninstalledAndNeedsRestart=Para completar la desinstalación de %1, hay que reiniciar tu equipo.%n%n¿Querés reiniciar ahora?
+AdminPrivilegesRequired=Tenés que iniciar sesión como administrador para instalar este programa.
+SetupAppRunningError=El asistente detectó que %1 se está ejecutando.%n%nCerrá todas las instancias ahora, y después hacé clic en Aceptar para continuar o en Cancelar para salir.
+UninstallAppRunningError=El desinstalador detectó que %1 se está ejecutando.%n%nCerrá todas las instancias ahora, y después hacé clic en Aceptar para continuar o en Cancelar para salir.
+ApplicationsFound=Las siguientes aplicaciones están usando archivos que el asistente necesita actualizar. Te recomendamos permitir que el asistente las cierre automáticamente.
+ApplicationsFound2=Las siguientes aplicaciones están usando archivos que el asistente necesita actualizar. Te recomendamos permitir que el asistente las cierre automáticamente. Cuando termine la instalación, el asistente intentará volver a iniciarlas.
+CloseApplications=Cerrar las aplicaciones &automáticamente
+DontCloseApplications=&No cerrar las aplicaciones

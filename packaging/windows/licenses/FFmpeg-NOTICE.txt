@@ -1,0 +1,15 @@
+FFmpeg
+
+FFmpeg is not shipped with this installer. It is downloaded during setup from the pinned
+BtbN FFmpeg-Builds release:
+
+  https://github.com/BtbN/FFmpeg-Builds/releases
+
+The downloaded build is licensed under the GNU General Public License version 3 (GPLv3).
+Its source code is available at:
+
+  https://github.com/BtbN/FFmpeg-Builds
+  https://ffmpeg.org/download.html
+
+The archive's own LICENSE.txt is copied next to this file at install time as
+FFmpeg-LICENSE.txt.

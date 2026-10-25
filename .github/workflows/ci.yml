@@ -8,9 +8,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
-  # Rolling FFmpeg 8.1 shared build (stable asset name, always the newest 8.1.x patch release).
-  FFMPEG_ASSET: ffmpeg-n8.1-latest-win64-gpl-shared-8.1
-  FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip
 
 jobs:
   linux:
@@ -35,22 +32,36 @@ jobs:
     name: Windows (build, test, artifact)
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      # The RUSTFLAGS environment variable replaces the rustflags of .cargo/config.toml, so the
+      # static CRT (no VC++ runtime needed on a clean Windows) is repeated here.
+      RUSTFLAGS: "-D warnings -C target-feature=+crt-static"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Download FFmpeg (shared, headers + import libs)
+      - name: Fetch pinned FFmpeg (SHA-256 checked; headers + import libs)
         shell: pwsh
         run: |
-          curl.exe -L --fail --retry 3 -o ffmpeg.zip $env:FFMPEG_URL
-          Expand-Archive ffmpeg.zip -DestinationPath "$env:RUNNER_TEMP\ffmpeg"
-          $dir = Join-Path $env:RUNNER_TEMP "ffmpeg\$env:FFMPEG_ASSET"
-          if (-not (Test-Path "$dir\include\libavcodec\avcodec.h")) { throw "unexpected FFmpeg archive layout" }
-          "FFMPEG_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "$dir\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          ./packaging/windows/stage.ps1 -RepoRoot $PWD -CacheDir "$env:RUNNER_TEMP\pins" -FfmpegOnly
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - run: cargo build --workspace --release
       - run: cargo test --workspace
+      - name: Check the C runtime is linked statically
+        shell: pwsh
+        run: |
+          # The import table names the DLLs a binary needs; scan it for the VC++ runtime.
+          foreach ($exe in 'ezd-host.exe', 'ezdisplay.exe') {
+            $path = "target\release\$exe"
+            if (-not (Test-Path $path)) { continue }
+            $text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($path))
+            foreach ($dll in 'VCRUNTIME140', 'MSVCP140') {
+              if ($text.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                throw "$exe imports $dll.dll: the static CRT is not applied"
+              }
+            }
+          }
+          if (-not (Test-Path target\release\ezd-host.exe)) { throw "ezd-host.exe not built" }
       - name: Smoke test (ezd-host diag)
         shell: pwsh
         # diag starts the adb server; if that server inherited our stdout, the pipe below would
@@ -66,7 +77,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target\release\ezd-host.exe, target\release\ezd-fake-client.exe dist\
+          Copy-Item target\release\ezdisplay.exe, target\release\ezd-host.exe, target\release\ezd-fake-client.exe dist\
           Copy-Item "$env:FFMPEG_DIR\bin\*.dll" dist\
           Copy-Item LICENSE-MIT, LICENSE-APACHE dist\
       - uses: actions/upload-artifact@v4
@@ -74,6 +85,118 @@ jobs:
           name: ezdisplay-windows-x86_64
           path: dist/
           if-no-files-found: error
+      - name: Stage installer files
+        shell: pwsh
+        run: ./packaging/windows/stage.ps1 -RepoRoot $PWD -OutDir "$env:RUNNER_TEMP\staging" -CacheDir "$env:RUNNER_TEMP\pins"
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $pkg = $meta.packages | Where-Object { $_.name -eq 'ezd-tray' } | Select-Object -First 1
+          if (-not $pkg) { $pkg = $meta.packages | Where-Object { $_.name -eq 'ezd-host' } | Select-Object -First 1 }
+          $version = $pkg.version
+          Write-Host "Installer version $version"
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          & $iscc "/DAppVersion=$version" "/DStagingDir=$env:RUNNER_TEMP\staging" "/O$PWD\installer-out" packaging\windows\ezdisplay.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ezdisplay-windows-installer
+          path: installer-out/ezdisplay-setup-*-x64.exe
+          if-no-files-found: error
+      - name: Installer smoke test (install, upgrade, uninstall)
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          New-Item -ItemType Directory -Force logs | Out-Null
+          $installer = (Get-ChildItem installer-out\ezdisplay-setup-*-x64.exe | Select-Object -First 1).FullName
+          $dir = Join-Path $env:ProgramFiles 'ezdisplay'
+          $silent = '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+
+          # 1. Clean install without the driver and autostart (this really downloads FFmpeg).
+          $p = Start-Process $installer -ArgumentList ($silent + '/MERGETASKS=!driver,!autostart', "/LOG=$PWD\logs\install.log") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
+          $expected = 'ezdisplay.exe', 'ezd-host.exe', 'ffmpeg.sha256', 'driver\MttVDD.inf', 'driver\mttvdd.cat',
+            'driver\nefconw.exe', 'adb\adb.exe', 'licenses\LICENSE-MIT', 'licenses\FFmpeg-NOTICE.txt',
+            'licenses\FFmpeg-LICENSE.txt'
+          foreach ($f in $expected) {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "missing after install: $f" }
+          }
+          if (-not (Get-ChildItem $dir -Filter 'avcodec-*.dll')) { throw 'FFmpeg DLLs missing' }
+
+          # 2. The installed host starts with the FFmpeg DLLs and prints valid JSON.
+          & "$dir\ezd-host.exe" diag | Tee-Object -FilePath logs\diag.json
+          if ($LASTEXITCODE -ne 0) { throw "installed ezd-host diag failed ($LASTEXITCODE)" }
+          Get-Content -Raw logs\diag.json | ConvertFrom-Json | Out-Null
+
+          # 3. Second install over the first must not download FFmpeg again.
+          $p = Start-Process $installer -ArgumentList ($silent + '/MERGETASKS=!driver,!autostart', "/LOG=$PWD\logs\install2.log") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "second install exited with $($p.ExitCode)" }
+          if (-not (Select-String -Path logs\install2.log -SimpleMatch 'ezdisplay: FFmpeg already present' -Quiet)) {
+            throw 'second install did not detect the existing FFmpeg'
+          }
+          if (Select-String -Path logs\install2.log -SimpleMatch 'ezdisplay: downloading FFmpeg' -Quiet) {
+            throw 'second install downloaded FFmpeg again'
+          }
+
+          # 4. Uninstall leaves nothing behind.
+          $p = Start-Process "$dir\unins000.exe" -ArgumentList ($silent + "/LOG=$PWD\logs\uninstall.log") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstaller exited with $($p.ExitCode)" }
+          # The uninstaller may hand over to a temporary copy; give it time to finish.
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Test-Path $dir) -and (Get-ChildItem $dir -Force) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          if ((Test-Path $dir) -and (Get-ChildItem $dir -Force)) {
+            Get-ChildItem $dir -Recurse -Force | Select-Object -ExpandProperty FullName
+            throw 'files left after uninstall'
+          }
+      - name: Installer driver test (best effort)
+        shell: pwsh
+        # Windows Server images may lack IddCx or reject the driver: this never blocks the job.
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          New-Item -ItemType Directory -Force logs | Out-Null
+          $installer = (Get-ChildItem installer-out\ezdisplay-setup-*-x64.exe | Select-Object -First 1).FullName
+          $dir = Join-Path $env:ProgramFiles 'ezdisplay'
+          $silent = '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          try {
+            # Trust the driver publisher so Windows shows no device-software prompt.
+            $cat = Join-Path $env:RUNNER_TEMP 'staging\driver\mttvdd.cat'
+            $cert = (Get-AuthenticodeSignature $cat).SignerCertificate
+            if (-not $cert) { throw 'mttvdd.cat has no signer certificate' }
+            $store = [Security.Cryptography.X509Certificates.X509Store]::new('TrustedPublisher', 'LocalMachine')
+            $store.Open('ReadWrite')
+            $store.Add($cert)
+            $store.Close()
+
+            $p = Start-Process $installer -ArgumentList ($silent + '/MERGETASKS=!autostart', "/LOG=$PWD\logs\install-driver.log") -Wait -PassThru
+            Write-Host "installer exit code: $($p.ExitCode)"
+            & "$dir\ezd-host.exe" vdd status
+            & "$dir\ezd-host.exe" vdd uninstall --driver-dir "$dir\driver"
+            Write-Host "vdd uninstall exit code: $LASTEXITCODE"
+          } finally {
+            foreach ($f in 'vdd-install.log', 'vdd-uninstall.log') {
+              $path = Join-Path $env:ProgramData "ezdisplay\logs\$f"
+              if (Test-Path $path) { Write-Host "--- $f"; Get-Content $path }
+            }
+            $unins = Join-Path $dir 'unins000.exe'
+            if (Test-Path $unins) {
+              Start-Process $unins -ArgumentList ($silent + "/LOG=$PWD\logs\uninstall-driver.log") -Wait
+            }
+          }
+      - name: Collect installer logs
+        if: failure()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force logs | Out-Null
+          $pd = Join-Path $env:ProgramData 'ezdisplay\logs'
+          if (Test-Path $pd) { Copy-Item "$pd\*" logs\ -Force }
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ezdisplay-installer-logs
+          path: logs/
+          if-no-files-found: ignore
 
   cross-check:
     name: Cross-check (Android, Windows)
@@ -87,4 +210,4 @@ jobs:
       - name: Protocol and link crates build for Android
         run: cargo check --target aarch64-linux-android -p ezd-proto -p ezd-link
       - name: Platform-independent crates build for Windows
-        run: cargo check --target x86_64-pc-windows-msvc -p ezd-proto -p ezd-link -p ezd-host-core -p ezd-host-windows -p ezd-host-service -p ezd-host --no-default-features
+        run: cargo check --target x86_64-pc-windows-msvc -p ezd-proto -p ezd-link -p ezd-host-core -p ezd-host-windows -p ezd-host-service -p ezd-host -p ezd-tray --no-default-features
