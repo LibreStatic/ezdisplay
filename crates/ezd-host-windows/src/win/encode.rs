@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
     D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
@@ -99,6 +100,10 @@ pub struct GpuEncoder {
     params: Vec<u8>,
     sent_config: bool,
     hevc: bool,
+    /// Time spent in the last [`encode`](Self::encode): copy (or HDR render) into the encoder's
+    /// frame, sending the frame, receiving the packet. Paths that do not split the work put it
+    /// all in the middle entry.
+    pub stages: [Duration; 3],
 }
 
 impl GpuEncoder {
@@ -148,6 +153,7 @@ impl GpuEncoder {
             .get(name)
             .copied()
             .unwrap_or(Self::input_paths(name)[0]);
+        tracing::info!("{name}: input path {}", path.describe(false));
         Self::open_on(
             name,
             device,
@@ -234,7 +240,13 @@ impl GpuEncoder {
             params,
             sent_config: false,
             hevc,
+            stages: [Duration::ZERO; 3],
         })
+    }
+
+    /// The FFmpeg encoder name.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Encodes the texture `src` (BGRA, or FP16 scRGB for a ten-bit encoder). `Ok(None)` if the
@@ -248,6 +260,7 @@ impl GpuEncoder {
         let force = force_key || !self.sent_config;
         let packet = match &mut self.inner {
             Inner::Zero { enc, hdr } => {
+                let t0 = Instant::now();
                 let (tex, index) = enc.acquire()?;
                 // SAFETY: `tex` is the ID3D11Texture2D* of a live pool frame; borrowed only for this call.
                 let dst = unsafe { ID3D11Texture2D::from_raw_borrowed(&tex) }
@@ -264,11 +277,25 @@ impl GpuEncoder {
                 // Make the copy or render visible to the encoder's own submission queue.
                 // SAFETY: plain COM call.
                 unsafe { self.ctx.Flush() };
+                let t1 = Instant::now();
                 enc.submit(force)?;
-                enc.receive()?.map(|p| (p.data, p.keyframe))
+                let t2 = Instant::now();
+                let p = enc.receive()?.map(|p| (p.data, p.keyframe));
+                self.stages = [t1 - t0, t2 - t1, t2.elapsed()];
+                p
             }
-            Inner::Nv12(path) => path.encode(src, force)?,
-            Inner::P010(path) => path.encode(src, force)?,
+            Inner::Nv12(path) => {
+                let t0 = Instant::now();
+                let p = path.encode(src, force)?;
+                self.stages = [Duration::ZERO, t0.elapsed(), Duration::ZERO];
+                p
+            }
+            Inner::P010(path) => {
+                let t0 = Instant::now();
+                let p = path.encode(src, force)?;
+                self.stages = [Duration::ZERO, t0.elapsed(), Duration::ZERO];
+                p
+            }
         };
         let Some((mut data, keyframe)) = packet else {
             return Ok(None);

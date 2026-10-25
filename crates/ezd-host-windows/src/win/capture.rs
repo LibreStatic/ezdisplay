@@ -486,8 +486,14 @@ fn capture_loop(
         };
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut res: Option<IDXGIResource> = None;
+        // Poll instead of blocking: AcquireNextFrame holds the device's multithread lock for
+        // its whole timeout, which stalls the encoder sharing this device (an AMF encode went
+        // from ~23 ms to 60-350 ms with a 50 ms timeout).
         // SAFETY: valid out-parameters; ReleaseFrame is called below on success.
-        let r = unsafe { d.AcquireNextFrame(50, &mut info, &mut res) };
+        let r = unsafe { d.AcquireNextFrame(0, &mut info, &mut res) };
+        if matches!(&r, Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         match r {
             Ok(()) => {
                 let acquired = now_us();

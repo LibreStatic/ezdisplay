@@ -111,6 +111,76 @@ mod imp {
         _device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
         output: OutputInfo,
         last_seq: u64,
+        timing: PipelineTiming,
+    }
+
+    /// Per-stage times of the capture + encode loop, logged every few seconds so a slow stream
+    /// can be traced to the stage that limits it.
+    struct PipelineTiming {
+        since: Instant,
+        /// When the previous `next_frame` returned: the time until the next call is spent by the
+        /// session (sending, waiting for credit).
+        returned: Option<Instant>,
+        captured: u64,
+        frames: u32,
+        // Sum and maximum, in microseconds: outside, wait, copy, send, receive, frame age.
+        sum: [u64; 6],
+        max: [u64; 6],
+    }
+
+    impl PipelineTiming {
+        const PERIOD: Duration = Duration::from_secs(5);
+        const LABELS: [&'static str; 6] = ["outside", "wait", "copy", "send", "receive", "age"];
+
+        fn new() -> PipelineTiming {
+            PipelineTiming {
+                since: Instant::now(),
+                returned: None,
+                captured: 0,
+                frames: 0,
+                sum: [0; 6],
+                max: [0; 6],
+            }
+        }
+
+        fn add(&mut self, i: usize, d: Duration) {
+            let us = d.as_micros() as u64;
+            self.sum[i] += us;
+            self.max[i] = self.max[i].max(us);
+        }
+
+        /// Logs and resets once a period has passed; `captured` is the capture thread's total.
+        fn maybe_log(&mut self, name: &str, captured: u64) {
+            let elapsed = self.since.elapsed();
+            if elapsed < Self::PERIOD {
+                return;
+            }
+            if self.frames > 0 {
+                let n = u64::from(self.frames);
+                let secs = elapsed.as_secs_f64();
+                let stages: Vec<String> = Self::LABELS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| {
+                        format!(
+                            "{l} {:.1}/{:.1}",
+                            self.sum[i] as f64 / n as f64 / 1000.0,
+                            self.max[i] as f64 / 1000.0
+                        )
+                    })
+                    .collect();
+                tracing::info!(
+                    "{name}: {:.1} fps encoded, {:.1} fps captured; ms avg/max: {}",
+                    n as f64 / secs,
+                    captured.saturating_sub(self.captured) as f64 / secs,
+                    stages.join(", ")
+                );
+            }
+            *self = PipelineTiming {
+                captured,
+                ..PipelineTiming::new()
+            };
+        }
     }
 
     /// The Windows capture + encode pipeline.
@@ -388,6 +458,7 @@ mod imp {
                 _device: device,
                 output: output_info,
                 last_seq: 0,
+                timing: PipelineTiming::new(),
             })
         }
     }
@@ -449,11 +520,17 @@ mod imp {
             let Some(run) = self.running.as_mut() else {
                 return Err(SourceError::msg("next_frame before start"));
             };
+            let called = Instant::now();
             let ticket = run
                 .capture
                 .wait_frame(run.last_seq, self.want_key, timeout)
                 .map_err(SourceError::msg)?;
-            let Some(t) = ticket else { return Ok(None) };
+            let Some(t) = ticket else {
+                run.timing.returned = Some(Instant::now());
+                return Ok(None);
+            };
+            let waited = called.elapsed();
+            let age = Duration::from_micros(now_us().saturating_sub(t.capture_us));
             let force = self.want_key;
             let src = match run.tonemap.as_mut() {
                 Some(t) => {
@@ -467,6 +544,18 @@ mod imp {
             };
             let out = run.encoder.encode(src, force).map_err(SourceError::msg)?;
             run.last_seq = t.seq;
+            let timing = &mut run.timing;
+            if let Some(r) = timing.returned {
+                timing.add(0, called - r);
+            }
+            timing.add(1, waited);
+            for (i, d) in run.encoder.stages.into_iter().enumerate() {
+                timing.add(2 + i, d);
+            }
+            timing.add(5, age);
+            timing.frames += 1;
+            timing.maybe_log(run.encoder.name(), run.capture.stats().0);
+            timing.returned = Some(Instant::now());
             let Some(o) = out else { return Ok(None) };
             if o.keyframe {
                 self.want_key = false;
