@@ -10,6 +10,7 @@ version-flag = Affiche la version
 run-source = Source vidéo : "synthetic" est une mire générée par logiciel avec un curseur en mouvement, "virtual" est un véritable écran virtuel capturé et encodé par le backend de la plateforme.
 run-listen = Adresse d'écoute.
 run-adb = Exécute `adb reverse tcp:27183 tcp:<port d'écoute>` pour SERIAL, ou pour chaque appareil USB prêt si aucun n'est indiqué ; les appareils sans fil exigent un SERIAL explicite. Maintenu tant que l'hôte tourne et supprimé à la sortie.
+run-aoa = USB sans mode développeur : « auto » fait passer une tablette connectée en mode accessoire Android et diffuse par USB, « off » ne touche pas aux appareils USB. adb reste disponible en secours.
 run-link = Type de liaison : choisit le débit maximal par défaut (usb 80 Mbit/s, réseau 30 Mbit/s).
 run-max-refresh-mhz = Fréquence de rafraîchissement maximale à utiliser, en millihertz.
 run-bitrate-kbps = Débit fixe en kbit/s (limité au maximum de la liaison).
@@ -43,6 +44,7 @@ vdd-err-failed = Pilote d'affichage virtuel : { $detail }
 
 err-adb-not-found = adb est introuvable ; installez les platform-tools d'Android pour utiliser l'USB (l'hôte continue d'écouter sur le réseau)
 err-adb-reverse = adb reverse pour { $serial } : { $reason }
+aoa-unavailable = L'USB sans mode développeur est indisponible ({ $reason }) ; le débogage USB fonctionne toujours.
 err-binding = liaison à { $addr } : { $reason }
 err-scale-nan = `{ $value }` n'est pas un nombre
 err-scale-range = l'échelle doit être comprise entre 0,25 et 1,0, reçu { $value }

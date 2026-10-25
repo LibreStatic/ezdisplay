@@ -81,6 +81,7 @@ fn snapshot(status: HostStatus) -> Snapshot {
         input_fix: InputFixState::Idle,
         has_licenses_dir: false,
         wifi: WifiState::default(),
+        usb_problem: None,
         windows: false,
         version: "0.1.0".into(),
     }
@@ -134,6 +135,53 @@ fn waiting_stopped_and_error_states() {
     h.get_by_label("adb was not found");
     let h = harness(snapshot(err), "es");
     h.get_by_label("No se encontr\u{f3} adb");
+}
+
+#[test]
+fn the_session_transport_is_shown_for_usb_accessory_and_wifi() {
+    let with = |t: Transport| {
+        let HostStatus::Streaming(mut s) = live(None) else {
+            unreachable!()
+        };
+        s.transport = t;
+        snapshot(HostStatus::Streaming(s))
+    };
+    let h = harness(with(Transport::Aoa), "en");
+    h.get_by_label("USB (accessory)");
+    let h = harness(with(Transport::Aoa), "es");
+    h.get_by_label("USB (accesorio)");
+    // "Wi-Fi" is also the name of a page, so count the labels.
+    let wifi_labels = |t| harness(with(t), "en").query_all_by_label("Wi-Fi").count();
+    assert_eq!(
+        wifi_labels(Transport::Wifi),
+        wifi_labels(Transport::Tcp) + 1
+    );
+    let h = harness(with(Transport::Tcp), "en");
+    assert!(h.query_by_label("USB (accessory)").is_none());
+}
+
+#[test]
+fn an_unavailable_usb_accessory_mode_is_a_hint_in_the_user_language() {
+    let mut snap = snapshot(HostStatus::Waiting {
+        devices: Vec::new(),
+    });
+    snap.usb_problem = Some("UsbDk is not installed".into());
+    let mut h = harness_sized(snap.clone(), "en", egui::vec2(820.0, 720.0));
+    h.get_by_role_and_label(Role::Button, "Connection").click();
+    h.run();
+    h.get_by_label(
+        "USB without developer mode is unavailable (UsbDk is not installed); USB debugging still works.",
+    );
+    // Only a hint: the status stays "waiting".
+    assert!(matches!(h.state().snap.status, HostStatus::Waiting { .. }));
+    // Not shown once the mode is switched off.
+    h.get_by_role_and_label(Role::CheckBox, "USB without developer mode")
+        .click();
+    h.run();
+    assert!(
+        h.query_by_label_contains("USB debugging still works")
+            .is_none()
+    );
 }
 
 #[test]
@@ -759,7 +807,12 @@ fn the_pen_choice_is_a_segmented_control_that_needs_input_on() {
 
 #[test]
 fn the_advanced_section_collapses_and_edits_the_port() {
-    let mut h = harness(snapshot(HostStatus::Stopped), "en");
+    // Tall enough for the whole Connection page, which has a row for USB without developer mode.
+    let mut h = harness_sized(
+        snapshot(HostStatus::Stopped),
+        "en",
+        egui::vec2(820.0, 720.0),
+    );
     h.get_by_role_and_label(Role::Button, "Connection").click();
     h.run();
     h.get_by_label("Android Debug Bridge");
@@ -784,6 +837,26 @@ fn turning_adb_off_changes_the_config() {
         .click();
     h.run();
     assert_eq!(h.state().snap.config.service.adb, AdbMode::Off);
+}
+
+#[test]
+fn turning_usb_without_developer_mode_off_changes_the_config() {
+    let mut h = harness_sized(
+        snapshot(HostStatus::Stopped),
+        "en",
+        egui::vec2(820.0, 720.0),
+    );
+    h.get_by_role_and_label(Role::Button, "Connection").click();
+    h.run();
+    assert_eq!(h.state().snap.config.service.aoa, AoaMode::Auto);
+    h.get_by_role_and_label(Role::CheckBox, "USB without developer mode")
+        .click();
+    h.run();
+    assert_eq!(h.state().snap.config.service.aoa, AoaMode::Off);
+    h.get_by_role_and_label(Role::CheckBox, "USB without developer mode")
+        .click();
+    h.run();
+    assert_eq!(h.state().snap.config.service.aoa, AoaMode::Auto);
 }
 
 #[test]

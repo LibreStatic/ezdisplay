@@ -40,6 +40,18 @@ pub enum AdbMode {
     Off,
 }
 
+/// What the service does about USB accessory mode (USB without developer mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AoaMode {
+    /// Switch a connected tablet that shows up as a file-transfer or debugging device to
+    /// accessory mode and stream over USB. adb keeps working as the fallback.
+    #[default]
+    Auto,
+    /// Leave the USB devices alone.
+    Off,
+}
+
 /// Transport kind carrying the stream; selects the default bitrate ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -143,6 +155,10 @@ pub struct ServiceConfig {
     pub source: SourceKind,
     /// adb handling.
     pub adb: AdbMode,
+    /// USB accessory mode (USB without developer mode). `Auto` tries the accessory first, and
+    /// adb keeps working as the fallback. The field exists without the `aoa` feature too, so
+    /// config files stay portable between builds.
+    pub aoa: AoaMode,
     /// Transport kind.
     pub link: LinkChoice,
     /// Highest refresh rate to use, in millihertz.
@@ -183,6 +199,7 @@ impl Default for ServiceConfig {
             listen: SocketAddr::from(([127, 0, 0, 1], ezd_proto::DEFAULT_PORT)),
             source: SourceKind::default(),
             adb: AdbMode::default(),
+            aoa: AoaMode::default(),
             link: LinkChoice::default(),
             max_refresh_mhz: 120_000,
             bitrate_kbps: None,
@@ -400,6 +417,34 @@ mod tests {
         let off: ServiceConfig = serde_json::from_str(r#"{ "hdr": "off" }"#).unwrap();
         assert_eq!(off.hdr, HdrChoice::Off);
         assert_eq!(off.prefs().hdr, HdrMode::Off);
+    }
+
+    #[test]
+    fn aoa_defaults_to_auto_and_reads_its_serde_name() {
+        assert_eq!(ServiceConfig::default().aoa, AoaMode::Auto);
+        let empty: ServiceConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.aoa, AoaMode::Auto);
+        let off: ServiceConfig = serde_json::from_str(r#"{ "aoa": "off" }"#).unwrap();
+        assert_eq!(off.aoa, AoaMode::Off);
+        let auto: ServiceConfig = serde_json::from_str(r#"{ "aoa": "auto" }"#).unwrap();
+        assert_eq!(auto.aoa, AoaMode::Auto);
+        assert!(serde_json::from_str::<ServiceConfig>(r#"{ "aoa": "sometimes" }"#).is_err());
+    }
+
+    #[test]
+    fn aoa_round_trips_and_an_old_config_keeps_the_default() {
+        let c = ServiceConfig {
+            aoa: AoaMode::Off,
+            ..ServiceConfig::default()
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains(r#""aoa":"off""#), "{json}");
+        let back: ServiceConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, c);
+        // A file written before the key existed.
+        let old: ServiceConfig =
+            serde_json::from_str(r#"{ "listen": "127.0.0.1:4000", "adb": "off" }"#).unwrap();
+        assert_eq!(old.aoa, AoaMode::Auto);
     }
 
     #[test]

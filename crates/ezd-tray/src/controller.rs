@@ -336,6 +336,7 @@ impl Controller {
             input_fix,
             has_licenses_dir: paths::licenses_dir().is_some(),
             wifi: self.wifi_state(),
+            usb_problem: self.usb_problem(),
             windows: cfg!(windows),
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
@@ -349,12 +350,18 @@ impl Controller {
         snap.config = self.config.clone();
         snap.autostart = self.autostart;
         snap.wifi = self.wifi_state();
+        snap.usb_problem = self.usb_problem();
         snap.repair = self
             .repair
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         (snap.input_access, snap.input_fix) = self.input_state();
+    }
+
+    /// Why USB accessory mode is unavailable, while the service runs.
+    fn usb_problem(&self) -> Option<String> {
+        self.service.as_ref()?.aoa_problem().borrow().clone()
     }
 
     fn input_state(&self) -> (InputAccess, InputFixState) {

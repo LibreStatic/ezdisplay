@@ -52,6 +52,8 @@ pub enum Transport {
     Tcp,
     /// Wi-Fi: QUIC with a paired device.
     Wifi,
+    /// USB without developer mode: the tablet in Android accessory mode.
+    Aoa,
 }
 
 /// The Wi-Fi listener, see [`HostService::wifi`](crate::HostService::wifi).

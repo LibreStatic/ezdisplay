@@ -1,4 +1,4 @@
-//! [`HostService`]: the accept loop, the adb watcher and the shared state.
+//! [`HostService`]: the accept loop, the adb watcher, the USB accessory acceptor and the shared state.
 
 use crate::adb::{AdbClient, AdbLocator, Watcher, locate_system_adb};
 use crate::config::{AdbMode, ServiceConfig, SourceKind};
@@ -40,6 +40,9 @@ pub struct ServiceHooks {
     pub create_source: SourceFactory,
     /// How long a pairing window stays open.
     pub pairing_ttl: Duration,
+    /// The USB accessory acceptor: backend and timings.
+    #[cfg(feature = "aoa")]
+    pub aoa: crate::aoa::AoaHooks,
 }
 
 impl Default for ServiceHooks {
@@ -49,6 +52,8 @@ impl Default for ServiceHooks {
             locate_adb: Arc::new(locate_system_adb),
             create_source: Arc::new(create_source),
             pairing_ttl: DEFAULT_PAIRING_TTL,
+            #[cfg(feature = "aoa")]
+            aoa: crate::aoa::AoaHooks::default(),
         }
     }
 }
@@ -98,7 +103,7 @@ impl State {
                 ..s.clone()
             }),
             Phase::Error(e) => HostStatus::Error(e.clone()),
-            Phase::Waiting => match &self.adb_error {
+            Phase::Waiting => match self.adb_error.as_ref() {
                 Some(e) => HostStatus::Error(e.clone()),
                 None => HostStatus::Waiting {
                     devices: self.devices.clone(),
@@ -124,6 +129,8 @@ pub(crate) struct Inner {
     pub(crate) slot: Arc<Semaphore>,
     /// The Wi-Fi listener, when on.
     pub(crate) wifi_info: watch::Sender<Option<WifiInfo>>,
+    /// Why USB accessory mode cannot be used (libusb or UsbDk unavailable); informational only.
+    pub(crate) aoa_problem: watch::Sender<Option<String>>,
     #[cfg(feature = "wifi")]
     pub(crate) wifi: Option<Arc<crate::wifi::Wifi>>,
 }
@@ -196,6 +203,8 @@ pub struct HostService {
     inner: Arc<Inner>,
     serve: Option<JoinHandle<()>>,
     watch: Option<JoinHandle<()>>,
+    /// The USB accessory acceptor.
+    aoa: Option<JoinHandle<()>>,
     /// Wi-Fi tasks (accept loop, pairing watcher).
     wifi_tasks: Vec<JoinHandle<()>>,
 }
@@ -251,6 +260,7 @@ impl HostService {
             hooks,
             slot: Arc::new(Semaphore::new(1)),
             wifi_info: watch::channel(None).0,
+            aoa_problem: watch::channel(None).0,
             #[cfg(feature = "wifi")]
             wifi,
         });
@@ -265,10 +275,17 @@ impl HostService {
         }
         let serve = handle.spawn(serve(inner.clone(), listener, requested));
         let watch = handle.spawn(watch_adb(inner.clone()));
+        // Runs whatever `cfg.aoa` is at the start: it idles while the mode is off and reacts when
+        // `apply` turns it on.
+        #[cfg(feature = "aoa")]
+        let aoa = Some(handle.spawn(crate::aoa::run(inner.clone())));
+        #[cfg(not(feature = "aoa"))]
+        let aoa = None;
         Ok(HostService {
             inner,
             serve: Some(serve),
             watch: Some(watch),
+            aoa,
             wifi_tasks,
         })
     }
@@ -276,6 +293,13 @@ impl HostService {
     /// The Wi-Fi listener; `None` while Wi-Fi is off.
     pub fn wifi(&self) -> watch::Receiver<Option<WifiInfo>> {
         self.inner.wifi_info.subscribe()
+    }
+
+    /// Why USB accessory mode is unavailable (libusb failed to initialize, UsbDk is missing);
+    /// `None` while it works or is off. Informational: adb and the network still work, and the
+    /// host status is not an error because of it.
+    pub fn aoa_problem(&self) -> watch::Receiver<Option<String>> {
+        self.inner.aoa_problem.subscribe()
     }
 
     /// Opens the pairing window with a new PIN (the PIN and QR URI arrive as
@@ -358,7 +382,7 @@ impl HostService {
     /// tearing a hardware encoder down while the process exits can deadlock in the driver.
     pub async fn stop(mut self) {
         self.inner.stop.send_replace(true);
-        let tasks = [self.serve.take(), self.watch.take()]
+        let tasks = [self.serve.take(), self.watch.take(), self.aoa.take()]
             .into_iter()
             .flatten()
             .chain(std::mem::take(&mut self.wifi_tasks));
@@ -455,7 +479,7 @@ async fn serve(inner: Arc<Inner>, first: TcpListener, requested: SocketAddr) {
 }
 
 /// Creates the source and runs one session on `link`; the caller holds the session slot.
-async fn stream_session(
+pub(crate) async fn stream_session(
     inner: &Inner,
     cfg: &ServiceConfig,
     link: Link,
@@ -506,7 +530,7 @@ async fn run_session(
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
     // A Wi-Fi session is always a network link, whatever `cfg.link` says.
     let prefs: Prefs = match transport {
-        Transport::Tcp => cfg.prefs(),
+        Transport::Tcp | Transport::Aoa => cfg.prefs(),
         Transport::Wifi => cfg.wifi_prefs(),
     };
     let session = run_host_session_with(
@@ -610,6 +634,7 @@ async fn release_all(watcher: &Arc<Mutex<Watcher>>, adb: &Arc<dyn AdbClient>) {
 pub(crate) mod tests {
     use super::*;
     use crate::adb::fake::{FakeAdb, device};
+    use crate::config::AoaMode;
     use ezd_host_core::testing::ScriptedSource;
     use ezd_link::adb::DeviceState as AdbState;
     use ezd_link::{MuxReceiver, MuxSender};
@@ -625,6 +650,8 @@ pub(crate) mod tests {
         ServiceConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             adb: AdbMode::Off,
+            // Tests never touch the USB devices of the machine they run on.
+            aoa: AoaMode::Off,
             input: false,
             ..ServiceConfig::default()
         }
@@ -638,6 +665,8 @@ pub(crate) mod tests {
                 Ok(Box::new(ScriptedSource::new(Duration::from_millis(5), 200)))
             }),
             pairing_ttl: Duration::from_secs(60),
+            #[cfg(feature = "aoa")]
+            aoa: crate::aoa::AoaHooks::default(),
         }
     }
 
