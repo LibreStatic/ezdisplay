@@ -66,6 +66,8 @@ mod tests {
     }
 
     #[test]
+    // "/home/..." is not an absolute path on Windows, and AppImages only exist on Linux.
+    #[cfg(unix)]
     fn an_absolute_existing_appimage_wins() {
         let got = launcher_from(Some("/home/u/ezdisplay.AppImage".into()), exe(), |_| true);
         assert_eq!(got, PathBuf::from("/home/u/ezdisplay.AppImage"));
