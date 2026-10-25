@@ -533,7 +533,8 @@ pub fn create_sdr_target(
 mod tests {
     use super::*;
     use crate::hdr_math::{
-        f32_to_f16_bits, p010_word, scrgb_to_p010_chroma, scrgb_to_p010_luma, scrgb_to_sdr8,
+        f16_bits_to_f32, f32_to_f16_bits, p010_word, scrgb_to_p010_chroma, scrgb_to_p010_luma,
+        scrgb_to_sdr8,
     };
     use windows::Win32::Foundation::HMODULE;
     use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
@@ -592,6 +593,13 @@ mod tests {
                 (s >> 8) as f32 / (1 << 24) as f32
             };
             v.push([next() * 4.0, next() * 4.0, next() * 4.0]);
+        }
+        // The GPU sees the FP16 texture, so the reference must too: near zero PQ is steep enough
+        // that the FP16 rounding of a saturated colour moves the result by several codes.
+        for px in &mut v {
+            for c in px.iter_mut() {
+                *c = f16_bits_to_f32(f32_to_f16_bits(*c));
+            }
         }
         v
     }

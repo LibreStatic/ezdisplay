@@ -279,7 +279,8 @@ mod tests {
         assert_eq!(spa_fmt10::ARGB_210LE, s::SPA_VIDEO_FORMAT_ARGB_210LE);
         assert_eq!(spa_fmt10::ABGR_210LE, s::SPA_VIDEO_FORMAT_ABGR_210LE);
         assert_eq!(SPA_PRIMARIES_BT2020, s::SPA_VIDEO_COLOR_PRIMARIES_BT2020);
-        assert_eq!(SPA_TRANSFER_PQ, s::SPA_VIDEO_TRANSFER_SMPTE2084);
+        // SPA_TRANSFER_PQ is not checked: older PipeWire headers (1.0, 1.4) lack
+        // SPA_VIDEO_TRANSFER_SMPTE2084.
     }
 
     #[test]

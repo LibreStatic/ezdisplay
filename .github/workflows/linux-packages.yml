@@ -19,7 +19,8 @@ jobs:
     steps:
       - name: Install build tools and runtime libraries
         run: |
-          pacman -Syu --noconfirm --needed base-devel sudo git clang pkgconf rust ffmpeg pipewire libva
+          pacman -Syu --noconfirm --needed base-devel sudo git clang pkgconf rust ffmpeg pipewire libva \
+            android-tools xdg-desktop-portal-kde libkscreen
       - uses: actions/checkout@v4
       - name: Build the package as a regular user
         run: |
