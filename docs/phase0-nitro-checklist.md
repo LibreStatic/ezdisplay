@@ -45,13 +45,17 @@ screenshots.
 
 ## B. Virtual Display Driver (proof of concept)
 
-> It installs a signed display driver (MIT). Uninstall it from "Add or remove programs" or with
-> `winget uninstall`.
+> It installs a signed display driver (MIT). Phase 0 is complete; this part is kept for reference.
+> The ezdisplay installer now bundles the driver (see [windows-testing.md](windows-testing.md)), and
+> uninstalling ezdisplay removes it.
 
-1. In an administrator terminal: `winget install --id=VirtualDrivers.Virtual-Display-Driver -e`
+1. Install ezdisplay with its installer, keeping the "Install the virtual display driver" task, and
+   accept Windows' device-software prompt.
 2. If the key `HKLM\SOFTWARE\MikeTheTech\VirtualDisplayDriver` exists in regedit, note its values:
    the driver reads it **before** the XML.
-3. Edit `C:\VirtualDisplayDriver\vdd_settings.xml`:
+3. Edit `vdd_settings.xml` in the folder named by the `VDDPATH` value of that key
+   (`C:\ProgramData\ezdisplay\vdd` when ezdisplay installed the driver, otherwise
+   `C:\VirtualDisplayDriver`):
    - In `<gpu><friendlyname>` put the exact name of the GPU under test, copied from Device Manager.
      First the NVIDIA one, then the Intel/AMD one.
    - In `<resolutions>` add the tablet's native resolution. The refresh rates in `<global>` (60–240)

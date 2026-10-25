@@ -22,11 +22,17 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 | `crates/ezd-link` | Byte-stream links (TCP/ADB now, AOA and QUIC later), ADB helper, prioritized mux with video credit. |
 | `crates/ezd-host-core` | Platform-independent host: `VideoSource` / `VirtualDisplay` traits, session, pacing, synthetic frames. |
 | `crates/ezd-ffmpeg` | Thin safe wrapper over FFmpeg (encoders, decoders, hardware contexts). |
-| `crates/ezd-host` | Host binary: `run`, `diag`. |
+| `crates/ezd-host-service` | The host loop as a library: accepts the tablet, keeps `adb reverse` set up for each device, runs sessions and publishes live status. Used by the CLI and the tray app. |
+| `crates/ezd-host` | Host CLI: `run`, `diag`, `vdd` (driver status, setup, install, uninstall). |
+| `crates/ezd-tray` | The PC app (`ezdisplay`): tray icon and menu plus a settings and statistics window (egui), autostart, single instance. |
 | `crates/ezd-fake-client` | Desktop stand-in for the Android client (decode, latency stats, frame dumps). |
 | `crates/ezd-host-linux` | Linux backends (Phase 1c): portal virtual outputs, PipeWire DMA-BUF, VAAPI/NVENC. |
 | `crates/ezd-host-windows` | Windows backends (Phase 1d): Virtual Display Driver, DXGI adapter policy, Desktop Duplication, D3D11 encoders. |
+| `crates/ezd-client-core` | Client session shared by the Android library and the fake client: handshake, receive loop, frame acks, clock sync, cursor cache. |
+| `crates/ezd-input` | Client input engine: motion events to protocol input messages, palm rejection, S Pen button gestures, local zoom. |
 | `crates/ezd-android` + `android/` | Android client: Kotlin UI, Rust native lib with AMediaCodec decode to a SurfaceView. |
+| `packaging/windows` | Inno Setup installer: bundles the driver, `nefconw.exe` and `adb`, downloads the pinned FFmpeg build during setup. |
+| `packaging/linux` | udev rule for `/dev/uinput`, desktop entry and icon. |
 | `tools/latency` | Web page for glass-to-glass measurements with a slow-motion camera. |
 | `tools/input-test` | Web page and logger to check injected pen, touch, buttons and scroll as text. |
 
@@ -35,6 +41,7 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 ### Windows
 
 - Virtual display: [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) (MIT, signed, IddCx). The `<gpu><friendlyname>` setting makes it call `IddCxAdapterSetRenderAdapter`. Configuration lives in `HKLM\SOFTWARE\MikeTheTech\VirtualDisplayDriver` (read first) or `C:\VirtualDisplayDriver\vdd_settings.xml`. Writing it needs elevation. The VDD path adds the `--scale`d mode the first time, which needs a writable `vdd_settings.xml`.
+- Driver install: the installer runs `ezd-host vdd install`, which creates the root device node (`Root\MttVDD`) with nefcon, points `VDDPATH` at `C:\ProgramData\ezdisplay\vdd` and lets users write `vdd_settings.xml` there, so the host never needs elevation. A VDD installed separately is detected and left untouched. Uninstall removes the driver only when ezdisplay installed it.
 - Capture: DXGI Desktop Duplication on the virtual output, using a D3D11 device on the same adapter. With the hardware cursor enabled, the pointer arrives separately.
 - Encode: FFmpeg with d3d11va hardware frames (`h264_nvenc` / `h264_qsv` / `h264_amf`). A direct NVENC SDK backend is an option if FFmpeg buffers frames.
 - Input (Phase 2): `InjectSyntheticPointerInput` with PT_PEN and PT_TOUCH devices.
@@ -61,4 +68,4 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 3. Transports: AOA, Wi-Fi (QUIC with PIN pairing).
 4. Audio.
 5. GNOME and wlroots backends.
-6. Packaging: Windows installer, Linux udev rules and packages, Android `full`/`play` builds.
+6. Packaging: Windows installer (done, with the tray app), Linux udev rules and packages, Android `full`/`play` builds.
