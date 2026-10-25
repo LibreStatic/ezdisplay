@@ -32,7 +32,7 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 | `crates/ezd-input` | Client input engine: motion events to protocol input messages, palm rejection, S Pen button gestures, local zoom. |
 | `crates/ezd-android` + `android/` | Android client: Kotlin UI, Rust native lib with AMediaCodec decode to a SurfaceView. |
 | `packaging/windows` | Inno Setup installer: bundles the driver, `nefconw.exe` and `adb`, downloads the pinned FFmpeg build during setup. |
-| `packaging/linux` | udev rule for `/dev/uinput`, desktop entry and icon. |
+| `packaging/linux` | udev rule for `/dev/uinput`, desktop entry and icon; Arch `PKGBUILD`, Debian/Ubuntu `.deb` maintainer scripts (metadata in `crates/ezd-tray`) and the AppImage build (bundled FFmpeg and adb). |
 | `tools/latency` | Web page for glass-to-glass measurements with a slow-motion camera. |
 | `tools/input-test` | Web page and logger to check injected pen, touch, buttons and scroll as text. |
 
@@ -68,4 +68,4 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 3. Transports: AOA, Wi-Fi (QUIC with PIN pairing).
 4. Audio.
 5. GNOME and wlroots backends.
-6. Packaging: Windows installer (done, with the tray app), Linux udev rules and packages, Android `full`/`play` builds.
+6. Packaging: Windows installer (done, with the tray app), Linux packages (Arch, .deb, AppImage; done) and udev rules, Android `full`/`play` builds.

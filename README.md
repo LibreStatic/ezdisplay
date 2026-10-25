@@ -52,7 +52,37 @@ so SmartScreen asks for confirmation (*More info*, *Run anyway*) and Smart App C
 See [docs/windows-testing.md](docs/windows-testing.md) and
 [packaging/windows/README.md](packaging/windows/README.md).
 
-**Linux (KDE Plasma).** Build from source (below), then:
+**Linux (KDE Plasma 6, Wayland).** Plasma 6 on Wayland is required; X11 and other desktops are not
+supported yet. The packages are in the artifacts of the *Linux packages* workflow and, once there
+is a release, in the GitHub Release (see [docs/releasing.md](docs/releasing.md)). Pick one:
+
+- **Arch Linux**: `sudo pacman -U ezdisplay-*.pkg.tar.zst`.
+- **Debian and Ubuntu**: `sudo apt install ./ezdisplay_*.deb`, using the file for your release:
+  `~ubuntu24.04` (Ubuntu 24.04, KDE neon), `~debian13` (Debian 13 "trixie") or `~ubuntu26.04`
+  (Ubuntu 26.04). Kubuntu 24.04 ships Plasma 5.27 and is not supported; KDE neon is.
+- **Any other distro (AppImage)**: any x86_64 distro with glibc 2.39 or newer and Plasma 6
+  (KDE neon, Debian 13, Fedora 40+, Arch, openSUSE Tumbleweed, Kubuntu 24.10+).
+
+  ```sh
+  chmod +x ezdisplay-*.AppImage
+  ./ezdisplay-*.AppImage
+  ```
+
+  It needs `fusermount3` (fuse3) to mount itself; without it run
+  `./ezdisplay-*.AppImage --appimage-extract-and-run`. FFmpeg and `adb` are bundled; `libva`,
+  `libdrm`, Vulkan and PipeWire come from the system. On first run the tray offers *Enable input*,
+  which installs the `/dev/uinput` udev rule through polkit (the packages install it themselves).
+  Moving the AppImage breaks its autostart entry: switch *Start with the session* off and on
+  again. For menu integration use Gear Lever or AppImageLauncher. Diagnostics:
+  `./ezdisplay-*.AppImage host diag`.
+
+The packages install `ezdisplay` (the tray app) and `ezd-host`, the udev rule, the desktop entry and
+the icon, and pull in `adb`. Start *ezdisplay* from the application launcher: it lives in the
+system tray, and *Start with the session* in its menu adds it to autostart. On GNOME the tray needs
+the AppIndicator extension. How the packages are built:
+[packaging/linux/README.md](packaging/linux/README.md).
+
+**Linux, from source.** Build it (below), then:
 
 1. For touch and pen input, install the udev rule for `/dev/uinput` once (see
    [docs/input.md](docs/input.md)):
@@ -70,8 +100,7 @@ See [docs/windows-testing.md](docs/windows-testing.md) and
    install -Dm644 packaging/linux/com.librestatic.ezdisplay.svg -t ~/.local/share/icons/hicolor/scalable/apps/
    ```
 
-3. Start *ezdisplay* from the application launcher. It lives in the system tray; *Start with the
-   session* in its menu adds it to autostart. On GNOME the tray needs the AppIndicator extension.
+3. Start *ezdisplay* from the application launcher.
 
 `adb` comes from the Android SDK platform-tools (`adb` on the `PATH`).
 
