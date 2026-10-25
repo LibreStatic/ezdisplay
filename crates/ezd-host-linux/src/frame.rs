@@ -23,8 +23,52 @@ pub mod spa_fmt {
     pub const ABGR: u32 = 14;
 }
 
+/// `SPA_VIDEO_FORMAT_*` ids of the packed 10-bit formats (2 bits of padding or alpha, 10 bits per
+/// colour channel, little-endian 32-bit word), see `spa/param/video/raw.h`.
+pub mod spa_fmt10 {
+    /// x R G B, 2:10:10:10
+    pub const XRGB_210LE: u32 = 80;
+    /// x B G R, 2:10:10:10
+    pub const XBGR_210LE: u32 = 81;
+    /// A R G B, 2:10:10:10
+    pub const ARGB_210LE: u32 = 84;
+    /// A B G R, 2:10:10:10
+    pub const ABGR_210LE: u32 = 85;
+}
+
 /// Formats offered to the compositor, in order of preference.
 pub const OFFERED_FORMATS: [u32; 4] = [spa_fmt::BGRX, spa_fmt::BGRA, spa_fmt::RGBX, spa_fmt::RGBA];
+
+/// 10-bit formats offered after [`OFFERED_FORMATS`], so a compositor that only knows the 8-bit
+/// ones negotiates exactly what it always did. They carry HDR10 once a compositor renders it.
+pub const OFFERED_FORMATS_10: [u32; 4] = [
+    spa_fmt10::XRGB_210LE,
+    spa_fmt10::XBGR_210LE,
+    spa_fmt10::ARGB_210LE,
+    spa_fmt10::ABGR_210LE,
+];
+
+/// True for the packed 10-bit formats.
+pub fn is_ten_bit(spa: u32) -> bool {
+    OFFERED_FORMATS_10.contains(&spa)
+}
+
+/// `SPA_VIDEO_COLOR_PRIMARIES_BT2020`.
+pub const SPA_PRIMARIES_BT2020: u32 = 7;
+/// `SPA_VIDEO_TRANSFER_SMPTE2084` (PQ).
+pub const SPA_TRANSFER_PQ: u32 = 14;
+
+/// Colour description of the negotiated format (`SPA_FORMAT_VIDEO_colorPrimaries` and friends),
+/// `None` where the producer did not state it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SpaColor {
+    /// `SPA_VIDEO_COLOR_PRIMARIES_*`.
+    pub primaries: Option<u32>,
+    /// `SPA_VIDEO_TRANSFER_*`.
+    pub transfer: Option<u32>,
+    /// `SPA_VIDEO_COLOR_MATRIX_*`.
+    pub matrix: Option<u32>,
+}
 
 /// `DRM_FORMAT_MOD_LINEAR`.
 pub const DRM_MOD_LINEAR: u64 = 0;
@@ -44,6 +88,11 @@ pub fn drm_fourcc(spa: u32) -> Option<u32> {
         spa_fmt::XBGR => fourcc(b"RX24"),
         spa_fmt::ARGB => fourcc(b"BA24"),
         spa_fmt::ABGR => fourcc(b"RA24"),
+        // DRM_FORMAT_XRGB2101010, XBGR2101010, ARGB2101010, ABGR2101010
+        spa_fmt10::XRGB_210LE => fourcc(b"XR30"),
+        spa_fmt10::XBGR_210LE => fourcc(b"XB30"),
+        spa_fmt10::ARGB_210LE => fourcc(b"AR30"),
+        spa_fmt10::ABGR_210LE => fourcc(b"AB30"),
         _ => return None,
     })
 }
@@ -72,6 +121,10 @@ pub fn av_pix_fmt_name(spa: u32) -> Option<&'static str> {
         spa_fmt::XBGR => "0bgr",
         spa_fmt::ARGB => "argb",
         spa_fmt::ABGR => "abgr",
+        // FFmpeg has no 10-bit format with alpha: the 2 alpha bits of the A variants sit where the
+        // padding of the x variants is, and are ignored.
+        spa_fmt10::XRGB_210LE | spa_fmt10::ARGB_210LE => "x2rgb10le",
+        spa_fmt10::XBGR_210LE | spa_fmt10::ABGR_210LE => "x2bgr10le",
         _ => return None,
     })
 }
@@ -172,6 +225,17 @@ pub struct NegotiatedFormat {
     pub spa_format: u32,
     /// DRM modifier when the buffers are DMA-BUFs.
     pub modifier: Option<u64>,
+    /// Colour description, when the producer stated it.
+    pub color: SpaColor,
+}
+
+impl NegotiatedFormat {
+    /// The stream is HDR10: a 10-bit format with BT.2020 primaries and the PQ transfer function.
+    pub fn is_hdr10(&self) -> bool {
+        is_ten_bit(self.spa_format)
+            && self.color.primaries == Some(SPA_PRIMARIES_BT2020)
+            && self.color.transfer == Some(SPA_TRANSFER_PQ)
+    }
 }
 
 /// Converts a PipeWire header timestamp (CLOCK_MONOTONIC ns) to the `now_us` clock.
@@ -210,6 +274,58 @@ mod tests {
         assert_eq!(spa_fmt::BGRA, s::SPA_VIDEO_FORMAT_BGRA);
         assert_eq!(spa_fmt::ARGB, s::SPA_VIDEO_FORMAT_ARGB);
         assert_eq!(spa_fmt::ABGR, s::SPA_VIDEO_FORMAT_ABGR);
+        assert_eq!(spa_fmt10::XRGB_210LE, s::SPA_VIDEO_FORMAT_xRGB_210LE);
+        assert_eq!(spa_fmt10::XBGR_210LE, s::SPA_VIDEO_FORMAT_xBGR_210LE);
+        assert_eq!(spa_fmt10::ARGB_210LE, s::SPA_VIDEO_FORMAT_ARGB_210LE);
+        assert_eq!(spa_fmt10::ABGR_210LE, s::SPA_VIDEO_FORMAT_ABGR_210LE);
+        assert_eq!(SPA_PRIMARIES_BT2020, s::SPA_VIDEO_COLOR_PRIMARIES_BT2020);
+        assert_eq!(SPA_TRANSFER_PQ, s::SPA_VIDEO_TRANSFER_SMPTE2084);
+    }
+
+    #[test]
+    fn ten_bit_formats_are_mapped() {
+        // DRM_FORMAT_XRGB2101010 / XBGR2101010 / ARGB2101010 / ABGR2101010
+        assert_eq!(drm_fourcc(spa_fmt10::XRGB_210LE), Some(0x3033_5258));
+        assert_eq!(drm_fourcc(spa_fmt10::XBGR_210LE), Some(0x3033_4258));
+        assert_eq!(drm_fourcc(spa_fmt10::ARGB_210LE), Some(0x3033_5241));
+        assert_eq!(drm_fourcc(spa_fmt10::ABGR_210LE), Some(0x3033_4241));
+        for f in OFFERED_FORMATS_10 {
+            assert!(is_ten_bit(f) && av_pix_fmt_name(f).is_some());
+            assert!(!OFFERED_FORMATS.contains(&f));
+        }
+        assert!(OFFERED_FORMATS.iter().all(|f| !is_ten_bit(*f)));
+    }
+
+    fn negotiated(
+        spa_format: u32,
+        primaries: Option<u32>,
+        transfer: Option<u32>,
+    ) -> NegotiatedFormat {
+        NegotiatedFormat {
+            width: 8,
+            height: 8,
+            spa_format,
+            modifier: None,
+            color: SpaColor {
+                primaries,
+                transfer,
+                matrix: None,
+            },
+        }
+    }
+
+    #[test]
+    fn hdr10_needs_ten_bits_bt2020_and_pq() {
+        let (p, t) = (Some(SPA_PRIMARIES_BT2020), Some(SPA_TRANSFER_PQ));
+        assert!(negotiated(spa_fmt10::XRGB_210LE, p, t).is_hdr10());
+        assert!(negotiated(spa_fmt10::ABGR_210LE, p, t).is_hdr10());
+        // 8 bits, BT.709 primaries (1), sRGB transfer (13), HLG (18), nothing stated.
+        assert!(!negotiated(spa_fmt::BGRX, p, t).is_hdr10());
+        assert!(!negotiated(spa_fmt10::XRGB_210LE, Some(1), t).is_hdr10());
+        assert!(!negotiated(spa_fmt10::XRGB_210LE, p, Some(13)).is_hdr10());
+        assert!(!negotiated(spa_fmt10::XRGB_210LE, p, Some(18)).is_hdr10());
+        assert!(!negotiated(spa_fmt10::XRGB_210LE, None, None).is_hdr10());
+        assert!(!negotiated(spa_fmt10::XRGB_210LE, p, None).is_hdr10());
     }
 
     #[test]

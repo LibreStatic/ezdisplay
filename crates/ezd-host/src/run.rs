@@ -138,6 +138,8 @@ fn config(args: &RunArgs) -> Result<ServiceConfig> {
         },
         // The command line never starts the app: that is the tray's convenience.
         open_app_on_connect: false,
+        // The command line has no HDR switch: it streams HDR10 whenever everything supports it.
+        ..ServiceConfig::default()
     })
 }
 

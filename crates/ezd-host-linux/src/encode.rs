@@ -4,8 +4,9 @@
 //! `ezd_ffmpeg::option_sets`.
 
 use crate::adapter::RenderNode;
-use crate::frame::{DmaBuf, Frame, Pixels, ShmBuf, av_pix_fmt_name, drm_fourcc};
+use crate::frame::{DmaBuf, Frame, Pixels, ShmBuf, av_pix_fmt_name, drm_fourcc, is_ten_bit};
 use crate::vkdma::VkDma;
+use ezd_ffmpeg::ColorInfo;
 use ezd_ffmpeg::HwDevice;
 use ezd_ffmpeg::HwKind;
 use ezd_ffmpeg::sys as ff;
@@ -42,6 +43,39 @@ impl Plan {
     pub fn hardware(&self) -> bool {
         self.kind != Kind::X264
     }
+
+    /// The HDR10 variant: HEVC Main10 (P010) instead of 8-bit H.264.
+    pub fn hdr10(&self) -> bool {
+        ten_bit_encoder(self.name)
+    }
+}
+
+/// Encoders that only run the 10-bit HDR10 chain (there is no 8-bit HEVC plan).
+fn ten_bit_encoder(name: &str) -> bool {
+    name.starts_with("hevc_")
+}
+
+/// Chooses the HDR10 encoders for `node`: HEVC Main10, best first. Empty without a hardware
+/// node: there is no software HDR path. `hevc_vaapi` always runs the full encoder (never
+/// `low_power`): Coffee Lake and older have no low-power Main10.
+pub fn plan_hdr_encoders(node: Option<&RenderNode>, works: &dyn Fn(&Plan) -> bool) -> Vec<Plan> {
+    let Some(n) = node else {
+        return Vec::new();
+    };
+    let plan = if n.is_nvidia() {
+        Plan {
+            name: "hevc_nvenc",
+            kind: Kind::Nvenc,
+            node: Some(n.path.clone()),
+        }
+    } else {
+        Plan {
+            name: "hevc_vaapi",
+            kind: Kind::Vaapi,
+            node: Some(n.path.clone()),
+        }
+    };
+    if works(&plan) { vec![plan] } else { Vec::new() }
 }
 
 /// Chooses the encoders to offer for `node`, best first. `works` tells whether a plan was
@@ -334,6 +368,48 @@ struct EncParams<'a> {
     kbps: u32,
     pix_fmt: ff::AVPixelFormat,
     hw_frames: Option<*mut ff::AVBufferRef>,
+    /// Colour signalling written to the stream (VUI).
+    color: ColorInfo,
+    /// 10-bit input (HEVC Main10 option sets).
+    ten_bit: bool,
+}
+
+/// The FFmpeg enums of the H.273 codes of `c`; codes we do not stream stay unspecified.
+fn av_color(
+    c: ColorInfo,
+) -> (
+    ff::AVColorPrimaries,
+    ff::AVColorTransferCharacteristic,
+    ff::AVColorSpace,
+    ff::AVColorRange,
+) {
+    use ff::AVColorPrimaries as P;
+    use ff::AVColorRange as R;
+    use ff::AVColorSpace as S;
+    use ff::AVColorTransferCharacteristic as T;
+    (
+        match c.primaries {
+            1 => P::AVCOL_PRI_BT709,
+            9 => P::AVCOL_PRI_BT2020,
+            _ => P::AVCOL_PRI_UNSPECIFIED,
+        },
+        match c.transfer {
+            1 => T::AVCOL_TRC_BT709,
+            16 => T::AVCOL_TRC_SMPTE2084,
+            18 => T::AVCOL_TRC_ARIB_STD_B67,
+            _ => T::AVCOL_TRC_UNSPECIFIED,
+        },
+        match c.matrix {
+            1 => S::AVCOL_SPC_BT709,
+            9 => S::AVCOL_SPC_BT2020_NCL,
+            _ => S::AVCOL_SPC_UNSPECIFIED,
+        },
+        if c.full_range {
+            R::AVCOL_RANGE_JPEG
+        } else {
+            R::AVCOL_RANGE_MPEG
+        },
+    )
 }
 
 impl Enc {
@@ -345,7 +421,7 @@ impl Enc {
             return Err(format!("encoder {} not available in this FFmpeg", p.name));
         }
         let mut last = String::from("no option set");
-        for set in ezd_ffmpeg::option_sets(p.name) {
+        for set in ezd_ffmpeg::option_sets_for(p.name, p.ten_bit) {
             match Self::try_open(codec, p, &set) {
                 Ok(e) => return Ok(e),
                 Err(e) => {
@@ -394,10 +470,7 @@ impl Enc {
             c.gop_size = i32::MAX;
             c.max_b_frames = 0;
             c.thread_count = 1;
-            c.colorspace = ff::AVColorSpace::AVCOL_SPC_BT709;
-            c.color_primaries = ff::AVColorPrimaries::AVCOL_PRI_BT709;
-            c.color_trc = ff::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
-            c.color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
+            (c.color_primaries, c.color_trc, c.colorspace, c.color_range) = av_color(p.color);
             c.flags |= (ff::AV_CODEC_FLAG_GLOBAL_HEADER | ff::AV_CODEC_FLAG_LOW_DELAY) as i32;
             if let Some(h) = p.hw_frames {
                 c.hw_frames_ctx = ff::av_buffer_ref(h);
@@ -481,6 +554,8 @@ fn pix_fmt_of(spa: u32) -> Result<ff::AVPixelFormat, String> {
         Some("0bgr") => AV_PIX_FMT_0BGR,
         Some("argb") => AV_PIX_FMT_ARGB,
         Some("abgr") => AV_PIX_FMT_ABGR,
+        Some("x2rgb10le") => AV_PIX_FMT_X2RGB10LE,
+        Some("x2bgr10le") => AV_PIX_FMT_X2BGR10LE,
         _ => return Err(format!("unsupported pixel format {spa}")),
     })
 }
@@ -612,6 +687,29 @@ struct Conv {
     tag_colorspace: bool,
 }
 
+/// Colour signalling of a stream: the H.273 codes written to the encoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamTags {
+    color: ColorInfo,
+}
+
+impl Default for StreamTags {
+    /// BT.709 limited range, what 8-bit streams have always been tagged with.
+    fn default() -> Self {
+        StreamTags {
+            color: ColorInfo::BT709_LIMITED,
+        }
+    }
+}
+
+impl From<&ezd_proto::StreamColor> for StreamTags {
+    fn from(c: &ezd_proto::StreamColor) -> Self {
+        StreamTags {
+            color: ColorInfo::from(c),
+        }
+    }
+}
+
 /// A frame converted for the encoder.
 pub struct Prepared {
     frame: OwnedFrame,
@@ -644,6 +742,7 @@ unsafe impl Send for Prepared {}
 /// conversion.
 pub struct Converter {
     plan: Plan,
+    tags: StreamTags,
     fps_mhz: u32,
     active: Option<Conv>,
     generation: u64,
@@ -657,6 +756,29 @@ fn scale_vaapi(w: u32, h: u32, color: bool) -> String {
         format!("{base}:out_color_matrix=bt709:out_range=tv")
     } else {
         base
+    }
+}
+
+/// `scale_vaapi` variants to P010 with BT.2020 limited range, most complete first: with the
+/// primaries and transfer tags of the output (FFmpeg 6.1 and newer have them), then only the
+/// matrix and range, then the bare format.
+fn scale_vaapi_p010(w: u32, h: u32) -> [String; 3] {
+    let base = format!("scale_vaapi=w={w}:h={h}:format=p010");
+    [
+        format!(
+            "{base}:out_color_matrix=bt2020nc:out_color_primaries=bt2020:out_color_transfer=smpte2084:out_range=tv"
+        ),
+        format!("{base}:out_color_matrix=bt2020nc:out_range=tv"),
+        base,
+    ]
+}
+
+/// The `scale_vaapi` variants to try for an output of `w`x`h`, best first.
+fn scale_vaapi_variants(w: u32, h: u32, hdr: bool) -> Vec<String> {
+    if hdr {
+        scale_vaapi_p010(w, h).to_vec()
+    } else {
+        vec![scale_vaapi(w, h, true), scale_vaapi(w, h, false)]
     }
 }
 
@@ -693,11 +815,18 @@ impl Converter {
     pub fn new(plan: Plan, fps_mhz: u32) -> Converter {
         Converter {
             plan,
+            tags: StreamTags::default(),
             fps_mhz,
             active: None,
             generation: 0,
             pts: 0,
         }
+    }
+
+    /// Sets the colour signalling of the stream (default BT.709 limited range).
+    pub fn with_tags(mut self, tags: StreamTags) -> Converter {
+        self.tags = tags;
+        self
     }
 
     /// Input path currently in use (`dmabuf`/`shm`), if started.
@@ -718,6 +847,12 @@ impl Converter {
             height: frame.height,
         };
         let in_fmt = pix_fmt_of(spa_format)?;
+        let hdr = self.plan.hdr10();
+        if hdr && !is_ten_bit(spa_format) {
+            return Err(format!(
+                "the HDR10 encoder needs a 10-bit capture format, got {spa_format}"
+            ));
+        }
         let node = self.plan.node.clone().unwrap_or_default();
         match self.plan.kind {
             Kind::Vaapi => {
@@ -737,9 +872,8 @@ impl Converter {
                     };
                     let mut last = String::new();
                     let mut g = None;
-                    for color in [true, false] {
-                        let desc =
-                            format!("hwmap=derive_device=vaapi,{}", scale_vaapi(w, h, color));
+                    for scale in scale_vaapi_variants(w, h, hdr) {
+                        let desc = format!("hwmap=derive_device=vaapi,{scale}");
                         match Graph::build(&input, &desc, &[]) {
                             Ok(x) => {
                                 g = Some(x);
@@ -761,13 +895,20 @@ impl Converter {
                     };
                     let mut last = String::new();
                     let mut g = None;
-                    for desc in [
-                        format!("hwupload,{}", scale_vaapi(w, h, true)),
-                        format!("hwupload,{}", scale_vaapi(w, h, false)),
+                    let software = if hdr {
+                        format!(
+                            "scale=w={w}:h={h}:out_color_matrix=bt2020nc:out_range=tv,format=p010le,hwupload"
+                        )
+                    } else {
                         format!(
                             "scale=w={w}:h={h}:out_color_matrix=bt709:out_range=tv,format=nv12,hwupload"
-                        ),
-                    ] {
+                        )
+                    };
+                    let descs = scale_vaapi_variants(w, h, hdr)
+                        .into_iter()
+                        .map(|scale| format!("hwupload,{scale}"))
+                        .chain([software]);
+                    for desc in descs {
                         match Graph::build(&input, &desc, &[Some(vaapi.as_ptr()); 3]) {
                             Ok(x) => {
                                 g = Some(x);
@@ -810,8 +951,11 @@ impl Converter {
                         fps_mhz: self.fps_mhz,
                         hw_frames: Some(import.vk_frames.0),
                     };
-                    let desc =
-                        format!("scale_vulkan=w={w}:h={h}:format=nv12:out_range=tv,hwupload");
+                    let desc = if hdr {
+                        format!("scale_vulkan=w={w}:h={h}:format=p010:out_range=tv,hwupload")
+                    } else {
+                        format!("scale_vulkan=w={w}:h={h}:format=nv12:out_range=tv,hwupload")
+                    };
                     let graph = Graph::build(&input, &desc, &[Some(import.vk.0), Some(cu.0)])?;
                     let (gw, gh) = graph.sink_size();
                     if (gw, gh) != (w, h) {
@@ -829,6 +973,32 @@ impl Converter {
                         height: h,
                         path: "nvenc-dmabuf",
                         tag_colorspace: true,
+                    });
+                }
+                if hdr {
+                    let input = GraphInput {
+                        pix_fmt: in_fmt,
+                        width: frame.width,
+                        height: frame.height,
+                        fps_mhz: self.fps_mhz,
+                        hw_frames: None,
+                    };
+                    let desc = format!(
+                        "scale=w={w}:h={h}:out_color_matrix=bt2020nc:out_range=tv,format=p010le"
+                    );
+                    let graph = Graph::build(&input, &desc, &[])?;
+                    return Ok(Conv {
+                        key,
+                        graph: Some(graph),
+                        drm_frames: None,
+                        vk_import: None,
+                        _devices: Vec::new(),
+                        _vaapi: None,
+                        pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_P010LE,
+                        width: w,
+                        height: h,
+                        path: "nvenc-sysmem",
+                        tag_colorspace: false,
                     });
                 }
                 Ok(Conv {
@@ -897,6 +1067,7 @@ impl Converter {
             tracing::info!(path = self.path(), plan = ?self.plan, "encode pipeline opened");
         }
         let a = self.active.as_mut().expect("opened above");
+        let hdr = self.plan.hdr10();
         let (w, h) = (frame.width, frame.height);
         let (capture_us, seq, dma) = (frame.capture_us, frame.seq, key.dma);
 
@@ -929,7 +1100,12 @@ impl Converter {
                 if a.tag_colorspace {
                     // SAFETY: the frame is exclusively ours.
                     unsafe {
-                        (*f.0).colorspace = ff::AVColorSpace::AVCOL_SPC_BT709;
+                        // The RGB -> YUV matrix follows the input frame's colorspace.
+                        (*f.0).colorspace = if hdr {
+                            ff::AVColorSpace::AVCOL_SPC_BT2020_NCL
+                        } else {
+                            ff::AVColorSpace::AVCOL_SPC_BT709
+                        };
                         (*f.0).color_range = ff::AVColorRange::AVCOL_RANGE_JPEG;
                     }
                 }
@@ -937,6 +1113,14 @@ impl Converter {
             }
             Pixels::Shm(s) => (shm_frame(w, h, s)?, None),
         };
+        if hdr {
+            // The capture is PQ-encoded BT.2020 RGB; say so, so the conversion does not tone-map.
+            // SAFETY: the frame is exclusively ours.
+            unsafe {
+                (*av.0).color_primaries = ff::AVColorPrimaries::AVCOL_PRI_BT2020;
+                (*av.0).color_trc = ff::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084;
+            }
+        }
         // SAFETY: the frame is exclusively ours.
         unsafe {
             (*av.0).pts = self.pts;
@@ -992,6 +1176,7 @@ struct Active {
 /// packet is an IDR with codec config.
 pub struct Encoder {
     name: &'static str,
+    tags: StreamTags,
     fps_mhz: u32,
     kbps: u32,
     active: Option<Active>,
@@ -1002,10 +1187,17 @@ impl Encoder {
     pub fn new(name: &'static str, fps_mhz: u32, kbps: u32) -> Encoder {
         Encoder {
             name,
+            tags: StreamTags::default(),
             fps_mhz,
             kbps,
             active: None,
         }
+    }
+
+    /// Sets the colour signalling of the stream (default BT.709 limited range).
+    pub fn with_tags(mut self, tags: StreamTags) -> Encoder {
+        self.tags = tags;
+        self
     }
 
     /// Encodes `p`. The capture buffer, if `p` still holds it, is released once the packet is out.
@@ -1027,6 +1219,8 @@ impl Encoder {
                 kbps: self.kbps,
                 pix_fmt: p.pix_fmt,
                 hw_frames: (!hw.is_null()).then_some(hw),
+                color: self.tags.color,
+                ten_bit: ten_bit_encoder(self.name),
             })?;
             self.active = Some(Active {
                 generation: p.generation,
@@ -1049,6 +1243,12 @@ impl Encoder {
         // SAFETY: `frame` is a valid frame we own.
         unsafe {
             let f = &mut *frame.0;
+            if ten_bit_encoder(self.name) {
+                // HDR10 frames carry the stream's colour tags (8-bit streams keep what the
+                // conversion left, which the encoder ignores in favour of the context).
+                (f.color_primaries, f.color_trc, f.colorspace, f.color_range) =
+                    av_color(self.tags.color);
+            }
             if want_key {
                 f.pict_type = ff::AVPictureType::AV_PICTURE_TYPE_I;
                 f.flags |= ff::AV_FRAME_FLAG_KEY;
@@ -1105,6 +1305,14 @@ impl Pipeline {
         Pipeline {
             enc: Encoder::new(plan.name, fps_mhz, kbps),
             conv: Converter::new(plan, fps_mhz),
+        }
+    }
+
+    /// Sets the colour signalling of the stream (default BT.709 limited range).
+    pub fn with_tags(self, tags: StreamTags) -> Pipeline {
+        Pipeline {
+            enc: self.enc.with_tags(tags),
+            conv: self.conv.with_tags(tags),
         }
     }
 
@@ -1368,6 +1576,53 @@ pub fn export_test_dmabuf(
     h: u32,
     quadrants: [(u8, u8, u8); 4],
 ) -> Result<Frame, String> {
+    use crate::frame::spa_fmt;
+    export_dmabuf(
+        node,
+        (w, h),
+        ff::AVPixelFormat::AV_PIX_FMT_BGR0,
+        &[spa_fmt::BGRX, spa_fmt::BGRA, spa_fmt::RGBX, spa_fmt::RGBA],
+        &|q| {
+            let (r, g, b) = quadrants[q];
+            [b, g, r, 0]
+        },
+    )
+}
+
+/// Like [`export_test_dmabuf`] for a 10-bit xRGB surface; the pattern is `(r, g, b)` code values
+/// per quadrant.
+#[cfg(test)]
+pub fn export_test_dmabuf_10(
+    node: &str,
+    w: u32,
+    h: u32,
+    quadrants: [(u16, u16, u16); 4],
+) -> Result<Frame, String> {
+    export_dmabuf(
+        node,
+        (w, h),
+        ff::AVPixelFormat::AV_PIX_FMT_X2RGB10LE,
+        &crate::frame::OFFERED_FORMATS_10,
+        &|q| {
+            let (r, g, b) = quadrants[q];
+            let word =
+                (u32::from(r & 0x3ff) << 20) | (u32::from(g & 0x3ff) << 10) | u32::from(b & 0x3ff);
+            word.to_le_bytes()
+        },
+    )
+}
+
+/// Exports a VAAPI surface of software format `sw_fmt` as a DMA-BUF `Frame`; `pixel` gives the
+/// four bytes of a pixel for each quadrant (0 top left, 1 top right, 2 bottom left, 3 bottom
+/// right) and the exported fourcc must be one of `spa_candidates`.
+#[cfg(test)]
+fn export_dmabuf(
+    node: &str,
+    (w, h): (u32, u32),
+    sw_fmt: ff::AVPixelFormat,
+    spa_candidates: &[u32],
+    pixel: &dyn Fn(usize) -> [u8; 4],
+) -> Result<Frame, String> {
     let dev = HwDevice::open(HwKind::Vaapi, Some(node)).map_err(|e| e.to_string())?;
     // SAFETY: construction of a VAAPI frames context, upload of a software frame and export through
     // av_hwframe_map; all objects are freed on every path by the wrappers.
@@ -1379,7 +1634,7 @@ pub fn export_test_dmabuf(
         let mut frames = BufRef(frames);
         let fc = &mut *((*frames.0).data as *mut ff::AVHWFramesContext);
         fc.format = ff::AVPixelFormat::AV_PIX_FMT_VAAPI;
-        fc.sw_format = ff::AVPixelFormat::AV_PIX_FMT_BGR0;
+        fc.sw_format = sw_fmt;
         fc.width = w as i32;
         fc.height = h as i32;
         fc.initial_pool_size = 2;
@@ -1387,11 +1642,11 @@ pub fn export_test_dmabuf(
         if r < 0 {
             ff::av_buffer_unref(&mut frames.0);
             frames.0 = ptr::null_mut();
-            return Err(averr("av_hwframe_ctx_init(VAAPI BGR0)", r));
+            return Err(averr(&format!("av_hwframe_ctx_init(VAAPI {sw_fmt:?})"), r));
         }
         // Software source.
         let sw = OwnedFrame::alloc()?;
-        (*sw.0).format = ff::AVPixelFormat::AV_PIX_FMT_BGR0 as i32;
+        (*sw.0).format = sw_fmt as i32;
         (*sw.0).width = w as i32;
         (*sw.0).height = h as i32;
         let r = ff::av_frame_get_buffer(sw.0, 0);
@@ -1402,12 +1657,8 @@ pub fn export_test_dmabuf(
             let row = (*sw.0).data[0].add(y * (*sw.0).linesize[0] as usize);
             for x in 0..w as usize {
                 let q = (y >= h as usize / 2) as usize * 2 + (x >= w as usize / 2) as usize;
-                let (r, g, b) = quadrants[q];
                 let px = row.add(x * 4);
-                *px = b;
-                *px.add(1) = g;
-                *px.add(2) = r;
-                *px.add(3) = 0;
+                std::ptr::copy_nonoverlapping(pixel(q).as_ptr(), px, 4);
             }
         }
         let hw = OwnedFrame::alloc()?;
@@ -1448,15 +1699,11 @@ pub fn export_test_dmabuf(
         }
         let modifier = d.objects[0].format_modifier;
         let fourcc = layer.format;
-        let spa_format = [
-            crate::frame::spa_fmt::BGRX,
-            crate::frame::spa_fmt::BGRA,
-            crate::frame::spa_fmt::RGBX,
-            crate::frame::spa_fmt::RGBA,
-        ]
-        .into_iter()
-        .find(|f| drm_fourcc(*f) == Some(fourcc))
-        .ok_or_else(|| format!("exported fourcc {fourcc:#x} not supported"))?;
+        let spa_format = spa_candidates
+            .iter()
+            .copied()
+            .find(|f| drm_fourcc(*f) == Some(fourcc))
+            .ok_or_else(|| format!("exported fourcc {fourcc:#x} not supported"))?;
         tracing::debug!(
             modifier = format_args!("{modifier:#x}"),
             fourcc = format_args!("{fourcc:#x}"),
@@ -1501,14 +1748,55 @@ pub fn test_shm_frame(w: u32, h: u32, quadrants: [(u8, u8, u8); 4]) -> Frame {
     }
 }
 
+/// An xRGB_210LE test image with four colored quadrants (`(r, g, b)` in 10-bit code values), as
+/// a shared-memory frame: what a compositor sends for an HDR10 output.
+pub fn test_shm_frame_10(w: u32, h: u32, quadrants: [(u16, u16, u16); 4]) -> Frame {
+    let mut data = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let q = (y >= h as usize / 2) as usize * 2 + (x >= w as usize / 2) as usize;
+            let (r, g, b) = quadrants[q];
+            let word =
+                (u32::from(r & 0x3ff) << 20) | (u32::from(g & 0x3ff) << 10) | u32::from(b & 0x3ff);
+            let i = (y * w as usize + x) * 4;
+            data[i..i + 4].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+    Frame {
+        width: w,
+        height: h,
+        capture_us: now_us(),
+        seq: 0,
+        pixels: Pixels::Shm(ShmBuf {
+            spa_format: crate::frame::spa_fmt10::XRGB_210LE,
+            stride: w as usize * 4,
+            data,
+        }),
+    }
+}
+
 /// Probes whether `plan` can encode a shared-memory frame through the real pipeline.
 pub fn probe_plan(plan: &Plan) -> Result<(), String> {
-    let mut p = Pipeline::new(plan.clone(), 60_000, 8_000);
-    let f = test_shm_frame(
-        1280,
-        720,
-        [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)],
-    );
+    let (mut p, f) = if plan.hdr10() {
+        let tags = StreamTags::from(&ezd_proto::StreamColor::hdr10(None, 0, 0));
+        (
+            Pipeline::new(plan.clone(), 60_000, 8_000).with_tags(tags),
+            test_shm_frame_10(
+                1280,
+                720,
+                [(940, 64, 64), (64, 940, 64), (64, 64, 940), (940, 940, 940)],
+            ),
+        )
+    } else {
+        (
+            Pipeline::new(plan.clone(), 60_000, 8_000),
+            test_shm_frame(
+                1280,
+                720,
+                [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)],
+            ),
+        )
+    };
     match p.encode(f, true)? {
         Some(o) if o.keyframe && !o.data.is_empty() => Ok(()),
         Some(_) => Err("first packet was not a keyframe".into()),
@@ -1667,6 +1955,282 @@ mod tests {
             }
             Ok(None) => panic!("no packet"),
             Err(e) => eprintln!("skip: VAAPI unusable here: {e}"),
+        }
+    }
+
+    fn vaapi_hdr_plan(node: String) -> Plan {
+        Plan {
+            name: "hevc_vaapi",
+            kind: Kind::Vaapi,
+            node: Some(node),
+        }
+    }
+
+    fn hdr_tags() -> StreamTags {
+        StreamTags::from(&ezd_proto::StreamColor::hdr10(None, 0, 0))
+    }
+
+    /// What FFmpeg's HEVC decoder reports for the first picture of `out`.
+    #[derive(Debug)]
+    struct Decoded10 {
+        pix_fmt: ff::AVPixelFormat,
+        primaries: ff::AVColorPrimaries,
+        trc: ff::AVColorTransferCharacteristic,
+        matrix: ff::AVColorSpace,
+        range: ff::AVColorRange,
+        width: usize,
+        height: usize,
+        /// 10-bit luma samples.
+        luma: Vec<u16>,
+        /// 10-bit Cb and Cr samples (half resolution).
+        cb: Vec<u16>,
+        cr: Vec<u16>,
+    }
+
+    fn decode_hevc_10bit(out: &Output) -> Decoded10 {
+        // SAFETY: plain libavcodec decoding of one access unit; every object is freed below and
+        // the plane reads stay within width/height and linesize of the decoded frame.
+        unsafe {
+            let codec = ff::avcodec_find_decoder(ff::AVCodecID::AV_CODEC_ID_HEVC);
+            assert!(!codec.is_null(), "no HEVC decoder in this FFmpeg");
+            let mut ctx = ff::avcodec_alloc_context3(codec);
+            (*ctx).thread_count = 1;
+            assert!(ff::avcodec_open2(ctx, codec, ptr::null_mut()) >= 0);
+            let mut bytes = out.codec_config.clone().unwrap_or_default();
+            bytes.extend_from_slice(&out.data);
+            let mut pkt = ff::av_packet_alloc();
+            assert!(ff::av_new_packet(pkt, bytes.len() as i32) >= 0);
+            std::slice::from_raw_parts_mut((*pkt).data, bytes.len()).copy_from_slice(&bytes);
+            assert!(ff::avcodec_send_packet(ctx, pkt) >= 0);
+            assert!(ff::avcodec_send_packet(ctx, ptr::null()) >= 0);
+            let frame = ff::av_frame_alloc();
+            let r = ff::avcodec_receive_frame(ctx, frame);
+            assert!(
+                r >= 0,
+                "HEVC decoder produced no picture: {}",
+                averr("recv", r)
+            );
+            let f = &*frame;
+            let (w, h) = (f.width as usize, f.height as usize);
+            let plane = |i: usize, pw: usize, ph: usize| -> Vec<u16> {
+                let mut v = Vec::with_capacity(pw * ph);
+                for y in 0..ph {
+                    let row = f.data[i].add(y * f.linesize[i] as usize) as *const u16;
+                    v.extend_from_slice(std::slice::from_raw_parts(row, pw));
+                }
+                v
+            };
+            let d = Decoded10 {
+                pix_fmt: std::mem::transmute::<i32, ff::AVPixelFormat>(f.format),
+                primaries: f.color_primaries,
+                trc: f.color_trc,
+                matrix: f.colorspace,
+                range: f.color_range,
+                width: w,
+                height: h,
+                luma: plane(0, w, h),
+                cb: plane(1, w / 2, h / 2),
+                cr: plane(2, w / 2, h / 2),
+            };
+            let mut frame = frame;
+            ff::av_frame_free(&mut frame);
+            ff::av_packet_free(&mut pkt);
+            ff::avcodec_free_context(&mut ctx);
+            d
+        }
+    }
+
+    /// Full-range 10-bit RGB (PQ code values) to limited-range BT.2020 NCL 10-bit Y, Cb, Cr.
+    fn expected_ycbcr_10(r: u16, g: u16, b: u16) -> (f64, f64, f64) {
+        let (r, g, b) = (r as f64 / 1023.0, g as f64 / 1023.0, b as f64 / 1023.0);
+        let y = 0.2627 * r + 0.6780 * g + 0.0593 * b;
+        let cb = (b - y) / 1.8814;
+        let cr = (r - y) / 1.4746;
+        (64.0 + 876.0 * y, 512.0 + 896.0 * cb, 512.0 + 896.0 * cr)
+    }
+
+    /// Each quadrant of `d` has the limited-range BT.2020 value of its colour (10-bit codes).
+    fn check_quadrants_10(d: &Decoded10, quads: [(u16, u16, u16); 4]) {
+        let (w, h) = (d.width, d.height);
+        for (i, (r, g, b)) in quads.into_iter().enumerate() {
+            let (qx, qy) = (i % 2, i / 2);
+            let (x, y) = (qx * w / 2 + w / 4, qy * h / 2 + h / 4);
+            let (ey, ecb, ecr) = expected_ycbcr_10(r, g, b);
+            let (gy, gcb, gcr) = (
+                d.luma[y * d.width + x] as f64,
+                d.cb[(y / 2) * (d.width / 2) + x / 2] as f64,
+                d.cr[(y / 2) * (d.width / 2) + x / 2] as f64,
+            );
+            let tol = 24.0;
+            assert!(
+                (gy - ey).abs() < tol && (gcb - ecb).abs() < tol && (gcr - ecr).abs() < tol,
+                "quadrant {i}: got Y/Cb/Cr {gy}/{gcb}/{gcr}, expected {ey:.0}/{ecb:.0}/{ecr:.0}"
+            );
+        }
+    }
+
+    #[test]
+    fn hdr_filter_chains() {
+        let v = scale_vaapi_variants(1280, 720, true);
+        assert_eq!(
+            v[0],
+            "scale_vaapi=w=1280:h=720:format=p010:out_color_matrix=bt2020nc:out_color_primaries=bt2020:out_color_transfer=smpte2084:out_range=tv"
+        );
+        assert_eq!(
+            v[1],
+            "scale_vaapi=w=1280:h=720:format=p010:out_color_matrix=bt2020nc:out_range=tv"
+        );
+        assert_eq!(v[2], "scale_vaapi=w=1280:h=720:format=p010");
+        // The SDR chain is exactly what it always was.
+        assert_eq!(
+            scale_vaapi_variants(1280, 720, false),
+            [
+                "scale_vaapi=w=1280:h=720:format=nv12:out_color_matrix=bt709:out_range=tv",
+                "scale_vaapi=w=1280:h=720:format=nv12"
+            ]
+        );
+    }
+
+    #[test]
+    fn hdr_plans_are_hevc_on_the_same_nodes() {
+        let all = |_: &Plan| true;
+        let intel = plan_hdr_encoders(Some(&node("/dev/dri/renderD129", 0x8086)), &all);
+        assert_eq!(intel.len(), 1);
+        assert_eq!((intel[0].name, intel[0].kind), ("hevc_vaapi", Kind::Vaapi));
+        assert_eq!(intel[0].node.as_deref(), Some("/dev/dri/renderD129"));
+        assert!(intel[0].hdr10() && intel[0].hardware());
+        let nv = plan_hdr_encoders(Some(&node("/dev/dri/renderD128", 0x10de)), &all);
+        assert_eq!((nv[0].name, nv[0].kind), ("hevc_nvenc", Kind::Nvenc));
+        // No software HDR path, and a plan that does not open is not offered.
+        assert!(plan_hdr_encoders(None, &all).is_empty());
+        assert!(
+            plan_hdr_encoders(Some(&node("/dev/dri/renderD129", 0x8086)), &|_| false).is_empty()
+        );
+        // SDR plans are never HDR plans.
+        for p in plan_encoders(Some(&node("/dev/dri/renderD129", 0x8086)), &all) {
+            assert!(!p.hdr10());
+        }
+    }
+
+    #[test]
+    fn stream_tags_follow_the_stream_color() {
+        let sdr = StreamTags::default();
+        assert_eq!(sdr.color, ColorInfo::BT709_LIMITED);
+        assert_eq!(StreamTags::from(&ezd_proto::StreamColor::sdr_bt709()), sdr);
+        let hdr = hdr_tags();
+        assert_eq!(hdr.color, ColorInfo::BT2020_PQ_LIMITED);
+        assert_eq!(
+            av_color(sdr.color),
+            (
+                ff::AVColorPrimaries::AVCOL_PRI_BT709,
+                ff::AVColorTransferCharacteristic::AVCOL_TRC_BT709,
+                ff::AVColorSpace::AVCOL_SPC_BT709,
+                ff::AVColorRange::AVCOL_RANGE_MPEG
+            )
+        );
+        assert_eq!(
+            av_color(hdr.color),
+            (
+                ff::AVColorPrimaries::AVCOL_PRI_BT2020,
+                ff::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084,
+                ff::AVColorSpace::AVCOL_SPC_BT2020_NCL,
+                ff::AVColorRange::AVCOL_RANGE_MPEG
+            )
+        );
+    }
+
+    #[test]
+    fn ten_bit_capture_formats_map_to_ffmpeg() {
+        use crate::frame::spa_fmt10::*;
+        assert_eq!(
+            pix_fmt_of(XRGB_210LE),
+            Ok(ff::AVPixelFormat::AV_PIX_FMT_X2RGB10LE)
+        );
+        assert_eq!(
+            pix_fmt_of(ARGB_210LE),
+            Ok(ff::AVPixelFormat::AV_PIX_FMT_X2RGB10LE)
+        );
+        assert_eq!(
+            pix_fmt_of(XBGR_210LE),
+            Ok(ff::AVPixelFormat::AV_PIX_FMT_X2BGR10LE)
+        );
+        // r = 1, g = 2, b = 3 in xRGB_210LE: x:R:G:B = 2:10:10:10 in a little-endian word.
+        let f = test_shm_frame_10(2, 2, [(1, 2, 3); 4]);
+        let Pixels::Shm(s) = f.pixels else { panic!() };
+        assert_eq!(s.data[..4], ((1u32 << 20) | (2 << 10) | 3).to_le_bytes());
+    }
+
+    #[test]
+    fn hdr_plan_rejects_8_bit_capture() {
+        let plan = vaapi_hdr_plan("/dev/dri/renderD129".into());
+        let mut c = Converter::new(plan, 60_000).with_tags(hdr_tags());
+        let e = c.convert(test_shm_frame(64, 64, Q), false).err().unwrap();
+        assert!(e.contains("10-bit"), "{e}");
+    }
+
+    #[test]
+    fn hevc_main10_vaapi_encodes_hdr10_from_10_bit_rgb_if_available() {
+        let Some(node) = intel_node() else {
+            eprintln!("skip: no VAAPI-capable render node");
+            return;
+        };
+        let (w, h) = (640, 360);
+        // 10-bit PQ code values: red, green, blue and near-white quadrants.
+        let quads = [(940, 64, 64), (64, 940, 64), (64, 64, 940), (900, 900, 900)];
+        let mut p = Pipeline::new(vaapi_hdr_plan(node), 60_000, 8_000).with_tags(hdr_tags());
+        let out = match p.encode(test_shm_frame_10(w, h, quads), false) {
+            Ok(Some(out)) => out,
+            Ok(None) => panic!("no packet"),
+            Err(e) => {
+                eprintln!("skip: HEVC Main10 on VAAPI unusable here: {e}");
+                return;
+            }
+        };
+        assert!(out.keyframe && out.codec_config.is_some());
+        assert_eq!(p.path(), Some("vaapi-shm"));
+        let d = decode_hevc_10bit(&out);
+        assert_eq!(d.pix_fmt, ff::AVPixelFormat::AV_PIX_FMT_YUV420P10LE);
+        assert_eq!(d.primaries, ff::AVColorPrimaries::AVCOL_PRI_BT2020);
+        assert_eq!(
+            d.trc,
+            ff::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084
+        );
+        assert_eq!(d.matrix, ff::AVColorSpace::AVCOL_SPC_BT2020_NCL);
+        assert_eq!(d.range, ff::AVColorRange::AVCOL_RANGE_MPEG);
+        assert_eq!((d.width, d.height), (w as usize, h as usize));
+        check_quadrants_10(&d, quads);
+    }
+
+    #[test]
+    fn hevc_main10_vaapi_encodes_hdr10_from_a_10_bit_dmabuf_if_available() {
+        let Some(node) = intel_node() else {
+            eprintln!("skip: no VAAPI-capable render node");
+            return;
+        };
+        let (w, h) = (640, 360);
+        let quads = [(940, 64, 64), (64, 940, 64), (64, 64, 940), (900, 900, 900)];
+        let frame = match export_test_dmabuf_10(&node, w, h, quads) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("skip: no 10-bit RGB VAAPI surface here: {e}");
+                return;
+            }
+        };
+        let mut p = Pipeline::new(vaapi_hdr_plan(node), 60_000, 8_000).with_tags(hdr_tags());
+        match p.encode(frame, false) {
+            Ok(Some(out)) => {
+                assert_eq!(p.path(), Some("vaapi-dmabuf"));
+                let d = decode_hevc_10bit(&out);
+                assert_eq!(d.pix_fmt, ff::AVPixelFormat::AV_PIX_FMT_YUV420P10LE);
+                assert_eq!(d.primaries, ff::AVColorPrimaries::AVCOL_PRI_BT2020);
+                assert_eq!(
+                    d.trc,
+                    ff::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084
+                );
+                check_quadrants_10(&d, quads);
+            }
+            Ok(None) => panic!("no packet"),
+            Err(e) => eprintln!("skip: 10-bit DMA-BUF import unusable here: {e}"),
         }
     }
 

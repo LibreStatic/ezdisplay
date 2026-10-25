@@ -8,8 +8,8 @@
 
 use crate::cursor_meta::{CursorTracker, parse_cursor_meta};
 use crate::frame::{
-    DRM_MOD_LINEAR, DmaBuf, Frame, NegotiatedFormat, OFFERED_FORMATS, Pixels, Plane, Release,
-    ShmBuf, capture_us_from_pts, choose_modifier,
+    DRM_MOD_LINEAR, DmaBuf, Frame, NegotiatedFormat, OFFERED_FORMATS, OFFERED_FORMATS_10, Pixels,
+    Plane, Release, ShmBuf, SpaColor, capture_us_from_pts, choose_modifier,
 };
 use crate::pod::{self, Val, VideoFormatProps};
 use ezd_host_core::{CursorSink, now_us};
@@ -309,16 +309,21 @@ fn enum_formats(params: &PwParams, with_dmabuf: bool) -> Vec<Vec<u8>> {
         max_fps: params.fps.max(1),
     };
     let mut out = Vec::new();
-    if let (true, Some(mods)) = (with_dmabuf, &params.dmabuf_modifiers) {
-        for f in OFFERED_FORMATS {
-            out.push(pod::enum_format(
-                pod::PARAM_ENUM_FORMAT,
-                &mk(f, Some(mods.clone())),
-            ));
+    let dmabuf_mods = params.dmabuf_modifiers.as_ref().filter(|_| with_dmabuf);
+    // Every 8-bit format first (DMA-BUF, then shared memory), then the 10-bit ones in the same
+    // order: a compositor that only offers 8-bit formats negotiates what it always did.
+    for formats in [&OFFERED_FORMATS, &OFFERED_FORMATS_10] {
+        if let Some(mods) = dmabuf_mods {
+            for f in formats {
+                out.push(pod::enum_format(
+                    pod::PARAM_ENUM_FORMAT,
+                    &mk(*f, Some(mods.clone())),
+                ));
+            }
         }
-    }
-    for f in OFFERED_FORMATS {
-        out.push(pod::enum_format(pod::PARAM_ENUM_FORMAT, &mk(f, None)));
+        for f in formats {
+            out.push(pod::enum_format(pod::PARAM_ENUM_FORMAT, &mk(*f, None)));
+        }
     }
     out
 }
@@ -388,6 +393,11 @@ fn on_format(stream: &pw::stream::Stream, local: &Rc<RefCell<Local>>, param: Opt
         height: h,
         spa_format: format,
         modifier: pf.modifiers.as_ref().and_then(|m| m.first().copied()),
+        color: SpaColor {
+            primaries: pf.color_primaries,
+            transfer: pf.transfer_function,
+            matrix: pf.color_matrix,
+        },
     };
     {
         let mut l = local.borrow_mut();
@@ -404,6 +414,8 @@ fn on_format(stream: &pw::stream::Stream, local: &Rc<RefCell<Local>>, param: Opt
         format,
         dmabuf,
         modifier = ?nf.modifier.map(|m| format!("{m:#x}")),
+        color = ?nf.color,
+        hdr10 = nf.is_hdr10(),
         "pipewire stream format"
     );
     let data_types = if dmabuf {
@@ -830,6 +842,16 @@ pub fn default_nvidia_modifiers() -> Vec<u64> {
 mod tests {
     use super::*;
 
+    fn offered(blobs: &[Vec<u8>]) -> Vec<(u32, bool)> {
+        blobs
+            .iter()
+            .map(|b| {
+                let f = pod::parse_format(b).unwrap();
+                (f.format.unwrap(), f.modifiers.is_some())
+            })
+            .collect()
+    }
+
     #[test]
     fn enum_formats_cover_dmabuf_then_shm() {
         let p = PwParams {
@@ -838,18 +860,50 @@ mod tests {
             fps: 60,
             dmabuf_modifiers: Some(default_intel_modifiers()),
         };
+        let n8 = OFFERED_FORMATS.len();
+        let n = n8 + OFFERED_FORMATS_10.len();
         let all = enum_formats(&p, true);
-        assert_eq!(all.len(), OFFERED_FORMATS.len() * 2);
+        assert_eq!(all.len(), n * 2);
         let first = pod::parse_format(&all[0]).unwrap();
         assert!(first.modifiers.is_some() && first.modifier_dont_fixate);
         let last = pod::parse_format(all.last().unwrap()).unwrap();
         assert!(last.modifiers.is_none());
-        assert_eq!(enum_formats(&p, false).len(), OFFERED_FORMATS.len());
+        assert_eq!(enum_formats(&p, false).len(), n);
         let shm_only = PwParams {
             dmabuf_modifiers: None,
             ..p
         };
-        assert_eq!(enum_formats(&shm_only, true).len(), OFFERED_FORMATS.len());
+        assert_eq!(enum_formats(&shm_only, true).len(), n);
+    }
+
+    #[test]
+    fn ten_bit_formats_come_after_every_8_bit_one() {
+        let p = PwParams {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            dmabuf_modifiers: Some(default_intel_modifiers()),
+        };
+        let n8 = OFFERED_FORMATS.len();
+        let got = offered(&enum_formats(&p, true));
+        // The 8-bit prefix is exactly the offer made before 10-bit formats existed: DMA-BUF
+        // formats, then shared-memory ones.
+        let mut expected: Vec<(u32, bool)> = OFFERED_FORMATS.iter().map(|f| (*f, true)).collect();
+        expected.extend(OFFERED_FORMATS.iter().map(|f| (*f, false)));
+        assert_eq!(got[..2 * n8], expected[..]);
+        let tail = &got[2 * n8..];
+        assert_eq!(tail.len(), 2 * OFFERED_FORMATS_10.len());
+        assert!(tail.iter().all(|(f, _)| OFFERED_FORMATS_10.contains(f)));
+        assert!(tail[0].1 && !tail[tail.len() - 1].1);
+        // Without DMA-BUF: 8-bit shared memory, then 10-bit shared memory.
+        let shm = offered(&enum_formats(&p, false));
+        assert!(shm.iter().all(|(_, dma)| !dma));
+        assert!(shm[..n8].iter().all(|(f, _)| OFFERED_FORMATS.contains(f)));
+        assert!(
+            shm[n8..]
+                .iter()
+                .all(|(f, _)| OFFERED_FORMATS_10.contains(f))
+        );
     }
 
     #[test]

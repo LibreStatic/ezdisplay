@@ -125,6 +125,7 @@ mod tests {
                 bitrate_kbps: 40_000,
                 encoder_name: "h264_nvenc".into(),
             },
+            dynamic_range: ezd_proto::DynamicRange::Sdr,
             devices: vec![],
             stats: None,
             input: None,

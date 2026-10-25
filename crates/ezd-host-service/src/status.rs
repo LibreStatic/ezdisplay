@@ -2,10 +2,12 @@
 
 use crate::error::ServiceError;
 use ezd_host_core::{LiveStats, SessionSummary};
-use ezd_proto::{InputStatus, StreamConfig};
+use ezd_proto::{DynamicRange, InputStatus, StreamConfig};
 use std::net::SocketAddr;
 
 /// What the service is doing, see [`HostService::status`](crate::HostService::status).
+// One live session at a time, so the size of the variant does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostStatus {
     /// Not running (after `stop`).
@@ -29,6 +31,8 @@ pub struct LiveSession {
     pub device_name: String,
     /// Negotiated stream configuration.
     pub stream: StreamConfig,
+    /// Dynamic range of the stream (HDR10, converted SDR with the reason, or plain SDR).
+    pub dynamic_range: DynamicRange,
     /// Devices seen by the adb watcher.
     pub devices: Vec<DeviceInfo>,
     /// Latest live measurements (once per second), `None` until the first window ends.

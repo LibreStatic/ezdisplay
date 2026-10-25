@@ -80,6 +80,17 @@ gpu-prefer-dgpu = Prefer the discrete graphics card
 gpu-named = Choose by name
 gpu-name-hint = Adapter name, as shown by "ezd-host diag"
 apply-now = Apply now (reconnects)
+setting-hdr = HDR
+hdr-auto = Automatic
+hdr-off = Off
+hdr-hint-linux = KDE doesn't send HDR to virtual displays yet; the stream stays SDR.
+stat-hdr = HDR
+mode-value-hdr = { $width }×{ $height } at { $hz } Hz, { $codec } HDR10
+hdr-reason-turned-off = HDR is off in the settings; converting to SDR
+hdr-reason-old-client = The tablet app is too old for HDR; update it
+hdr-reason-display-not-hdr = The tablet's screen doesn't support HDR10
+hdr-reason-no-main10-decoder = The tablet can't decode 10-bit HDR video
+hdr-reason-no-main10-encoder = This graphics card can't encode 10-bit HEVC; converting to SDR
 
 ## Window: input
 input-enabled = Send touch and pen input to this computer

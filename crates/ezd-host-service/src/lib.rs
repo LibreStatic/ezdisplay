@@ -18,7 +18,7 @@ mod service;
 pub mod status;
 
 pub use adb::{AdbClient, AdbLocator, is_network_serial};
-pub use config::{AdbMode, LinkChoice, PenChoice, ServiceConfig, SourceKind};
+pub use config::{AdbMode, HdrChoice, LinkChoice, PenChoice, ServiceConfig, SourceKind};
 pub use error::ServiceError;
 pub use service::{HostService, ServiceHooks, SourceFactory};
 pub use status::{DeviceInfo, DeviceState, HostEvent, HostStatus, LiveSession};

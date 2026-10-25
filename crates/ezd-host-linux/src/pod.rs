@@ -48,6 +48,12 @@ pub const FORMAT_VIDEO_SIZE: u32 = 0x20003;
 pub const FORMAT_VIDEO_FRAMERATE: u32 = 0x20004;
 /// `SPA_FORMAT_VIDEO_maxFramerate`.
 pub const FORMAT_VIDEO_MAX_FRAMERATE: u32 = 0x20005;
+/// `SPA_FORMAT_VIDEO_colorMatrix` (an Id, `SPA_VIDEO_COLOR_MATRIX_*`).
+pub const FORMAT_VIDEO_COLOR_MATRIX: u32 = 0x2000D;
+/// `SPA_FORMAT_VIDEO_transferFunction` (an Id, `SPA_VIDEO_TRANSFER_*`).
+pub const FORMAT_VIDEO_TRANSFER_FUNCTION: u32 = 0x2000E;
+/// `SPA_FORMAT_VIDEO_colorPrimaries` (an Id, `SPA_VIDEO_COLOR_PRIMARIES_*`).
+pub const FORMAT_VIDEO_COLOR_PRIMARIES: u32 = 0x2000F;
 /// `SPA_MEDIA_TYPE_video`.
 pub const MEDIA_TYPE_VIDEO: u32 = 2;
 /// `SPA_MEDIA_SUBTYPE_raw`.
@@ -272,22 +278,29 @@ pub fn enum_format(param_id: u32, fmt: &VideoFormatProps) -> Vec<u8> {
 pub fn fixated_format(f: &ParsedFormat, modifier: u64) -> Option<Vec<u8>> {
     let (w, h) = f.size?;
     let (n, d) = f.framerate.unwrap_or((0, 1));
-    Some(object(
-        OBJ_FORMAT,
-        PARAM_ENUM_FORMAT,
-        &[
-            (FORMAT_MEDIA_TYPE, 0, Val::Id(MEDIA_TYPE_VIDEO)),
-            (FORMAT_MEDIA_SUBTYPE, 0, Val::Id(MEDIA_SUBTYPE_RAW)),
-            (FORMAT_VIDEO_FORMAT, 0, Val::Id(f.format?)),
-            (
-                FORMAT_VIDEO_MODIFIER,
-                PROP_MANDATORY,
-                Val::Long(modifier as i64),
-            ),
-            (FORMAT_VIDEO_SIZE, 0, Val::Rect(w, h)),
-            (FORMAT_VIDEO_FRAMERATE, 0, Val::Frac(n, d)),
-        ],
-    ))
+    let mut props = vec![
+        (FORMAT_MEDIA_TYPE, 0, Val::Id(MEDIA_TYPE_VIDEO)),
+        (FORMAT_MEDIA_SUBTYPE, 0, Val::Id(MEDIA_SUBTYPE_RAW)),
+        (FORMAT_VIDEO_FORMAT, 0, Val::Id(f.format?)),
+        (
+            FORMAT_VIDEO_MODIFIER,
+            PROP_MANDATORY,
+            Val::Long(modifier as i64),
+        ),
+        (FORMAT_VIDEO_SIZE, 0, Val::Rect(w, h)),
+        (FORMAT_VIDEO_FRAMERATE, 0, Val::Frac(n, d)),
+    ];
+    // Keep the colorimetry the producer stated.
+    for (key, v) in [
+        (FORMAT_VIDEO_COLOR_MATRIX, f.color_matrix),
+        (FORMAT_VIDEO_TRANSFER_FUNCTION, f.transfer_function),
+        (FORMAT_VIDEO_COLOR_PRIMARIES, f.color_primaries),
+    ] {
+        if let Some(v) = v {
+            props.push((key, 0, Val::Id(v)));
+        }
+    }
+    Some(object(OBJ_FORMAT, PARAM_ENUM_FORMAT, &props))
 }
 
 /// A scalar read from a parsed pod (choices yield their default/first value).
@@ -316,6 +329,12 @@ pub struct ParsedFormat {
     pub modifiers: Option<Vec<u64>>,
     /// True if the modifier property carries `DONT_FIXATE` (the format still has to be fixated).
     pub modifier_dont_fixate: bool,
+    /// `SPA_VIDEO_COLOR_MATRIX_*`, when the producer states it.
+    pub color_matrix: Option<u32>,
+    /// `SPA_VIDEO_TRANSFER_*`, when the producer states it.
+    pub transfer_function: Option<u32>,
+    /// `SPA_VIDEO_COLOR_PRIMARIES_*`, when the producer states it.
+    pub color_primaries: Option<u32>,
 }
 
 fn rd(b: &[u8], off: usize) -> Option<u32> {
@@ -386,6 +405,13 @@ pub fn parse_format(b: &[u8]) -> Option<ParsedFormat> {
                 (FORMAT_VIDEO_FORMAT, Some(Scalar::Id(f))) => out.format = Some(f),
                 (FORMAT_VIDEO_SIZE, Some(Scalar::Pair(w, h))) => out.size = Some((w, h)),
                 (FORMAT_VIDEO_FRAMERATE, Some(Scalar::Pair(n, d))) => out.framerate = Some((n, d)),
+                (FORMAT_VIDEO_COLOR_MATRIX, Some(Scalar::Id(v))) => out.color_matrix = Some(v),
+                (FORMAT_VIDEO_TRANSFER_FUNCTION, Some(Scalar::Id(v))) => {
+                    out.transfer_function = Some(v)
+                }
+                (FORMAT_VIDEO_COLOR_PRIMARIES, Some(Scalar::Id(v))) => {
+                    out.color_primaries = Some(v)
+                }
                 (FORMAT_VIDEO_MODIFIER, Some(Scalar::Long(_))) => {
                     out.modifiers = Some(
                         vals.iter()
@@ -455,6 +481,15 @@ mod tests {
         assert_eq!(FORMAT_VIDEO_SIZE, s::SPA_FORMAT_VIDEO_size);
         assert_eq!(FORMAT_VIDEO_FRAMERATE, s::SPA_FORMAT_VIDEO_framerate);
         assert_eq!(FORMAT_VIDEO_MAX_FRAMERATE, s::SPA_FORMAT_VIDEO_maxFramerate);
+        assert_eq!(FORMAT_VIDEO_COLOR_MATRIX, s::SPA_FORMAT_VIDEO_colorMatrix);
+        assert_eq!(
+            FORMAT_VIDEO_TRANSFER_FUNCTION,
+            s::SPA_FORMAT_VIDEO_transferFunction
+        );
+        assert_eq!(
+            FORMAT_VIDEO_COLOR_PRIMARIES,
+            s::SPA_FORMAT_VIDEO_colorPrimaries
+        );
         assert_eq!(MEDIA_TYPE_VIDEO, s::SPA_MEDIA_TYPE_video);
         assert_eq!(MEDIA_SUBTYPE_RAW, s::SPA_MEDIA_SUBTYPE_raw);
         assert_eq!(BUFFERS_BUFFERS, s::SPA_PARAM_BUFFERS_buffers);
@@ -544,6 +579,7 @@ mod tests {
             framerate: Some((0, 1)),
             modifiers: Some(vec![0, 2]),
             modifier_dont_fixate: true,
+            ..ParsedFormat::default()
         };
         let bytes = fixated_format(&parsed, 2).unwrap();
         assert!(pipewire::spa::pod::Pod::from_bytes(&bytes).is_some());
@@ -552,6 +588,47 @@ mod tests {
         assert!(!back.modifier_dont_fixate);
         assert_eq!(back.size, Some((2560, 1600)));
         assert!(fixated_format(&ParsedFormat::default(), 0).is_none());
+    }
+
+    #[test]
+    fn colorimetry_is_parsed_and_kept_when_fixating() {
+        // A producer's HDR10 `Format`: xRGB_210LE, BT.2020 primaries, BT.2020 matrix, PQ.
+        let mut props = vec![
+            (FORMAT_MEDIA_TYPE, 0, Val::Id(MEDIA_TYPE_VIDEO)),
+            (FORMAT_MEDIA_SUBTYPE, 0, Val::Id(MEDIA_SUBTYPE_RAW)),
+            (FORMAT_VIDEO_FORMAT, 0, Val::Id(80)),
+            (FORMAT_VIDEO_SIZE, 0, Val::Rect(1920, 1080)),
+            (FORMAT_VIDEO_FRAMERATE, 0, Val::Frac(0, 1)),
+        ];
+        props.push((FORMAT_VIDEO_COLOR_MATRIX, 0, Val::Id(6)));
+        props.push((FORMAT_VIDEO_TRANSFER_FUNCTION, 0, Val::Id(14)));
+        props.push((FORMAT_VIDEO_COLOR_PRIMARIES, 0, Val::Id(7)));
+        let bytes = object(OBJ_FORMAT, PARAM_FORMAT, &props);
+        let f = parse_format(&bytes).unwrap();
+        assert_eq!(f.format, Some(80));
+        assert_eq!(
+            (f.color_matrix, f.transfer_function, f.color_primaries),
+            (Some(6), Some(14), Some(7))
+        );
+        let back = parse_format(&fixated_format(&f, 0).unwrap()).unwrap();
+        assert_eq!(
+            (
+                back.color_matrix,
+                back.transfer_function,
+                back.color_primaries
+            ),
+            (Some(6), Some(14), Some(7))
+        );
+        // A format that states no colorimetry stays without.
+        let plain = parse_format(&enum_format(PARAM_FORMAT, &sample(None))).unwrap();
+        assert_eq!(
+            (
+                plain.color_matrix,
+                plain.transfer_function,
+                plain.color_primaries
+            ),
+            (None, None, None)
+        );
     }
 
     /// A `Format` object whose modifier is a choice of `kind` with exactly these children.

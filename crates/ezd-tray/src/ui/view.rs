@@ -8,7 +8,10 @@ use crate::menu_model;
 use crate::state::Lifecycle;
 use crate::text;
 use eframe::egui::{self, ComboBox, RichText, Ui};
-use ezd_host_service::{AdbMode, DeviceInfo, DeviceState, HostStatus, LiveSession, PenChoice};
+use ezd_host_service::{
+    AdbMode, DeviceInfo, DeviceState, HdrChoice, HostStatus, LiveSession, PenChoice,
+};
+use ezd_proto::{DynamicRange, SdrReason};
 use i18n_embed::fluent::FluentLanguageLoader;
 use i18n_embed_fl::fl;
 use std::path::PathBuf;
@@ -340,19 +343,38 @@ impl SettingsView {
             .spacing(GRID_SPACING)
             .show(ui, |ui| {
                 row(ui, pal, &fl!(l, "stat-device"), &live.device_name);
-                row(
-                    ui,
-                    pal,
-                    &fl!(l, "stat-mode"),
-                    &fl!(
+                let hz = text::decimal(l, text::hz(s.refresh_mhz));
+                let codec = format!("{:?}", s.codec);
+                let mode = if matches!(live.dynamic_range, DynamicRange::Hdr10 { .. }) {
+                    fl!(
+                        l,
+                        "mode-value-hdr",
+                        width = s.width,
+                        height = s.height,
+                        hz = hz,
+                        codec = codec
+                    )
+                } else {
+                    fl!(
                         l,
                         "mode-value",
                         width = s.width,
                         height = s.height,
-                        hz = text::decimal(l, text::hz(s.refresh_mhz)),
-                        codec = format!("{:?}", s.codec)
-                    ),
-                );
+                        hz = hz,
+                        codec = codec
+                    )
+                };
+                row(ui, pal, &fl!(l, "stat-mode"), &mode);
+                if let DynamicRange::SdrToneMapped(reason) = live.dynamic_range {
+                    // The reason is a sentence: wrap it to the window instead of widening the grid.
+                    ui.label(RichText::new(fl!(l, "stat-hdr")).color(pal.on_surface_variant));
+                    let width = ui.available_width().max(160.0);
+                    ui.vertical(|ui| {
+                        ui.set_max_width(width);
+                        ui.add(egui::Label::new(sdr_reason_text(l, reason)).wrap());
+                    });
+                    ui.end_row();
+                }
                 row(
                     ui,
                     pal,
@@ -542,6 +564,26 @@ impl SettingsView {
                 })
                 .response
         });
+
+        // HDR.
+        let hdr_text = |c: HdrChoice| match c {
+            HdrChoice::Auto => fl!(l, "hdr-auto"),
+            HdrChoice::Off => fl!(l, "hdr-off"),
+        };
+        let hdr_now = cfg.hdr;
+        labelled(ui, &fl!(l, "setting-hdr"), |ui| {
+            ComboBox::from_id_salt("hdr")
+                .selected_text(hdr_text(hdr_now))
+                .show_ui(ui, |ui| {
+                    for c in [HdrChoice::Auto, HdrChoice::Off] {
+                        ui.selectable_value(&mut cfg.hdr, c, hdr_text(c));
+                    }
+                })
+                .response
+        });
+        if cfg!(target_os = "linux") {
+            hint(ui, pal, &fl!(l, "hdr-hint-linux"));
+        }
 
         // GPU (Windows).
         if windows {
@@ -919,6 +961,17 @@ fn row(ui: &mut Ui, pal: Palette, name: &str, value: &str) {
     ui.label(RichText::new(name).color(pal.on_surface_variant));
     ui.label(value);
     ui.end_row();
+}
+
+/// Why an HDR source is streamed as converted SDR.
+fn sdr_reason_text(l: &FluentLanguageLoader, reason: SdrReason) -> String {
+    match reason {
+        SdrReason::TurnedOff => fl!(l, "hdr-reason-turned-off"),
+        SdrReason::OldClient => fl!(l, "hdr-reason-old-client"),
+        SdrReason::DisplayNotHdr => fl!(l, "hdr-reason-display-not-hdr"),
+        SdrReason::NoMain10Decoder => fl!(l, "hdr-reason-no-main10-decoder"),
+        SdrReason::NoMain10Encoder => fl!(l, "hdr-reason-no-main10-encoder"),
+    }
 }
 
 fn device_line(l: &FluentLanguageLoader, d: &DeviceInfo) -> String {

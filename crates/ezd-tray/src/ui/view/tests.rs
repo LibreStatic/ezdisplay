@@ -6,8 +6,8 @@ use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use ezd_host_core::LiveStats;
-use ezd_host_service::LiveSession;
-use ezd_proto::{ClientStats, Codec, StreamConfig};
+use ezd_host_service::{HdrChoice, LiveSession};
+use ezd_proto::{ClientStats, Codec, DynamicRange, SdrReason, StreamConfig};
 use std::time::Duration;
 
 fn live(stats: Option<LiveStats>) -> HostStatus {
@@ -21,10 +21,19 @@ fn live(stats: Option<LiveStats>) -> HostStatus {
             bitrate_kbps: 40_000,
             encoder_name: "h264_nvenc".into(),
         },
+        dynamic_range: DynamicRange::Sdr,
         devices: vec![],
         stats,
         input: None,
     })
+}
+
+fn live_with(dynamic_range: DynamicRange) -> HostStatus {
+    let HostStatus::Streaming(mut s) = live(None) else {
+        unreachable!()
+    };
+    s.dynamic_range = dynamic_range;
+    HostStatus::Streaming(s)
 }
 
 fn stats() -> LiveStats {
@@ -168,6 +177,85 @@ fn changing_the_scale_changes_the_config() {
         panic!("expected one SetConfig, got {actions:?}");
     };
     assert_eq!(c.service.scale_permille, 750);
+}
+
+#[test]
+fn changing_hdr_changes_the_config() {
+    let mut h = harness(snapshot(HostStatus::Waiting { devices: vec![] }), "en");
+    h.get_by_role_and_label(Role::Button, "Display").click();
+    h.run();
+    assert_eq!(h.state().snap.config.service.hdr, HdrChoice::Auto);
+    h.get_by_role_and_label(Role::ComboBox, "HDR").click();
+    h.run();
+    h.get_by_label("Off").click();
+    h.run();
+    assert_eq!(h.state().snap.config.service.hdr, HdrChoice::Off);
+    let actions = h.state_mut().take_actions();
+    let [Action::SetConfig(c)] = actions.as_slice() else {
+        panic!("expected one SetConfig, got {actions:?}");
+    };
+    assert_eq!(c.service.hdr, HdrChoice::Off);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn display_page_explains_that_kde_sends_no_hdr() {
+    let mut h = harness(snapshot(HostStatus::Waiting { devices: vec![] }), "en");
+    h.get_by_role_and_label(Role::Button, "Display").click();
+    h.run();
+    h.get_by_label("KDE doesn't send HDR to virtual displays yet; the stream stays SDR.");
+}
+
+#[test]
+fn hdr10_is_added_to_the_mode() {
+    let hdr = DynamicRange::Hdr10 { codec: Codec::Hevc };
+    let h = harness(snapshot(live_with(hdr)), "en");
+    h.get_by_label("2960×1848 at 120 Hz, H264 HDR10");
+    assert!(h.query_by_label("HDR").is_none());
+    let h = harness(snapshot(live(None)), "en");
+    h.get_by_label("2960×1848 at 120 Hz, H264");
+    assert!(h.query_by_label("HDR").is_none());
+}
+
+#[test]
+fn every_sdr_reason_has_its_line() {
+    let cases = [
+        (
+            SdrReason::TurnedOff,
+            "HDR is off in the settings; converting to SDR",
+        ),
+        (
+            SdrReason::OldClient,
+            "The tablet app is too old for HDR; update it",
+        ),
+        (
+            SdrReason::DisplayNotHdr,
+            "The tablet's screen doesn't support HDR10",
+        ),
+        (
+            SdrReason::NoMain10Decoder,
+            "The tablet can't decode 10-bit HDR video",
+        ),
+        (
+            SdrReason::NoMain10Encoder,
+            "This graphics card can't encode 10-bit HEVC; converting to SDR",
+        ),
+    ];
+    for (reason, text) in cases {
+        let h = harness(
+            snapshot(live_with(DynamicRange::SdrToneMapped(reason))),
+            "en",
+        );
+        h.get_by_label(text);
+        h.get_by_label("HDR");
+    }
+    let h = harness(snapshot(live_with(DynamicRange::Sdr)), "en");
+    assert!(h.query_by_label("HDR").is_none());
+    let h = harness(
+        snapshot(live_with(DynamicRange::SdrToneMapped(SdrReason::OldClient))),
+        "es",
+    );
+    h.get_by_label("La app de la tablet es muy vieja para HDR; actualizala");
 }
 
 #[test]
@@ -467,6 +555,38 @@ mod snapshots {
         }
     }
 
+    fn hdr_snapshots(results: &mut egui_kittest::SnapshotResults) {
+        for lang in ["en", "es"] {
+            let reason = DynamicRange::SdrToneMapped(SdrReason::NoMain10Encoder);
+            for (section, name, status) in [
+                (Section::Status, "hdr_status", live_with(reason)),
+                (
+                    Section::Display,
+                    "hdr_display",
+                    live_with(DynamicRange::Sdr),
+                ),
+            ] {
+                let mut view = SettingsView::new(snapshot(status));
+                view.section = section;
+                let l = loader_for(&[lang.parse().unwrap()]);
+                let mut h = Harness::builder()
+                    .with_size(egui::vec2(820.0, 560.0))
+                    .with_theme(egui::Theme::Light)
+                    .wgpu()
+                    .build_ui_state(
+                        move |ui, view| {
+                            theme::install(ui.ctx());
+                            view.show(ui, &l);
+                        },
+                        view,
+                    );
+                h.run();
+                h.snapshot(format!("{name}_{lang}"));
+                results.extend_harness(&mut h);
+            }
+        }
+    }
+
     #[test]
     fn window_snapshots() {
         let mut results = egui_kittest::SnapshotResults::new();
@@ -477,5 +597,6 @@ mod snapshots {
         }
         // One test: concurrent GPU harnesses can deadlock.
         input_permission_snapshots(&mut results);
+        hdr_snapshots(&mut results);
     }
 }

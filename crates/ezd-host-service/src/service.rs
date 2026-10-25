@@ -61,6 +61,8 @@ fn synthetic_source() -> Result<Box<dyn VideoSource>, ServiceError> {
     ))
 }
 
+// One live session at a time, so the size of the variant does not matter.
+#[allow(clippy::large_enum_variant)]
 enum Phase {
     Waiting,
     Streaming(LiveSession),
@@ -135,10 +137,13 @@ impl Inner {
             SessionEvent::Configured {
                 client_hello,
                 stream,
+                dynamic_range,
+                ..
             } => {
                 st.phase = Phase::Streaming(LiveSession {
                     device_name: client_hello.device_name,
                     stream,
+                    dynamic_range,
                     devices: Vec::new(),
                     stats: None,
                     input: None,
@@ -474,7 +479,8 @@ mod tests {
     use ezd_link::adb::DeviceState as AdbState;
     use ezd_link::{MuxReceiver, MuxSender};
     use ezd_proto::{
-        Bye, ClientCaps, Codec, DEFAULT_CHUNK_LEN, DecoderCaps, DisplayInfo, Hello, Message, Role,
+        Bye, ClientCaps, ClientHdr, Codec, DEFAULT_CHUNK_LEN, DecoderCaps, DisplayInfo, Hello,
+        Message, Role,
     };
     use tokio::time::timeout;
 
@@ -541,10 +547,15 @@ mod tests {
         tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "tablet")))
             .unwrap();
         tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
         let mut seen = 0;
-        while seen < 3 {
+        while seen < 4 {
             match timeout(WAIT, rx.recv()).await.unwrap().unwrap().unwrap() {
-                Message::Hello(_) | Message::HostCaps(_) | Message::StreamConfig(_) => seen += 1,
+                Message::Hello(_)
+                | Message::HostCaps(_)
+                | Message::StreamColor(_)
+                | Message::StreamConfig(_) => seen += 1,
                 m => panic!("{m:?}"),
             }
         }
@@ -600,6 +611,7 @@ mod tests {
         };
         assert_eq!(live.device_name, "tablet");
         assert_eq!(live.stream.width, 1280);
+        assert_eq!(live.dynamic_range, ezd_proto::DynamicRange::Sdr);
         tx.send_control(Message::Bye(Bye {
             reason: "done".into(),
         }))

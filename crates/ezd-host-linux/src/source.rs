@@ -2,14 +2,18 @@
 
 use crate::adapter::{self, RenderNode};
 use crate::ahead::{ConvertAhead, Item, Start};
-use crate::encode::{Converter, Encoder, Kind, Pipeline, Plan, plan_encoders, probe_plan};
+use crate::encode::{
+    Converter, Encoder, Kind, Pipeline, Plan, StreamTags, plan_encoders, plan_hdr_encoders,
+    probe_plan,
+};
 use crate::kscreen;
 use crate::portal::{PortalCapture, SourceKind};
 use crate::pw::{PwCapture, PwParams, Target, default_intel_modifiers, default_nvidia_modifiers};
 use ezd_host_core::{
-    CursorSink, DisplayMode, EncodedFrame, OutputInfo, PlatformOptions, SourceError, VideoSource,
+    CursorSink, DisplayMode, EncodedFrame, OutputInfo, PlatformOptions, SourceError, SourceHdr,
+    VideoSource,
 };
-use ezd_proto::{Codec, EncoderCaps, StreamConfig};
+use ezd_proto::{Codec, DynamicRange, EncoderCaps, StreamColor, StreamConfig};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -40,6 +44,31 @@ pub fn plan_works(plan: &Plan) -> Result<(), String> {
     r
 }
 
+/// What the last capture showed about the HDR state of the compositor's output. The session asks
+/// `source_hdr` before the capture exists, so the answer comes from the previous capture in this
+/// process: when the output turns HDR10 (or stops being), `start` fails once and the tablet's
+/// reconnect negotiates again with the new state. Compositors that send 8-bit sRGB (KWin today)
+/// never set it.
+static OBSERVED_HDR: Mutex<Option<SourceHdr>> = Mutex::new(None);
+
+fn observed_hdr() -> Option<SourceHdr> {
+    *OBSERVED_HDR.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn observe_hdr(hdr: Option<SourceHdr>) {
+    *OBSERVED_HDR.lock().unwrap_or_else(|e| e.into_inner()) = hdr;
+}
+
+/// Checks the stream the compositor delivers against what the session negotiated: `expected` is
+/// the HDR state the negotiation assumed, `actual` the one the capture shows.
+fn hdr_mismatch(expected: bool, actual: bool) -> Option<&'static str> {
+    match (expected, actual) {
+        (false, true) => Some("the display switched to HDR10"),
+        (true, false) => Some("the display stopped sending HDR10"),
+        _ => None,
+    }
+}
+
 fn portal_timeout() -> Duration {
     let secs = std::env::var("EZD_PORTAL_TIMEOUT_SECS")
         .ok()
@@ -54,6 +83,13 @@ pub struct KdeVirtualSource {
     output_name: Option<String>,
     node: Option<RenderNode>,
     plans: Vec<Plan>,
+    /// HEVC Main10 plans; only probed once the compositor has shown HDR10.
+    hdr_plans: Vec<Plan>,
+    /// The HDR state the session was negotiated with (see [`OBSERVED_HDR`]).
+    hdr_source: Option<SourceHdr>,
+    /// Dynamic range negotiated for the session and the matching stream colour.
+    range: DynamicRange,
+    color: StreamColor,
     running: Option<Running>,
     force_key: bool,
     /// The output the stream shows (KDE virtual output or the captured monitor), after `start`.
@@ -113,6 +149,13 @@ impl KdeVirtualSource {
         }
         let node = node.map(|s| s.node);
         let plans = plan_encoders(node.as_ref(), &|p| plan_works(p).is_ok());
+        let hdr_source = observed_hdr();
+        // Probing opens a Main10 encoder: only worth it when the compositor offers HDR10.
+        let hdr_plans = if hdr_source.is_some() {
+            plan_hdr_encoders(node.as_ref(), &|p| plan_works(p).is_ok())
+        } else {
+            Vec::new()
+        };
         KdeVirtualSource {
             kind: if opts.output_name.is_some() {
                 SourceKind::Monitor
@@ -122,6 +165,10 @@ impl KdeVirtualSource {
             output_name: opts.output_name.clone(),
             node,
             plans,
+            hdr_plans,
+            hdr_source,
+            range: DynamicRange::Sdr,
+            color: StreamColor::sdr_bt709(),
             running: None,
             force_key: false,
             output: None,
@@ -146,14 +193,35 @@ impl KdeVirtualSource {
 
 impl VideoSource for KdeVirtualSource {
     fn encoders(&self) -> Vec<EncoderCaps> {
+        let codec = |p: &Plan| {
+            if p.hdr10() { Codec::Hevc } else { Codec::H264 }
+        };
         self.plans
             .iter()
+            .chain(&self.hdr_plans)
             .map(|p| EncoderCaps {
-                codec: Codec::H264,
+                codec: codec(p),
                 name: p.name.to_string(),
                 hardware: p.hardware(),
             })
             .collect()
+    }
+
+    fn source_hdr(&self) -> Option<SourceHdr> {
+        self.hdr_source
+    }
+
+    fn main10_codecs(&self) -> Vec<Codec> {
+        if self.hdr_plans.is_empty() {
+            Vec::new()
+        } else {
+            vec![Codec::Hevc]
+        }
+    }
+
+    fn set_dynamic_range(&mut self, range: DynamicRange, color: &StreamColor) {
+        self.range = range;
+        self.color = *color;
     }
 
     fn gpu_description(&self) -> String {
@@ -164,13 +232,26 @@ impl VideoSource for KdeVirtualSource {
     }
 
     fn start(&mut self, cfg: &StreamConfig, cursor: CursorSink) -> Result<(), SourceError> {
-        if cfg.codec != Codec::H264 {
-            return Err(SourceError::msg("the Linux host only produces H.264"));
+        // H.264 is the SDR codec; HEVC only exists here as HDR10 (Main10).
+        let hdr10 = matches!(self.range, DynamicRange::Hdr10 { codec } if codec == cfg.codec);
+        match (cfg.codec, hdr10) {
+            (Codec::H264, false) | (Codec::Hevc, true) => {}
+            (Codec::Hevc, false) => {
+                return Err(SourceError::msg(
+                    "the Linux host only produces HEVC for HDR10 streams",
+                ));
+            }
+            (codec, _) => {
+                return Err(SourceError::msg(format!(
+                    "the Linux host cannot encode {codec:?}"
+                )));
+            }
         }
         let plan = self
             .plans
             .iter()
-            .find(|p| p.name == cfg.encoder_name)
+            .chain(&self.hdr_plans)
+            .find(|p| p.name == cfg.encoder_name && p.hdr10() == hdr10)
             .cloned()
             .ok_or_else(|| SourceError::msg(format!("encoder {} not offered", cfg.encoder_name)))?;
         let virtual_kind = self.kind == SourceKind::Virtual;
@@ -237,19 +318,29 @@ impl VideoSource for KdeVirtualSource {
             );
         }
         tracing::info!(?fmt, plan = ?plan, "capture format negotiated");
+        let hdr_now = fmt.is_hdr10();
+        if let Some(why) = hdr_mismatch(self.hdr_source.is_some(), hdr_now) {
+            // The negotiation (codec, dynamic range) was made for the other state. Remember the
+            // new one and end the session; the tablet reconnects and negotiates again.
+            observe_hdr(hdr_now.then(SourceHdr::default));
+            return Err(SourceError::msg(format!("{why}; reconnecting")));
+        }
+        let tags = StreamTags::from(&self.color);
         let ahead = convert_ahead();
         tracing::info!(convert_ahead = ?ahead, "encode pipeline ready");
         let input = match ahead {
             Some(start) => Input::Ahead {
-                enc: Encoder::new(plan.name, cfg.refresh_mhz, cfg.bitrate_kbps),
+                enc: Encoder::new(plan.name, cfg.refresh_mhz, cfg.bitrate_kbps).with_tags(tags),
                 conv: ConvertAhead::start(
-                    Converter::new(plan, cfg.refresh_mhz),
+                    Converter::new(plan, cfg.refresh_mhz).with_tags(tags),
                     pw.frames(),
                     start,
                 )
                 .map_err(SourceError::msg)?,
             },
-            None => Input::Serial(Pipeline::new(plan, cfg.refresh_mhz, cfg.bitrate_kbps)),
+            None => Input::Serial(
+                Pipeline::new(plan, cfg.refresh_mhz, cfg.bitrate_kbps).with_tags(tags),
+            ),
         };
         self.running = Some(Running {
             input,
@@ -414,5 +505,21 @@ fn switch_mode(before: &[kscreen::KOutput], cfg: &StreamConfig) -> Option<kscree
                 .ok()
                 .and_then(|outs| outs.into_iter().find(|x| x.name == name))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hdr_state_changes_end_the_session_for_a_new_negotiation() {
+        // Today's compositors: 8-bit sRGB all the time, nothing to renegotiate.
+        assert_eq!(hdr_mismatch(false, false), None);
+        // HDR10 negotiated and still HDR10.
+        assert_eq!(hdr_mismatch(true, true), None);
+        // The output turned HDR10 (or stopped being) after the negotiation.
+        assert!(hdr_mismatch(false, true).is_some());
+        assert!(hdr_mismatch(true, false).is_some());
     }
 }

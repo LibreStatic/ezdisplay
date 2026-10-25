@@ -4,7 +4,7 @@ use ezd_host_core::{
     InputBackend, PenMode, PlatformOptions, SessionEvent, SessionOptions, UnavailableBackend,
 };
 use ezd_link::VideoCredit;
-use ezd_proto::{LinkKind, Prefs};
+use ezd_proto::{HdrMode, LinkKind, Prefs};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -62,6 +62,26 @@ pub enum PenChoice {
     Mouse,
 }
 
+/// HDR10 streaming policy (serializable mirror of [`HdrMode`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HdrChoice {
+    /// Stream HDR10 whenever the source, the tablet and the encoder all support it.
+    #[default]
+    Auto,
+    /// Never stream HDR10; an HDR source is converted to SDR.
+    Off,
+}
+
+impl From<HdrChoice> for HdrMode {
+    fn from(c: HdrChoice) -> Self {
+        match c {
+            HdrChoice::Auto => HdrMode::Auto,
+            HdrChoice::Off => HdrMode::Off,
+        }
+    }
+}
+
 /// Everything the service needs to run; loads from a file with missing or unknown keys.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -98,6 +118,8 @@ pub struct ServiceConfig {
     pub pen_mode: PenChoice,
     /// Start the Android app when a device becomes ready.
     pub open_app_on_connect: bool,
+    /// HDR10 streaming policy (`hdr = "auto" | "off"`).
+    pub hdr: HdrChoice,
 }
 
 impl Default for ServiceConfig {
@@ -119,6 +141,7 @@ impl Default for ServiceConfig {
             input: true,
             pen_mode: PenChoice::default(),
             open_app_on_connect: true,
+            hdr: HdrChoice::default(),
         }
     }
 }
@@ -135,6 +158,7 @@ impl ServiceConfig {
             bitrate_kbps: self.bitrate_kbps,
             encoder: self.encoder.clone(),
             scale_permille: self.scale_permille,
+            hdr: self.hdr.into(),
             ..Prefs::default()
         }
     }
@@ -201,6 +225,7 @@ mod tests {
             bitrate_kbps: Some(20_000),
             encoder: Some("h264_nvenc".into()),
             scale_permille: 750,
+            hdr: HdrChoice::Off,
             ..ServiceConfig::default()
         };
         assert_eq!(
@@ -211,6 +236,7 @@ mod tests {
                 bitrate_kbps: Some(20_000),
                 encoder: Some("h264_nvenc".into()),
                 scale_permille: 750,
+                hdr: HdrMode::Off,
                 ..Prefs::default()
             }
         );
@@ -286,6 +312,16 @@ mod tests {
         );
         let empty: ServiceConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, ServiceConfig::default());
+    }
+
+    #[test]
+    fn hdr_defaults_to_auto_and_reads_its_serde_name() {
+        let empty: ServiceConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.hdr, HdrChoice::Auto);
+        assert_eq!(empty.prefs().hdr, HdrMode::Auto);
+        let off: ServiceConfig = serde_json::from_str(r#"{ "hdr": "off" }"#).unwrap();
+        assert_eq!(off.hdr, HdrChoice::Off);
+        assert_eq!(off.prefs().hdr, HdrMode::Off);
     }
 
     #[test]
