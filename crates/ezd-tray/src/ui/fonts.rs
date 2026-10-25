@@ -18,6 +18,14 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// [`install_fonts`] without the system font, so tests lay out the same on every platform.
+#[cfg(test)]
+pub fn install_bundled_fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    add_icon_font(&mut fonts);
+    ctx.set_fonts(fonts);
+}
+
 fn add_icon_font(fonts: &mut FontDefinitions) {
     fonts.font_data.insert(
         ICON_FONT.to_owned(),

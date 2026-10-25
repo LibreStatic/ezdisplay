@@ -15,7 +15,7 @@ fn harness<S: 'static>(
         .build_ui_state(
             move |ui, state| {
                 theme::install(ui.ctx());
-                fonts::install_fonts(ui.ctx());
+                fonts::install_bundled_fonts(ui.ctx());
                 let pal = theme::palette_of(ui);
                 add(ui, pal, state);
             },
@@ -274,7 +274,7 @@ fn a_wide_control_goes_below_the_texts_when_it_does_not_fit() {
             .with_size(vec2(width, 320.0))
             .build_ui(move |ui| {
                 theme::install(ui.ctx());
-                fonts::install_fonts(ui.ctx());
+                fonts::install_bundled_fonts(ui.ctx());
                 let pal = theme::palette_of(ui);
                 setting_row_wide(ui, pal, "Pen", Some("How the pen acts"), 200.0, |ui| {
                     secondary_button(ui, pal, "Wide control");
@@ -357,7 +357,7 @@ fn a_long_nav_label_wraps_and_the_row_grows() {
         .build_ui_state(
             move |ui, _: &mut ()| {
                 theme::install(ui.ctx());
-                fonts::install_fonts(ui.ctx());
+                fonts::install_bundled_fonts(ui.ctx());
                 let pal = theme::palette_of(ui);
                 ui.set_max_width(176.0);
                 nav_item(ui, pal, glyphs::DEVELOPER_BOARD, long, true);

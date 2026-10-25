@@ -93,7 +93,7 @@ fn harness_sized(snap: Snapshot, lang: &str, size: egui::Vec2) -> Harness<'stati
     let mut h = Harness::builder().with_size(size).build_ui_state(
         move |ui, view| {
             theme::install(ui.ctx());
-            fonts::install_fonts(ui.ctx());
+            fonts::install_bundled_fonts(ui.ctx());
             view.show(ui, &l);
         },
         SettingsView::new(snap),
@@ -663,10 +663,15 @@ fn the_display_page_scrolls_to_a_last_row_above_the_footer() {
     h.get_by_role_and_label(Role::Button, "Display").click();
     h.run();
     let apply = h.get_by_label("Apply now (reconnects)").rect();
-    h.get_by_label_contains("KDE doesn't send HDR")
-        .scroll_to_me();
+    // The HDR row is the last one; its description depends on the platform.
+    let last = if cfg!(target_os = "linux") {
+        "KDE doesn't send HDR"
+    } else {
+        "Sends HDR10 when"
+    };
+    h.get_by_label_contains(last).scroll_to_me();
     h.run();
-    let row = h.get_by_label_contains("KDE doesn't send HDR").rect();
+    let row = h.get_by_label_contains(last).rect();
     assert!(row.max.y <= apply.min.y, "{row:?} {apply:?}");
 }
 
@@ -902,7 +907,7 @@ mod snapshots {
             .build_ui_state(
                 move |ui, view| {
                     theme::install(ui.ctx());
-                    fonts::install_fonts(ui.ctx());
+                    fonts::install_bundled_fonts(ui.ctx());
                     view.show(ui, &l);
                 },
                 SettingsView::new(snapshot(live(Some(stats())))),
@@ -927,7 +932,7 @@ mod snapshots {
                     .build_ui_state(
                         move |ui, view| {
                             theme::install(ui.ctx());
-                            fonts::install_fonts(ui.ctx());
+                            fonts::install_bundled_fonts(ui.ctx());
                             view.show(ui, &l);
                         },
                         view,
@@ -960,7 +965,7 @@ mod snapshots {
                     .build_ui_state(
                         move |ui, view| {
                             theme::install(ui.ctx());
-                            fonts::install_fonts(ui.ctx());
+                            fonts::install_bundled_fonts(ui.ctx());
                             view.show(ui, &l);
                         },
                         view,
@@ -989,7 +994,7 @@ mod snapshots {
             .build_ui_state(
                 move |ui, view| {
                     theme::install(ui.ctx());
-                    fonts::install_fonts(ui.ctx());
+                    fonts::install_bundled_fonts(ui.ctx());
                     view.show(ui, &l);
                 },
                 view,
