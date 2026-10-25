@@ -1,6 +1,6 @@
 //! [`Link`]: a reliable ordered byte stream.
 
-use crate::mux::{MuxOptions, MuxReceiver, MuxSender, MuxTask, spawn_mux};
+use crate::mux::{MuxOptions, MuxReceiver, MuxSender, MuxTask, spawn_mux, spawn_mux_split};
 use std::io;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, ToSocketAddrs};
@@ -12,8 +12,10 @@ pub type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
 
 /// A connected, reliable, ordered byte stream split into halves.
 ///
-/// Transports (TCP now; AOA bulk endpoints later) only have to produce a
-/// `Link`; everything above it is transport-agnostic.
+/// Transports (TCP and QUIC now; AOA bulk endpoints later) only have to produce a
+/// `Link`; everything above it is transport-agnostic. A link may carry a second
+/// stream for video (see [`Link::with_video`]), which the mux then uses so video
+/// cannot delay control, input or cursor traffic.
 pub struct Link {
     /// Read half.
     pub reader: BoxRead,
@@ -21,6 +23,8 @@ pub struct Link {
     pub writer: BoxWrite,
     /// Human readable description of the peer, for logs.
     pub peer: String,
+    /// Separate video stream (read, write), if the transport has one.
+    video: Option<(BoxRead, BoxWrite)>,
 }
 
 impl std::fmt::Debug for Link {
@@ -38,7 +42,20 @@ impl Link {
             reader,
             writer,
             peer: peer.into(),
+            video: None,
         }
+    }
+
+    /// Adds a separate video stream. A side that only receives video passes
+    /// `tokio::io::sink()` as the write half; one that only sends passes `tokio::io::empty()`.
+    pub fn with_video(mut self, reader: BoxRead, writer: BoxWrite) -> Self {
+        self.video = Some((reader, writer));
+        self
+    }
+
+    /// True when the link has a separate video stream.
+    pub fn has_video_stream(&self) -> bool {
+        self.video.is_some()
     }
 
     /// Wraps a connected TCP stream and enables `TCP_NODELAY`.
@@ -80,9 +97,18 @@ impl Link {
 
     /// Starts the mux with explicit [`MuxOptions`].
     pub fn into_mux_with(self, opts: MuxOptions) -> (MuxSender, MuxReceiver, MuxTask) {
-        let rx = MuxReceiver::new(self.reader);
-        let (tx, task) = spawn_mux(self.writer, opts);
-        (tx, rx, task)
+        match self.video {
+            None => {
+                let rx = MuxReceiver::new(self.reader);
+                let (tx, task) = spawn_mux(self.writer, opts);
+                (tx, rx, task)
+            }
+            Some((video_r, video_w)) => {
+                let rx = MuxReceiver::new_split(self.reader, video_r);
+                let (tx, task) = spawn_mux_split(self.writer, video_w, opts);
+                (tx, rx, task)
+            }
+        }
     }
 }
 

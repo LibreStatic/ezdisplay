@@ -13,7 +13,9 @@ rust-version = "1.85"
 [workspace.dependencies]
 ezd-proto = { path = "crates/ezd-proto" }
 ezd-input = { path = "crates/ezd-input" }
-ezd-link = { path = "crates/ezd-link" }
+# Without default features: members that need Wi-Fi links enable `quic` themselves, so the Windows
+# cross-check can build the rest without a C toolchain for ring.
+ezd-link = { path = "crates/ezd-link", default-features = false }
 ezd-host-core = { path = "crates/ezd-host-core" }
 # Without default features: members enable `ffmpeg` themselves (see their `ffmpeg` feature), so the
 # Windows cross-check can build them without FFmpeg headers.
@@ -24,6 +26,10 @@ ezd-host-windows = { path = "crates/ezd-host-windows", default-features = false 
 ezd-fake-client = { path = "crates/ezd-fake-client" }
 
 anyhow = "1"
+dirs = "6"
+gethostname = "1"
+mdns-sd = "0.21"
+qrcode = { version = "0.14", default-features = false }
 clap = { version = "4", features = ["derive", "string"] }
 i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
 i18n-embed-fl = "0.10"

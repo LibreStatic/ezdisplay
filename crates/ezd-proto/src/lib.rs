@@ -11,11 +11,13 @@
 //! * [`negotiate`]: [`negotiate()`] turns client + host capabilities into a
 //!   [`StreamConfig`].
 //! * [`clock`]: NTP-style [`ClockSync`].
+//! * [`pair`]: Wi-Fi link preamble and PIN pairing messages.
 
 pub mod clock;
 pub mod frame;
 pub mod msg;
 pub mod negotiate;
+pub mod pair;
 
 pub use clock::{ClockSync, Sample};
 pub use frame::{
@@ -68,6 +70,9 @@ pub enum ProtoError {
         /// The peer's major version.
         peer: u16,
     },
+    /// A Wi-Fi link preamble message could not be decoded.
+    #[error("malformed link preamble: {0}")]
+    Preamble(postcard::Error),
     /// No codec is supported by both the client decoders and the host encoders.
     #[error("no codec supported by both client decoders and host encoders")]
     NoCommonCodec,
