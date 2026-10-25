@@ -55,10 +55,39 @@ object Capabilities {
                     .put("refresh_rates_mhz", JSONArray(rates))
                     .put("current_refresh_mhz", current),
             )
+            .put("hdr", hdr(display))
             .put("decoders", decoders(native.width, native.height))
             .put("stylus", hasStylus())
             .put("max_touch_points", 10)
         return json.toString()
+    }
+
+    /** HDR10 support and luminance of the panel; luminance members are 0 when the platform does not report them. */
+    @Suppress("DEPRECATION")
+    private fun hdr(display: Display): JSONObject {
+        val caps = display.hdrCapabilities
+        val types = if (Build.VERSION.SDK_INT >= 34) {
+            display.mode.supportedHdrTypes
+        } else {
+            caps?.supportedHdrTypes ?: IntArray(0)
+        }
+        fun nits(v: Float, scale: Float = 1f) =
+            if (v.isNaN() || v <= 0f) 0 else min(65535f, v * scale).roundToInt()
+        return JSONObject()
+            .put("display_hdr10", types.contains(Display.HdrCapabilities.HDR_TYPE_HDR10))
+            .put("max_nits", nits(caps?.desiredMaxLuminance ?: 0f))
+            .put("max_avg_nits", nits(caps?.desiredMaxAverageLuminance ?: 0f))
+            .put("min_millinits", nits(caps?.desiredMinLuminance ?: 0f, 1000f))
+    }
+
+    /** True when [caps] lists a Main10 HDR10 profile for [mime]. */
+    private fun hasHdr10Profile(caps: MediaCodecInfo.CodecCapabilities, mime: String): Boolean {
+        val profile = when (mime.lowercase()) {
+            "video/hevc" -> MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10
+            "video/av01" -> MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10
+            else -> return false
+        }
+        return caps.profileLevels.any { it.profile == profile }
     }
 
     private fun isHardware(info: MediaCodecInfo): Boolean {
@@ -99,7 +128,8 @@ object Capabilities {
                         .put("low_latency", lowLatency)
                         .put("max_width", maxW)
                         .put("max_height", maxH)
-                        .put("max_fps", fps),
+                        .put("max_fps", fps)
+                        .put("hdr10", hasHdr10Profile(caps, mime)),
                 )
             }
         }

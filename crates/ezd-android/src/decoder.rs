@@ -6,10 +6,11 @@
 //! with `render = true` immediately. Only synchronous API-26 calls are used.
 
 use crate::caps::choose_decoder;
+use crate::color::codec_color;
 use crate::status::{Phase, Shared};
 use crate::tracker::Tracker;
 use ezd_client_core::{ClientHandle, now_us};
-use ezd_proto::{ClientCaps, Codec, StreamConfig, VideoFrame};
+use ezd_proto::{ClientCaps, Codec, StreamColor, StreamConfig, VideoFrame};
 use ndk::media::media_codec::{
     DequeuedInputBufferResult, DequeuedOutputBufferInfoResult, MediaCodec, MediaCodecDirection,
 };
@@ -43,7 +44,7 @@ unsafe impl Sync for SyncCodec {}
 /// Commands for the worker thread.
 pub enum Cmd {
     /// New stream negotiated: (re)create the decoder.
-    Stream(StreamConfig),
+    Stream(StreamConfig, StreamColor),
     /// Parameter sets.
     Config(Vec<u8>),
     /// One encoded frame.
@@ -78,6 +79,7 @@ impl DecoderCtl {
             shared,
             tx: tx.clone(),
             stream: None,
+            color: StreamColor::default(),
             config: None,
             window,
             running: None,
@@ -133,6 +135,7 @@ struct Worker {
     shared: Arc<Shared>,
     tx: Sender<Cmd>,
     stream: Option<StreamConfig>,
+    color: StreamColor,
     config: Option<Vec<u8>>,
     window: Option<SendWindow>,
     running: Option<Running>,
@@ -152,7 +155,7 @@ fn mime(codec: Codec) -> &'static str {
     }
 }
 
-fn build_format(stream: &StreamConfig, full: bool) -> MediaFormat {
+fn build_format(stream: &StreamConfig, color: Option<&StreamColor>, full: bool) -> MediaFormat {
     let mut f = MediaFormat::new();
     f.set_str("mime", mime(stream.codec));
     f.set_i32("width", stream.width as i32);
@@ -160,6 +163,20 @@ fn build_format(stream: &StreamConfig, full: bool) -> MediaFormat {
     let max_input = (stream.width as i64 * stream.height as i64 * 3 / 2)
         .clamp(512 * 1024, 8 * 1024 * 1024) as i32;
     f.set_i32("max-input-size", max_input);
+    // Colour keys (API 28+; older releases ignore unknown keys). The SurfaceView needs no colour mode:
+    // the compositor switches the panel to HDR from the buffer dataspace the codec derives from these.
+    if let Some(color) = color {
+        let k = codec_color(stream.codec, color);
+        f.set_i32("color-standard", k.standard);
+        f.set_i32("color-transfer", k.transfer);
+        f.set_i32("color-range", k.range);
+        if let Some(p) = k.profile {
+            f.set_i32("profile", p);
+        }
+        if let Some(info) = &k.hdr_static_info {
+            f.set_buffer("hdr-static-info", info);
+        }
+    }
     if full {
         let fps = (stream.refresh_mhz / 1000).max(1) as i32;
         f.set_i32("low-latency", 1);
@@ -185,10 +202,13 @@ fn build_format(stream: &StreamConfig, full: bool) -> MediaFormat {
 fn create_codec(
     name: Option<&str>,
     stream: &StreamConfig,
+    color: &StreamColor,
     window: &NativeWindow,
 ) -> Result<(MediaCodec, String), String> {
     let mut last_err = String::new();
-    for full in [true, false] {
+    // The last attempt drops the colour keys too, in case a decoder rejects them; the bitstream
+    // still carries the colour description.
+    for (full, color) in [(true, Some(color)), (false, Some(color)), (false, None)] {
         let (codec, used) = match name.and_then(|n| MediaCodec::from_codec_name(n).map(|c| (c, n)))
         {
             Some(x) => x,
@@ -198,7 +218,7 @@ fn create_codec(
                 "default",
             ),
         };
-        let fmt = build_format(stream, full);
+        let fmt = build_format(stream, color, full);
         match codec.configure(&fmt, Some(window), MediaCodecDirection::Decoder) {
             Ok(()) => match codec.start() {
                 Ok(()) => {
@@ -206,7 +226,7 @@ fn create_codec(
                 }
                 Err(e) => last_err = format!("start: {e}"),
             },
-            Err(e) => last_err = format!("configure (full={full}): {e}"),
+            Err(e) => last_err = format!("configure (full={full}, color={}): {e}", color.is_some()),
         }
         tracing::warn!("decoder setup failed: {last_err}");
     }
@@ -237,9 +257,10 @@ impl Worker {
             };
             match cmd {
                 None => self.ensure_decoder(true),
-                Some(Cmd::Stream(cfg)) => {
+                Some(Cmd::Stream(cfg, color)) => {
                     self.teardown();
                     self.stream = Some(cfg);
+                    self.color = color;
                     self.config = None;
                     self.need_keyframe = true;
                     self.create_failures = 0;
@@ -407,7 +428,7 @@ impl Worker {
             return;
         };
         let name = choose_decoder(&self.caps, stream.codec).map(|d| d.name.clone());
-        match create_codec(name.as_deref(), &stream, &window.0) {
+        match create_codec(name.as_deref(), &stream, &self.color, &window.0) {
             Ok((codec, actual)) => {
                 tracing::info!(
                     "decoder {actual} started for {}x{}",

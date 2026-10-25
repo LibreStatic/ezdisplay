@@ -6,13 +6,14 @@
 //!   "display": {"width_px": 2560, "height_px": 1600, "density_dpi": 274,
 //!               "refresh_rates_mhz": [60000, 120000], "current_refresh_mhz": 120000},
 //!   "decoders": [{"codec": "h264", "name": "c2.qti.avc.decoder", "hardware": true,
-//!                 "low_latency": true, "max_width": 4096, "max_height": 4096, "max_fps": 240}],
+//!                 "low_latency": true, "max_width": 4096, "max_height": 4096, "max_fps": 240, "hdr10": false}],
+//!   "hdr": {"display_hdr10": true, "max_nits": 1000, "max_avg_nits": 600, "min_millinits": 0},
 //!   "stylus": true,
 //!   "max_touch_points": 10
 //! }
 //! ```
 
-use ezd_proto::{ClientCaps, Codec, DecoderCaps, DisplayInfo};
+use ezd_proto::{ClientCaps, ClientHdr, Codec, DecoderCaps, DisplayInfo};
 use serde::Deserialize;
 
 /// Parsed capabilities plus the device name.
@@ -22,6 +23,8 @@ pub struct ParsedCaps {
     pub device_name: String,
     /// Wire capabilities.
     pub caps: ClientCaps,
+    /// HDR10 capabilities for `ClientConfig.hdr`; `None` when the JSON has no `hdr` object.
+    pub hdr: Option<ClientHdr>,
 }
 
 #[derive(Deserialize)]
@@ -32,9 +35,23 @@ struct JsonCaps {
     #[serde(default)]
     decoders: Vec<JsonDecoder>,
     #[serde(default)]
+    hdr: Option<JsonHdr>,
+    #[serde(default)]
     stylus: bool,
     #[serde(default = "default_touch")]
     max_touch_points: u32,
+}
+
+#[derive(Deserialize)]
+struct JsonHdr {
+    #[serde(default)]
+    display_hdr10: bool,
+    #[serde(default)]
+    max_nits: u32,
+    #[serde(default)]
+    max_avg_nits: u32,
+    #[serde(default)]
+    min_millinits: u32,
 }
 
 fn default_touch() -> u32 {
@@ -70,6 +87,9 @@ struct JsonDecoder {
     max_height: u32,
     #[serde(default)]
     max_fps: u32,
+    /// Has the Main10 HDR10 profile (HEVC or AV1).
+    #[serde(default)]
+    hdr10: bool,
 }
 
 fn parse_codec(s: &str) -> Option<Codec> {
@@ -93,12 +113,17 @@ pub fn parse_caps(json: &str) -> Result<ParsedCaps, String> {
     } else {
         j.display.refresh_rates_mhz[0]
     };
+    let mut main10 = Vec::new();
     let decoders = j
         .decoders
         .into_iter()
         .filter_map(|d| {
+            let codec = parse_codec(&d.codec)?;
+            if d.hdr10 && !main10.contains(&codec) {
+                main10.push(codec);
+            }
             Some(DecoderCaps {
-                codec: parse_codec(&d.codec)?,
+                codec,
                 name: d.name,
                 hardware: d.hardware,
                 low_latency: d.low_latency,
@@ -108,7 +133,18 @@ pub fn parse_caps(json: &str) -> Result<ParsedCaps, String> {
             })
         })
         .collect();
+    let clamp = |v: u32| v.min(u16::MAX as u32) as u16;
+    let hdr = j.hdr.map(|h| {
+        ClientHdr::new(
+            h.display_hdr10,
+            clamp(h.max_nits),
+            clamp(h.max_avg_nits),
+            clamp(h.min_millinits),
+            &main10,
+        )
+    });
     Ok(ParsedCaps {
+        hdr,
         device_name: if j.device_name.is_empty() {
             "android".into()
         } else {
@@ -212,6 +248,38 @@ mod tests {
             choose_decoder(&c, Codec::H264).unwrap().name,
             "c2.a.avc.decoder"
         );
+    }
+
+    #[test]
+    fn old_json_has_no_hdr() {
+        assert!(parse_caps(JSON).unwrap().hdr.is_none());
+    }
+
+    #[test]
+    fn parses_hdr() {
+        let json = r#"{
+            "display": {"width_px": 2960, "height_px": 1848, "refresh_rates_mhz": [120000]},
+            "hdr": {"display_hdr10": true, "max_nits": 1000, "max_avg_nits": 500, "min_millinits": 2},
+            "decoders": [
+              {"codec": "h264", "name": "a", "hdr10": true},
+              {"codec": "hevc", "name": "b", "hdr10": true},
+              {"codec": "hevc", "name": "c", "hdr10": true},
+              {"codec": "av1", "name": "d"}
+            ]
+        }"#;
+        let h = parse_caps(json).unwrap().hdr.unwrap();
+        assert_eq!(
+            h,
+            ClientHdr::new(true, 1000, 500, 2, &[Codec::H264, Codec::Hevc])
+        );
+        // Missing members default to "no HDR".
+        let h = parse_caps(
+            r#"{"display": {"width_px": 1, "height_px": 1, "refresh_rates_mhz": [60000]}, "hdr": {}}"#,
+        )
+        .unwrap()
+        .hdr
+        .unwrap();
+        assert_eq!(h, ClientHdr::none());
     }
 
     #[test]

@@ -8,7 +8,7 @@ use ezd_client_core::{
     run_client,
 };
 use ezd_link::Link;
-use ezd_proto::{CursorShape, StreamConfig, VideoFrame};
+use ezd_proto::{CursorShape, StreamColor, StreamConfig, VideoFrame};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -26,9 +26,23 @@ pub struct Session {
 struct Handler {
     shared: Arc<Shared>,
     dec: Arc<DecoderCtl>,
+    /// Sent right before the matching `StreamConfig`; SDR BT.709 when the host sends none.
+    color: StreamColor,
 }
 
 impl ClientHandler for Handler {
+    fn on_stream_color(&mut self, color: &StreamColor) {
+        tracing::info!(
+            "stream colour {}-bit primaries {} transfer {} matrix {} full_range {}",
+            color.bit_depth,
+            color.primaries,
+            color.transfer,
+            color.matrix,
+            color.full_range
+        );
+        self.color = *color;
+    }
+
     fn on_stream_config(&mut self, cfg: &StreamConfig) -> HandlerResult {
         tracing::info!(
             "stream {}x{} @ {:.3} Hz {:?} {} kbps ({})",
@@ -40,7 +54,9 @@ impl ClientHandler for Handler {
             cfg.encoder_name
         );
         self.shared.set_stream(cfg.clone());
-        if !self.dec.send(Cmd::Stream(cfg.clone())) {
+        // Consume the colour so a later stream from a host that sends none is not tagged stale.
+        let color = std::mem::take(&mut self.color);
+        if !self.dec.send(Cmd::Stream(cfg.clone(), color)) {
             return Err("decoder thread is gone".into());
         }
         self.shared.set_phase(Phase::Streaming, "");
@@ -183,9 +199,11 @@ fn run(
         shared.set_phase(Phase::Handshaking, addr);
         let mut cfg = ClientConfig::new(caps.device_name, caps.caps);
         cfg.app_version = env!("CARGO_PKG_VERSION").into();
+        cfg.hdr = caps.hdr;
         let mut handler = Handler {
             shared: shared.clone(),
             dec: dec.clone(),
+            color: StreamColor::default(),
         };
         match run_client(link, cfg, &handle, &mut handler).await {
             Ok(o) => {

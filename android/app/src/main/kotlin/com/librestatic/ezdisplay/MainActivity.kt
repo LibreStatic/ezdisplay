@@ -512,7 +512,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             ms(j.optInt("decode_us_p50")), ms(j.optInt("decode_us_p95")),
             ms(j.optInt("e2e_us_p50")), ms(j.optInt("e2e_us_p95")),
             rtt, j.optInt("frames_dropped"),
-            "${j.optString("encoder")} → ${j.optString("decoder")}",
+            "${j.optString("codec").uppercase(Locale.ROOT)} · " +
+                (if (j.optString("dynamic_range") == "hdr10") "HDR10" else "SDR") +
+                " · ${j.optString("encoder")} → ${j.optString("decoder")}",
         )
     }
 

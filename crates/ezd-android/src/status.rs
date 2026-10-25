@@ -104,6 +104,7 @@ impl Shared {
             Codec::Hevc => "hevc",
             Codec::Av1 => "av1",
         });
+        let color = &snap.stream_color;
         let v = serde_json::json!({
             "phase": s.phase,
             "detail": s.detail,
@@ -114,6 +115,10 @@ impl Shared {
             "codec": codec,
             "encoder": s.stream.as_ref().map(|c| c.encoder_name.clone()),
             "decoder": s.decoder,
+            "dynamic_range": if color.is_hdr() { "hdr10" } else { "sdr" },
+            "bit_depth": color.bit_depth,
+            "color_primaries": color.primaries,
+            "color_transfer": color.transfer,
             "window_ms": win_ms,
             "fps": fps,
             "mbps": mbps,
@@ -159,6 +164,21 @@ mod tests {
         assert!(j["input_note"].is_null());
         assert!(j["client_flags"].is_null());
         assert_eq!(j["inputs_sent"], 0);
+        assert_eq!(j["dynamic_range"], "sdr");
+        assert_eq!(j["bit_depth"], 8);
+    }
+
+    #[test]
+    fn json_reports_hdr10() {
+        let sh = Shared::default();
+        let snap = ClientSnapshot {
+            stream_color: ezd_proto::StreamColor::hdr10(None, 0, 0),
+            ..Default::default()
+        };
+        let j: serde_json::Value = serde_json::from_str(&sh.to_json(&snap)).unwrap();
+        assert_eq!(j["dynamic_range"], "hdr10");
+        assert_eq!(j["bit_depth"], 10);
+        assert_eq!(j["color_transfer"], 16);
     }
 
     #[test]

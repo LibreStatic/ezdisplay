@@ -9,6 +9,7 @@
 #![allow(unsafe_code)]
 
 pub mod caps;
+pub mod color;
 pub mod input;
 pub mod status;
 pub mod tracker;
