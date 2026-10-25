@@ -71,11 +71,21 @@ pub fn option_sets(name: &str) -> Vec<Vec<(&'static str, String)>> {
             ],
             vec![s("async_depth", "1"), s("forced_idr", "1")],
         ],
-        "h264_amf" | "hevc_amf" | "av1_amf" => vec![vec![
-            s("usage", "ultralowlatency"),
-            s("rc", "cbr"),
-            s("forced_idr", "1"),
-        ]],
+        // Older encoder blocks (VCE) may refuse the ultra-low-latency usage, so fall back to
+        // low latency and then to the driver's defaults.
+        "h264_amf" | "hevc_amf" | "av1_amf" => vec![
+            vec![
+                s("usage", "ultralowlatency"),
+                s("rc", "cbr"),
+                s("forced_idr", "1"),
+            ],
+            vec![
+                s("usage", "lowlatency"),
+                s("rc", "cbr"),
+                s("forced_idr", "1"),
+            ],
+            vec![s("forced_idr", "1")],
+        ],
         _ => vec![vec![]],
     }
 }
@@ -100,5 +110,6 @@ mod tests {
         assert_eq!(option_sets("unknown_enc"), vec![vec![]]);
         assert_eq!(option_sets("h264_vaapi").len(), 3);
         assert_eq!(option_sets("hevc_vaapi").len(), 2);
+        assert_eq!(option_sets("h264_amf").len(), 3);
     }
 }
