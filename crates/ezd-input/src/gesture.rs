@@ -68,7 +68,9 @@ pub(crate) enum Gesture {
     Pending {
         press: (f32, f32),
         press_t: u64,
-        /// The hold time has elapsed (and `hold` did not fire).
+        /// The hold time has elapsed. `hold` did not fire yet if a drag is
+        /// configured (the drags win over the hold, see `defers_hold`), or if
+        /// `hold` is disabled.
         past_t: bool,
     },
     /// Click released, waiting for a possible second press.
@@ -79,6 +81,19 @@ pub(crate) enum Gesture {
     },
     /// Resolved, barrel still down.
     Held(Held),
+}
+
+/// True for the actions that turn pen motion into scrolling or zooming.
+fn drag_effect(a: ButtonAction) -> bool {
+    matches!(a, ButtonAction::Scroll | ButtonAction::PcZoom)
+}
+
+fn drag_kind(a: ButtonAction) -> DragKind {
+    if a == ButtonAction::Scroll {
+        DragKind::Scroll
+    } else {
+        DragKind::PcZoom
+    }
 }
 
 /// `(dx, dy, modifiers)` of a scroll message.
@@ -128,6 +143,25 @@ impl InputEngine {
 
     fn cur_pos(&self) -> (f32, f32) {
         (self.pen.cur.x, self.pen.cur.y)
+    }
+
+    /// True if a still press must not commit to the hold action when the hold
+    /// time elapses, because a drag (scroll or zoom) is configured: the drags
+    /// win over the hold. The key-combination hold keeps its own precedence and
+    /// a disabled hold has nothing to defer.
+    fn defers_hold(&self) -> bool {
+        let m = &self.p.map;
+        !matches!(m.hold, ButtonAction::Keys | ButtonAction::None)
+            && (drag_effect(m.hold_drag_hover) || drag_effect(m.hold_drag_contact))
+    }
+
+    /// Hold action fired by the release of a barrel that was held still past the
+    /// hold time (deferred hold): a one-shot, never a click.
+    fn hold_on_release(&mut self, t: u64, out: &mut Vec<Message>) {
+        match self.p.map.hold {
+            ButtonAction::Raw => self.raw_late(t, out),
+            a => self.instant(a, Trigger::Hold, t, out),
+        }
     }
 
     fn set_held(&mut self, h: Held) {
@@ -329,6 +363,9 @@ impl InputEngine {
             self.release_keys(t, out);
             self.pen.gesture = Gesture::Idle;
             match g {
+                Gesture::Pending { past_t: true, .. } if self.defers_hold() => {
+                    self.hold_on_release(t, out);
+                }
                 Gesture::Pending { .. } => {
                     let click = self.p.map.click;
                     if click == ButtonAction::None {
@@ -397,7 +434,9 @@ impl InputEngine {
                     press_t,
                     past_t: true,
                 };
-                if self.p.map.hold != ButtonAction::None {
+                if self.defers_hold() {
+                    // Wait for a drag or the release; see `defers_hold`.
+                } else if self.p.map.hold != ButtonAction::None {
                     self.resolve_hold(d, out);
                 } else if self.pending_all_raw(true) {
                     self.raw_held(d, out);
@@ -427,17 +466,17 @@ impl InputEngine {
             Gesture::Pending { .. } if self.p.map.hold == ButtonAction::Keys => {
                 self.start_keys_hold(t, out);
             }
+            Gesture::Pending { past_t: true, .. }
+                if self.defers_hold() && !drag_effect(self.p.map.hold_drag_contact) =>
+            {
+                self.resolve_hold(t, out);
+            }
             Gesture::Pending { press, .. } => match self.p.map.hold_drag_contact {
                 ButtonAction::Raw => self.raw_held(t, out),
-                a @ (ButtonAction::Scroll | ButtonAction::PcZoom) => {
+                a if drag_effect(a) => {
                     self.pen.suppress = true;
-                    let kind = if a == ButtonAction::Scroll {
-                        DragKind::Scroll
-                    } else {
-                        DragKind::PcZoom
-                    };
                     self.set_held(Held::ContactDrag {
-                        kind,
+                        kind: drag_kind(a),
                         anchor: press,
                         rem: (0.0, 0.0),
                         touching: true,
@@ -450,6 +489,23 @@ impl InputEngine {
             Gesture::Waiting { pos, .. } => {
                 self.pen.gesture = Gesture::Idle;
                 self.resolve_click_at(pos, t, out);
+            }
+            Gesture::Held(Held::HoverDrag { anchor, .. }) => {
+                // The contact must not draw during the drag. With a contact
+                // drag configured it takes over; otherwise the hover drag keeps
+                // running and the contact is reported as hover.
+                self.pen.suppress = true;
+                let contact = self.p.map.hold_drag_contact;
+                if drag_effect(contact) {
+                    self.set_held(Held::ContactDrag {
+                        kind: drag_kind(contact),
+                        anchor,
+                        rem: (0.0, 0.0),
+                        touching: true,
+                        touch: self.cur_pos(),
+                        dragging: false,
+                    });
+                }
             }
             Gesture::Held(Held::ContactDrag {
                 kind, anchor, rem, ..
@@ -503,7 +559,7 @@ impl InputEngine {
     /// Movement-driven transitions and drag actions, once per pen sample.
     pub(crate) fn gesture_sample(&mut self, t: u64, out: &mut Vec<Message>) {
         let cur = self.cur_pos();
-        if let Gesture::Pending { press, .. } = self.pen.gesture
+        if let Gesture::Pending { press, past_t, .. } = self.pen.gesture
             && !self.pen.contact
             && dist(cur, press) > self.p.slop
         {
@@ -511,17 +567,14 @@ impl InputEngine {
                 self.set_held(Held::Pan);
             } else if self.p.map.hold == ButtonAction::Keys {
                 self.start_keys_hold(t, out);
+            } else if past_t && self.defers_hold() && !drag_effect(self.p.map.hold_drag_hover) {
+                self.resolve_hold(t, out);
             } else {
                 match self.p.map.hold_drag_hover {
                     ButtonAction::Raw => self.raw_held(t, out),
-                    a @ (ButtonAction::Scroll | ButtonAction::PcZoom) => {
-                        let kind = if a == ButtonAction::Scroll {
-                            DragKind::Scroll
-                        } else {
-                            DragKind::PcZoom
-                        };
+                    a if drag_effect(a) => {
                         self.set_held(Held::HoverDrag {
-                            kind,
+                            kind: drag_kind(a),
                             anchor: press,
                             rem: (0.0, 0.0),
                         });

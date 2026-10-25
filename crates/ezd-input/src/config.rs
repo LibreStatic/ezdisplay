@@ -127,7 +127,11 @@ pub struct ButtonMap {
     pub click: ButtonAction,
     /// Second press shortly after a click.
     pub double_click: ButtonAction,
-    /// Held still in hover for the double-click time.
+    /// Held still in hover for the double-click time. If a drag action (scroll
+    /// or zoom) is set for the contact or hover drag, the hold is deferred: a
+    /// drag started afterwards wins, otherwise the hold fires at the next
+    /// motion, tip touch or barrel release. A Keys hold takes precedence over
+    /// the drags.
     pub hold: ButtonAction,
     /// Held while the tip touches and drags.
     pub hold_drag_contact: ButtonAction,

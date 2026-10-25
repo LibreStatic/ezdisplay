@@ -1728,3 +1728,236 @@ fn keys_config_json_and_sanitizing() {
         assert_eq!(k.key, if ok { key } else { 0 }, "{key:#x}");
     }
 }
+
+// ---- 9. drags win over the hold ----------------------------------------------
+
+fn custom_map(hold: ButtonAction, contact: ButtonAction, hover: ButtonAction) -> Rig {
+    custom_keys(
+        ButtonMap {
+            click: ButtonAction::Raw,
+            double_click: ButtonAction::LocalZoom,
+            hold,
+            hold_drag_contact: contact,
+            hold_drag_hover: hover,
+        },
+        KeyBindings::default(),
+    )
+}
+
+/// Press at 500,500 and let the hold time elapse without moving.
+fn pressed_past_the_hold(mut r: Rig) -> Rig {
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    assert_eq!(r.tick(400), Vec::<String>::new());
+    assert_eq!(r.e.next_deadline(), None);
+    r
+}
+
+#[test]
+fn hover_zoom_works_after_a_still_hold_with_a_raw_hold() {
+    let mut r = pressed_past_the_hold(custom_map(
+        ButtonAction::Raw,
+        ButtonAction::Raw,
+        ButtonAction::PcZoom,
+    ));
+    assert_eq!(
+        r.feed(hover(500, 500.0, 452.0, PRIMARY)),
+        ["scroll 0,120 m1 @500,500", "pen I 500,452"]
+    );
+    assert_eq!(r.feed(release(600, 500.0, 452.0)), ["pen I 500,452"]);
+    assert_eq!(r.e.next_deadline(), None);
+}
+
+#[test]
+fn tip_down_during_a_hover_zoom_does_not_draw() {
+    let mut r = pressed_past_the_hold(custom_map(
+        ButtonAction::Raw,
+        ButtonAction::Raw,
+        ButtonAction::PcZoom,
+    ));
+    r.feed(hover(500, 500.0, 452.0, PRIMARY));
+    // Contact is reported as hover and the zoom goes on.
+    assert_eq!(
+        r.feed(pen_down(510, 500.0, 452.0, PRIMARY)),
+        ["pen I 500,452"]
+    );
+    assert_eq!(
+        r.feed(pen_move(520, 500.0, 404.0, PRIMARY)),
+        ["scroll 0,120 m1 @500,500", "pen I 500,404"]
+    );
+    assert_eq!(
+        r.feed(pen_up(530, 500.0, 404.0, PRIMARY)),
+        ["pen I 500,404"]
+    );
+    assert_eq!(r.feed(release(540, 500.0, 404.0)), ["pen I 500,404"]);
+}
+
+#[test]
+fn tip_down_during_a_hover_drag_becomes_the_contact_drag() {
+    let mut r = custom_map(
+        ButtonAction::Raw,
+        ButtonAction::Scroll,
+        ButtonAction::PcZoom,
+    );
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(hover(110, 500.0, 452.0, PRIMARY));
+    r.feed(pen_down(120, 500.0, 452.0, PRIMARY));
+    // Scrolling (not zooming) from now on, anchored where the press happened.
+    assert_eq!(
+        r.feed(pen_move(130, 500.0, 500.0, PRIMARY)),
+        ["scroll 0,120 m0 @500,500", "pen I 500,500"]
+    );
+    assert_eq!(
+        r.feed(pen_up(140, 500.0, 500.0, PRIMARY)),
+        ["pen I 500,500"]
+    );
+    assert_eq!(r.feed(release(150, 500.0, 500.0)), ["pen I 500,500"]);
+}
+
+#[test]
+fn tap_during_a_hover_drag_converted_to_a_contact_drag_clicks() {
+    let mut r = custom_keys(
+        ButtonMap {
+            click: ButtonAction::RightClick,
+            double_click: ButtonAction::None,
+            hold: ButtonAction::Raw,
+            hold_drag_contact: ButtonAction::Scroll,
+            hold_drag_hover: ButtonAction::PcZoom,
+        },
+        KeyBindings::default(),
+    );
+    // Same as an ordinary contact drag: a tap without drag fires the click.
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(hover(110, 500.0, 452.0, PRIMARY));
+    r.feed(pen_down(120, 500.0, 452.0, PRIMARY));
+    assert_eq!(
+        r.feed(pen_up(130, 500.0, 452.0, PRIMARY)),
+        ["pen I 500,452", "btn R+ 500,452", "btn R- 500,452"]
+    );
+}
+
+#[test]
+fn contact_zoom_works_after_a_still_hold_with_a_raw_hold() {
+    let mut r = pressed_past_the_hold(custom_map(
+        ButtonAction::Raw,
+        ButtonAction::PcZoom,
+        ButtonAction::Raw,
+    ));
+    assert_eq!(
+        r.feed(pen_down(500, 500.0, 500.0, PRIMARY)),
+        ["pen I 500,500"]
+    );
+    assert_eq!(
+        r.feed(pen_move(510, 500.0, 452.0, PRIMARY)),
+        ["scroll 0,120 m1 @500,500", "pen I 500,452"]
+    );
+    assert_eq!(
+        r.feed(pen_up(520, 500.0, 452.0, PRIMARY)),
+        ["pen I 500,452"]
+    );
+    assert_eq!(r.feed(release(530, 500.0, 452.0)), ["pen I 500,452"]);
+}
+
+#[test]
+fn still_hold_released_without_a_drag_fires_the_raw_hold_once() {
+    let mut r = pressed_past_the_hold(custom_map(
+        ButtonAction::Raw,
+        ButtonAction::Raw,
+        ButtonAction::PcZoom,
+    ));
+    assert_eq!(
+        r.feed(release(600, 500.0, 500.0)),
+        ["pen IB 500,500", "pen I 500,500"]
+    );
+    assert_eq!(r.e.next_deadline(), None);
+    assert_eq!(r.tick(2000), Vec::<String>::new());
+}
+
+#[test]
+fn still_hold_released_without_a_drag_fires_one_shot_holds() {
+    let mut r = pressed_past_the_hold(custom_map(
+        ButtonAction::RightClick,
+        ButtonAction::Raw,
+        ButtonAction::PcZoom,
+    ));
+    assert_eq!(
+        r.feed(release(600, 500.0, 500.0)),
+        ["btn R+ 500,500", "btn R- 500,500", "pen I 500,500"]
+    );
+    // The eraser has nothing to do without a tip touch or motion.
+    let mut r = pressed_past_the_hold(custom_map(
+        ButtonAction::Eraser,
+        ButtonAction::Raw,
+        ButtonAction::PcZoom,
+    ));
+    assert_eq!(r.feed(release(600, 500.0, 500.0)), ["pen I 500,500"]);
+    assert_eq!(r.e.next_deadline(), None);
+}
+
+#[test]
+fn hold_applies_at_the_tip_touch_when_only_the_hover_drag_is_set() {
+    // Eraser hold, hover zoom, raw contact: the touch resolves the eraser first.
+    let mut r = pressed_past_the_hold(custom_map(
+        ButtonAction::Eraser,
+        ButtonAction::Raw,
+        ButtonAction::PcZoom,
+    ));
+    assert_eq!(
+        r.feed(pen_down(500, 500.0, 500.0, PRIMARY)),
+        ["pen - 500,500", "pen IE 500,500", "pen ICE 500,500 p=32768"]
+    );
+    assert_eq!(
+        r.feed(pen_up(510, 500.0, 500.0, PRIMARY)),
+        ["pen IE 500,500"]
+    );
+    assert_eq!(
+        r.feed(release(520, 500.0, 500.0)),
+        ["pen - 500,500", "pen I 500,500"]
+    );
+
+    // Raw hold: the barrel is held during the contact.
+    let mut r = pressed_past_the_hold(custom_map(
+        ButtonAction::Raw,
+        ButtonAction::Raw,
+        ButtonAction::PcZoom,
+    ));
+    assert_eq!(
+        r.feed(pen_down(500, 500.0, 500.0, PRIMARY)),
+        ["pen IB 500,500", "pen ICB 500,500 p=32768"]
+    );
+}
+
+#[test]
+fn hold_applies_at_the_hover_motion_when_only_the_contact_drag_is_set() {
+    let mut r = pressed_past_the_hold(custom_map(
+        ButtonAction::Eraser,
+        ButtonAction::PcZoom,
+        ButtonAction::Raw,
+    ));
+    assert_eq!(
+        r.feed(hover(500, 600.0, 500.0, PRIMARY)),
+        ["pen - 600,500", "pen IE 600,500"]
+    );
+    // The eraser holds: no zoom, the tip touch draws with the eraser.
+    assert_eq!(
+        r.feed(pen_down(510, 600.0, 500.0, PRIMARY)),
+        ["pen ICE 600,500 p=32768"]
+    );
+}
+
+#[test]
+fn drags_before_the_hold_time_keep_their_mapping_with_a_raw_hold() {
+    let mut r = custom_map(
+        ButtonAction::Raw,
+        ButtonAction::PcZoom,
+        ButtonAction::Scroll,
+    );
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    assert_eq!(
+        r.feed(hover(110, 500.0, 548.0, PRIMARY)),
+        ["scroll 0,120 m0 @500,500", "pen I 500,548"]
+    );
+}
