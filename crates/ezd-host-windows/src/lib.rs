@@ -70,6 +70,13 @@ pub fn diag_section() -> serde_json::Value {
     }
 }
 
+/// Takes the virtual monitor off the desktop now if a session ended and its grace period is
+/// still running. Call when the host stops serving.
+pub fn release_virtual_display() {
+    #[cfg(windows)]
+    win::vdd::detach_now();
+}
+
 /// Keeps child processes (and the `adb` server they start) from inheriting our stdio, which
 /// would hold a pipe reading our output open after we exit. Call once at startup.
 #[cfg(windows)]

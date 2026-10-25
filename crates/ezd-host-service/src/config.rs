@@ -120,6 +120,9 @@ pub struct ServiceConfig {
     pub open_app_on_connect: bool,
     /// HDR10 streaming policy (`hdr = "auto" | "off"`).
     pub hdr: HdrChoice,
+    /// Milliseconds the virtual monitor stays after the tablet sleeps, turns off or disconnects
+    /// (Windows; on Linux it goes with the session).
+    pub detach_grace_ms: u32,
 }
 
 impl Default for ServiceConfig {
@@ -142,6 +145,7 @@ impl Default for ServiceConfig {
             pen_mode: PenChoice::default(),
             open_app_on_connect: true,
             hdr: HdrChoice::default(),
+            detach_grace_ms: ezd_host_core::DEFAULT_DETACH_GRACE.as_millis() as u32,
         }
     }
 }
@@ -169,6 +173,7 @@ impl ServiceConfig {
             adapter: self.adapter.clone(),
             prefer_dgpu: self.prefer_dgpu,
             output_name: self.output_name.clone(),
+            detach_grace: Duration::from_millis(self.detach_grace_ms.into()),
         }
     }
 
@@ -248,6 +253,7 @@ mod tests {
             adapter: Some("card1".into()),
             prefer_dgpu: true,
             output_name: Some("DP-1".into()),
+            detach_grace_ms: 5000,
             ..ServiceConfig::default()
         };
         assert_eq!(
@@ -256,6 +262,7 @@ mod tests {
                 adapter: Some("card1".into()),
                 prefer_dgpu: true,
                 output_name: Some("DP-1".into()),
+                detach_grace: Duration::from_secs(5),
             }
         );
     }
