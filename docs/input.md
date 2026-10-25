@@ -66,19 +66,19 @@ stateDiagram-v2
   [*] --> Idle
   Idle --> Pending: press in the air
   Idle --> Held: press while touching
-  Pending --> Click: release
+  Pending --> ClickFired: release
   Pending --> Waiting: release, double click set
   Pending --> Held: hold time, touch or move
-  Waiting --> Click: time out, touch or out of range
+  Waiting --> ClickFired: time out, touch or out of range
   Waiting --> Held: second press, double click fires
   Waiting --> DoublePending: second press, double click + hold set
-  DoublePending --> DoubleClick: release
+  DoublePending --> DoubleFired: release
   DoublePending --> Held: hold time, touch or move
-  Click --> Idle
-  DoubleClick --> Idle
+  ClickFired --> Idle
+  DoubleFired --> Idle
   Held --> Idle: release
-  Click: Click fires
-  DoubleClick: Double click fires
+  ClickFired: Click fires
+  DoubleFired: Double click fires
   Held: Held (button down)
   note right of Held
     Runs the hold, a drag (scroll, zoom, pan),
