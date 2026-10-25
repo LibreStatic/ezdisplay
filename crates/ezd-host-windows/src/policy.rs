@@ -107,6 +107,17 @@ pub fn hw_encoder_for_vendor(vendor_id: u32) -> Option<&'static str> {
     }
 }
 
+/// Hardware HEVC encoder (FFmpeg name) for a vendor: the only HDR10 (Main10) encoders. There is
+/// no software fallback, a failed probe means the stream falls back to tone-mapped SDR.
+pub fn hdr_encoder_for_vendor(vendor_id: u32) -> Option<&'static str> {
+    match vendor_id {
+        VENDOR_NVIDIA => Some("hevc_nvenc"),
+        VENDOR_INTEL => Some("hevc_qsv"),
+        VENDOR_AMD => Some("hevc_amf"),
+        _ => None,
+    }
+}
+
 /// Why an adapter was chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
@@ -145,6 +156,8 @@ pub struct Decision {
     pub hw_encoder: Option<&'static str>,
     /// Encoders to try in order, ending with the software fallback.
     pub encoder_chain: Vec<&'static str>,
+    /// HDR10 (HEVC Main10) encoders to try in order; empty for unknown vendors. Never software.
+    pub hdr_chain: Vec<&'static str>,
 }
 
 impl Decision {
@@ -156,6 +169,7 @@ impl Decision {
             "vendor": self.adapter.vendor_name(),
             "reason": self.reason.as_str(),
             "encoder_chain": self.encoder_chain,
+            "hdr_chain": self.hdr_chain,
         })
     }
 }
@@ -274,6 +288,9 @@ pub fn decide(adapters: &[AdapterInfo], opts: &PlatformOptions) -> Result<Decisi
         reason,
         hw_encoder,
         encoder_chain,
+        hdr_chain: hdr_encoder_for_vendor(chosen.vendor_id)
+            .into_iter()
+            .collect(),
     })
 }
 
@@ -368,6 +385,15 @@ mod tests {
             want_reason: Reason,
             want_chain: &'static [&'static str],
         }
+        // The HDR chain follows the vendor of the chosen adapter and has no software entry.
+        fn hdr_for(chain: &[&str]) -> &'static [&'static str] {
+            match chain[0] {
+                "h264_nvenc" => &["hevc_nvenc"],
+                "h264_qsv" => &["hevc_qsv"],
+                "h264_amf" => &["hevc_amf"],
+                _ => &[],
+            }
+        }
         let cases = [
             Case {
                 label: "discrete-only MUX: NVIDIA drives the panel",
@@ -453,6 +479,7 @@ mod tests {
             assert_eq!(d.adapter.name, c.want_name, "{}", c.label);
             assert_eq!(d.reason, c.want_reason, "{}", c.label);
             assert_eq!(d.encoder_chain, c.want_chain, "{}", c.label);
+            assert_eq!(d.hdr_chain, hdr_for(c.want_chain), "{}", c.label);
         }
     }
 
@@ -492,6 +519,25 @@ mod tests {
         let d = decide(&[g], &opts(None, false)).unwrap();
         assert_eq!(d.hw_encoder, None);
         assert_eq!(d.encoder_chain, ["libx264"]);
+        assert!(d.hdr_chain.is_empty(), "no software HDR10 encoder");
+    }
+
+    #[test]
+    fn hdr_chain_per_vendor() {
+        assert_eq!(hdr_encoder_for_vendor(VENDOR_NVIDIA), Some("hevc_nvenc"));
+        assert_eq!(hdr_encoder_for_vendor(VENDOR_INTEL), Some("hevc_qsv"));
+        assert_eq!(hdr_encoder_for_vendor(VENDOR_AMD), Some("hevc_amf"));
+        assert_eq!(hdr_encoder_for_vendor(VENDOR_MICROSOFT), None);
+        assert_eq!(hdr_encoder_for_vendor(0xABCD), None);
+        // Each H.264 encoder has an HEVC sibling of the same vendor.
+        for v in [VENDOR_NVIDIA, VENDOR_INTEL, VENDOR_AMD] {
+            let h264 = hw_encoder_for_vendor(v).unwrap();
+            let hevc = hdr_encoder_for_vendor(v).unwrap();
+            assert_eq!(
+                h264.split_once('_').unwrap().1,
+                hevc.split_once('_').unwrap().1
+            );
+        }
     }
 
     #[test]

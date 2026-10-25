@@ -1582,6 +1582,7 @@ dependencies = [
  "ezd-ffmpeg",
  "ezd-host-core",
  "ezd-proto",
+ "ffmpeg-sys-next",
  "roxmltree",
  "serde_json",
  "tracing",

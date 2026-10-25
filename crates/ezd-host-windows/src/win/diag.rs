@@ -115,6 +115,10 @@ fn encoders_section(adapters: &[AdapterEntry]) -> Value {
             if let Some(hw) = crate::policy::hw_encoder_for_vendor(a.info.vendor_id) {
                 names.push(hw);
             }
+            // The HDR10 encoder (HEVC Main10); there is no software one.
+            if let Some(hdr) = crate::policy::hdr_encoder_for_vendor(a.info.vendor_id) {
+                names.push(hdr);
+            }
             names.push("libx264");
             let probes: serde_json::Map<String, Value> = names
                 .into_iter()
@@ -151,7 +155,7 @@ fn dda_section(adapters: &[AdapterEntry]) -> Value {
         Ok(d) => d,
         Err(e) => return json!({ "status": "failed", "stage": "device", "error": e }),
     };
-    let dup = match capture::duplicate(&device, &o.output) {
+    let dup = match capture::duplicate(&device, &o.output, o.color.is_some_and(|c| c.hdr)) {
         Ok(d) => d,
         Err(e) => {
             return json!({ "status": "failed", "stage": "DuplicateOutput", "error": e, "adapter": a.info.name });
@@ -187,6 +191,7 @@ fn dda_section(adapters: &[AdapterEntry]) -> Value {
         "adapter": a.info.name,
         "output": o.device_name,
         "mode": format!("{}x{}", dup.desc.ModeDesc.Width, dup.desc.ModeDesc.Height),
+        "format": format!("{:?}", dup.desc.ModeDesc.Format),
         "in_system_memory": dup.desc.DesktopImageInSystemMemory.as_bool(),
         "frame": acquired,
         "note": if acquired.is_none() { Some("duplication works, but no frame was presented within 1 s (an idle virtual display only presents on change)") } else { None },

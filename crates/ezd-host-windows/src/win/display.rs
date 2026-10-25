@@ -5,10 +5,11 @@ use crate::ident::looks_like_vdd;
 use crate::vdd_xml::{Mode, format_refresh};
 use serde_json::{Value, json};
 use windows::Win32::Devices::Display::{
-    DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
-    DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO,
+    DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+    DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_DEVICE_INFO_HEADER,
+    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SDR_WHITE_LEVEL,
     DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo,
-    GetDisplayConfigBufferSizes, QDC_ALL_PATHS, QueryDisplayConfig,
+    GetDisplayConfigBufferSizes, QDC_ALL_PATHS, QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
 };
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::Graphics::Gdi::{
@@ -163,6 +164,87 @@ pub fn ccd_targets() -> Result<Vec<CcdTarget>, String> {
         });
     }
     Ok(out)
+}
+
+/// Raw `SDRWhiteLevel` (1000 = 80 cd/m2) of every active display, keyed by its GDI device name
+/// (`\\.\DISPLAYn`, the DXGI output's `DeviceName`). Displays Windows does not answer for are
+/// left out.
+pub fn sdr_white_levels() -> Vec<(String, u32)> {
+    let (mut np, mut nm) = (0u32, 0u32);
+    // SAFETY: valid out-pointers.
+    if unsafe { GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm) }
+        != ERROR_SUCCESS
+    {
+        return Vec::new();
+    }
+    let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+    let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+    // SAFETY: arrays sized as reported above.
+    let r = unsafe {
+        QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            &mut np,
+            paths.as_mut_ptr(),
+            &mut nm,
+            modes.as_mut_ptr(),
+            None,
+        )
+    };
+    if r != ERROR_SUCCESS {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for p in &paths[..np as usize] {
+        let mut s = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                size: size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                adapterId: p.sourceInfo.adapterId,
+                id: p.sourceInfo.id,
+            },
+            ..Default::default()
+        };
+        // SAFETY: the header is the first field of the (larger) request structure.
+        let rs = unsafe {
+            DisplayConfigGetDeviceInfo(
+                (&mut s as *mut DISPLAYCONFIG_SOURCE_DEVICE_NAME)
+                    .cast::<DISPLAYCONFIG_DEVICE_INFO_HEADER>(),
+            )
+        };
+        if rs != 0 {
+            continue;
+        }
+        let mut w = DISPLAYCONFIG_SDR_WHITE_LEVEL {
+            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+                size: size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32,
+                adapterId: p.targetInfo.adapterId,
+                id: p.targetInfo.id,
+            },
+            SDRWhiteLevel: 0,
+        };
+        // SAFETY: as above.
+        let rw = unsafe {
+            DisplayConfigGetDeviceInfo(
+                (&mut w as *mut DISPLAYCONFIG_SDR_WHITE_LEVEL)
+                    .cast::<DISPLAYCONFIG_DEVICE_INFO_HEADER>(),
+            )
+        };
+        if rw == 0 {
+            out.push((from_wide(&s.viewGdiDeviceName), w.SDRWhiteLevel));
+        }
+    }
+    out
+}
+
+/// SDR white level in cd/m2 of the display `gdi_name` (80 when Windows does not say).
+pub fn sdr_white_nits_of(levels: &[(String, u32)], gdi_name: &str) -> f32 {
+    crate::hdr_math::sdr_white_nits(
+        levels
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(gdi_name))
+            .map_or(0, |(_, l)| *l),
+    )
 }
 
 /// Monitors that look like the VDD, best candidates first (attached before not).

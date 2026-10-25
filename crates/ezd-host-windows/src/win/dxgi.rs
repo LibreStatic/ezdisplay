@@ -1,13 +1,15 @@
 //! DXGI adapter and output enumeration.
 
 use super::util::{err_str, from_wide, luid_u64};
+use crate::hdr_math::OutputColor;
 use crate::policy::AdapterInfo;
 use serde_json::{Value, json};
 use windows::Win32::Foundation::{HMODULE, RECT};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ADAPTER_DESC1, DXGI_ERROR_NOT_FOUND, DXGI_GPU_PREFERENCE,
     DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER, IDXGIAdapter1,
-    IDXGIFactory1, IDXGIFactory6, IDXGIOutput,
+    IDXGIFactory1, IDXGIFactory6, IDXGIOutput, IDXGIOutput6,
 };
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
 
@@ -32,6 +34,59 @@ pub struct OutputEntry {
     pub rect: RECT,
     pub rotation: i32,
     pub primary: bool,
+    /// Colour volume reported by `IDXGIOutput6::GetDesc1` (`None` before Windows 10 1703).
+    pub color: Option<OutputColor>,
+    /// SDR white level in cd/m2 (the "SDR content brightness" setting; 80 when unknown).
+    pub sdr_white_nits: f32,
+}
+
+/// What `GetDesc1` says about `output`: whether Windows HDR is on and the display's colour volume.
+pub fn output_color(output: &IDXGIOutput) -> Option<OutputColor> {
+    let o6 = output.cast::<IDXGIOutput6>().ok()?;
+    // SAFETY: plain COM call returning a value.
+    let d = unsafe { o6.GetDesc1() }.ok()?;
+    Some(OutputColor {
+        hdr: d.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020,
+        red: d.RedPrimary,
+        green: d.GreenPrimary,
+        blue: d.BluePrimary,
+        white: d.WhitePoint,
+        min_luminance: d.MinLuminance,
+        max_luminance: d.MaxLuminance,
+        max_full_frame_luminance: d.MaxFullFrameLuminance,
+    })
+}
+
+/// Current colour state and SDR white of the output `device_name`, read through a fresh factory
+/// (an output enumerated earlier keeps the state it had then). `None` if it is gone.
+pub fn fresh_output_color(device_name: &str) -> Option<(OutputColor, f32)> {
+    // SAFETY: plain COM calls.
+    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.ok()?;
+    for i in 0.. {
+        // SAFETY: plain COM call.
+        let Ok(adapter) = (unsafe { factory.EnumAdapters1(i) }) else {
+            break;
+        };
+        for o in 0.. {
+            // SAFETY: plain COM calls.
+            let Ok(output) = (unsafe { adapter.EnumOutputs(o) }) else {
+                break;
+            };
+            // SAFETY: plain COM call returning a value.
+            let Ok(desc) = (unsafe { output.GetDesc() }) else {
+                continue;
+            };
+            if from_wide(&desc.DeviceName).eq_ignore_ascii_case(device_name) {
+                let color = output_color(&output)?;
+                let white = super::display::sdr_white_nits_of(
+                    &super::display::sdr_white_levels(),
+                    device_name,
+                );
+                return Some((color, white));
+            }
+        }
+    }
+    None
 }
 
 impl OutputEntry {
@@ -52,6 +107,17 @@ impl OutputEntry {
             },
             "rotation": match self.rotation { 1 => "identity", 2 => "rotate90", 3 => "rotate180", 4 => "rotate270", _ => "unspecified" },
             "primary": self.primary,
+            "hdr": self.color.map(|c| c.hdr),
+            "color_volume": self.color.map(|c| json!({
+                "red_primary": c.red,
+                "green_primary": c.green,
+                "blue_primary": c.blue,
+                "white_point": c.white,
+                "min_luminance_nits": c.min_luminance,
+                "max_luminance_nits": c.max_luminance,
+                "max_full_frame_luminance_nits": c.max_full_frame_luminance,
+            })),
+            "sdr_white_nits": self.sdr_white_nits,
         })
     }
 }
@@ -88,7 +154,7 @@ fn preference_order(factory: &IDXGIFactory1, pref: DXGI_GPU_PREFERENCE) -> Vec<u
     v
 }
 
-fn outputs_of(adapter: &IDXGIAdapter1) -> Vec<OutputEntry> {
+fn outputs_of(adapter: &IDXGIAdapter1, white_levels: &[(String, u32)]) -> Vec<OutputEntry> {
     let mut v = Vec::new();
     for i in 0.. {
         // SAFETY: plain COM calls; `desc`/`mi` are valid out-parameters.
@@ -107,9 +173,12 @@ fn outputs_of(adapter: &IDXGIAdapter1) -> Vec<OutputEntry> {
             };
             let primary = GetMonitorInfoW(desc.Monitor, &mut mi).as_bool()
                 && mi.dwFlags & MONITORINFOF_PRIMARY != 0;
+            let device_name = from_wide(&desc.DeviceName);
             v.push(OutputEntry {
+                color: output_color(&output),
+                sdr_white_nits: super::display::sdr_white_nits_of(white_levels, &device_name),
                 output,
-                device_name: from_wide(&desc.DeviceName),
+                device_name,
                 attached: desc.AttachedToDesktop.as_bool(),
                 rect: desc.DesktopCoordinates,
                 rotation: desc.Rotation.0,
@@ -127,6 +196,7 @@ pub fn enumerate() -> Result<Vec<AdapterEntry>, String> {
         .map_err(|e| format!("CreateDXGIFactory1: {}", err_str(&e)))?;
     let high = preference_order(&factory, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE);
     let low = preference_order(&factory, DXGI_GPU_PREFERENCE_MINIMUM_POWER);
+    let white_levels = super::display::sdr_white_levels();
     let mut out = Vec::new();
     for i in 0.. {
         // SAFETY: plain COM call.
@@ -138,7 +208,7 @@ pub fn enumerate() -> Result<Vec<AdapterEntry>, String> {
             continue;
         };
         let luid = luid_u64(d.AdapterLuid);
-        let outputs = outputs_of(&adapter);
+        let outputs = outputs_of(&adapter, &white_levels);
         let info = AdapterInfo {
             name: from_wide(&d.Description),
             vendor_id: d.VendorId,

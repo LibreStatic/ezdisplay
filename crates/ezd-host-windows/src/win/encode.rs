@@ -1,5 +1,7 @@
-//! GPU encoder front-end: takes the captured BGRA texture and produces H.264.
+//! GPU encoder front-end: takes the captured texture and produces H.264 (SDR) or HEVC Main10
+//! (HDR10).
 //!
+//! SDR, the captured texture is BGRA:
 //! * NVENC and AMF: zero-copy. The BGRA texture is copied (GPU to GPU) into a
 //!   D3D11 frame of the encoder's pool (see [`super::ffenc`]).
 //!   If the encoder rejects those frames, [`probe`] falls back to single textures and then to
@@ -7,11 +9,18 @@
 //! * QSV and libx264: the texture is converted to NV12 by the D3D11 video
 //!   processor, read back, and given to the regular `ezd_ffmpeg::Encoder`
 //!   (QSV uploads the NV12 itself; FFmpeg's QSV encoder wants QSV surfaces or system memory).
+//!
+//! HDR10, the captured texture is FP16 scRGB and `hevc_*` encoders are used:
+//! * NVENC and AMF: zero-copy. A shader ([`super::hdr::ScrgbToP010`]) renders PQ BT.2020 P010
+//!   straight into the encoder's pool frame.
+//! * QSV: the shader renders into a P010 texture that is read back and given to the regular
+//!   `ezd_ffmpeg::Encoder` as P010, like the NV12 path above.
 
-use super::ffenc::ZeroCopyEncoder;
+use super::ffenc::{StreamFormat, ZeroCopyEncoder};
+use super::hdr::{ScrgbToP010, create_p010_texture};
 use super::util::err_str;
 use crate::annexb;
-use ezd_ffmpeg::{Encoder, EncoderConfig, RawPixelFormat};
+use ezd_ffmpeg::{ColorInfo, Encoder, EncoderConfig, HdrMeta, RawPixelFormat};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
@@ -38,16 +47,21 @@ pub enum InputPath {
     ZeroCopyArray,
     /// D3D11 frames that are each their own texture.
     ZeroCopySingle,
-    /// NV12 from the video processor, read back into system memory.
+    /// NV12 (P010 for HDR10) rendered on the GPU, read back into system memory.
     SystemMemory,
 }
 
 impl InputPath {
-    fn describe(self) -> &'static str {
-        match self {
-            InputPath::ZeroCopyArray => "zero-copy BGRA",
-            InputPath::ZeroCopySingle => "zero-copy BGRA, one texture per frame",
-            InputPath::SystemMemory => "NV12 via video processor",
+    fn describe(self, ten_bit: bool) -> &'static str {
+        match (self, ten_bit) {
+            (InputPath::ZeroCopyArray, false) => "zero-copy BGRA",
+            (InputPath::ZeroCopySingle, false) => "zero-copy BGRA, one texture per frame",
+            (InputPath::SystemMemory, false) => "NV12 via video processor",
+            (InputPath::ZeroCopyArray, true) => "HDR10: zero-copy P010 (shader)",
+            (InputPath::ZeroCopySingle, true) => {
+                "HDR10: zero-copy P010 (shader), one texture per frame"
+            }
+            (InputPath::SystemMemory, true) => "HDR10: P010 (shader) via system memory",
         }
     }
 }
@@ -68,8 +82,13 @@ pub struct Output {
 }
 
 enum Inner {
-    Zero(ZeroCopyEncoder),
+    /// `hdr` is set for the 10-bit path: the source is FP16 scRGB and is converted into the frame.
+    Zero {
+        enc: ZeroCopyEncoder,
+        hdr: Option<Box<ScrgbToP010>>,
+    },
     Nv12(Box<Nv12Path>),
+    P010(Box<P010Path>),
 }
 
 /// Encoder bound to one D3D11 device.
@@ -79,12 +98,23 @@ pub struct GpuEncoder {
     name: String,
     params: Vec<u8>,
     sent_config: bool,
+    hevc: bool,
 }
 
 impl GpuEncoder {
-    /// True if `name` encodes straight from BGRA D3D11 frames.
+    /// True if `name` encodes straight from D3D11 frames (BGRA for H.264, P010 for HEVC).
+    /// `hevc_qsv` is not: like `h264_qsv` it needs system memory (or QSV surfaces).
     pub fn is_zero_copy(name: &str) -> bool {
-        matches!(name, "h264_nvenc" | "h264_amf")
+        matches!(name, "h264_nvenc" | "h264_amf" | "hevc_nvenc" | "hevc_amf")
+    }
+
+    /// The format an HDR10 stream (HEVC Main10, BT.2020 PQ) is encoded in.
+    pub fn hdr10_format(hdr: Option<HdrMeta>) -> StreamFormat {
+        StreamFormat {
+            ten_bit: true,
+            color: ColorInfo::BT2020_PQ_LIMITED,
+            hdr,
+        }
     }
 
     /// The input paths to try for `name`, best first.
@@ -101,7 +131,8 @@ impl GpuEncoder {
     }
 
     /// Opens `name` on `device` for `width x height` frames at `refresh_mhz`, on the input path
-    /// [`probe`] found working (the best one if `name` was not probed).
+    /// [`probe`] found working (the best one if `name` was not probed). With a ten-bit
+    /// `format`, [`encode`](Self::encode) takes FP16 scRGB textures instead of BGRA ones.
     pub fn open(
         name: &str,
         device: &ID3D11Device,
@@ -109,6 +140,7 @@ impl GpuEncoder {
         height: u32,
         refresh_mhz: u32,
         bitrate_kbps: u32,
+        format: StreamFormat,
     ) -> Result<GpuEncoder, String> {
         let path = probed_paths()
             .lock()
@@ -116,9 +148,19 @@ impl GpuEncoder {
             .get(name)
             .copied()
             .unwrap_or(Self::input_paths(name)[0]);
-        Self::open_on(name, device, width, height, refresh_mhz, bitrate_kbps, path)
+        Self::open_on(
+            name,
+            device,
+            width,
+            height,
+            refresh_mhz,
+            bitrate_kbps,
+            format,
+            path,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open_on(
         name: &str,
         device: &ID3D11Device,
@@ -126,12 +168,22 @@ impl GpuEncoder {
         height: u32,
         refresh_mhz: u32,
         bitrate_kbps: u32,
+        format: StreamFormat,
         path: InputPath,
     ) -> Result<GpuEncoder, String> {
+        let hevc = name.starts_with("hevc_");
+        if format.ten_bit && !hevc {
+            return Err(format!("{name} has no 10-bit HDR10 mode here"));
+        }
         // SAFETY: plain COM call.
         let ctx = unsafe { device.GetImmediateContext() }
             .map_err(|e| format!("GetImmediateContext: {}", err_str(&e)))?;
         let (inner, extradata) = if path != InputPath::SystemMemory {
+            let hdr = if format.ten_bit {
+                Some(Box::new(ScrgbToP010::new(device, width, height)?))
+            } else {
+                None
+            };
             // `into_raw` hands FFmpeg its own COM reference, which it releases when its device context dies.
             let raw: *mut c_void = device.clone().into_raw();
             let array_pool = path == InputPath::ZeroCopyArray;
@@ -144,30 +196,49 @@ impl GpuEncoder {
                     height,
                     refresh_mhz,
                     bitrate_kbps,
+                    format,
                     array_pool,
                 )
             }?;
             let extra = enc.extradata().to_vec();
-            (Inner::Zero(enc), extra)
+            (Inner::Zero { enc, hdr }, extra)
         } else {
             let mut cfg = EncoderConfig::new(name, width, height, refresh_mhz, bitrate_kbps);
-            cfg.pix_fmt = RawPixelFormat::Nv12;
+            cfg.pix_fmt = if format.ten_bit {
+                RawPixelFormat::P010
+            } else {
+                RawPixelFormat::Nv12
+            };
+            cfg.color = format.color;
+            cfg.hdr = format.hdr;
             let enc = Encoder::open(cfg).map_err(|e| e.to_string())?;
             let extra = enc.extradata().to_vec();
-            let path = Nv12Path::new(device, &ctx, width, height, refresh_mhz, enc)?;
-            (Inner::Nv12(Box::new(path)), extra)
+            if format.ten_bit {
+                let path = P010Path::new(device, &ctx, width, height, enc)?;
+                (Inner::P010(Box::new(path)), extra)
+            } else {
+                let path = Nv12Path::new(device, &ctx, width, height, refresh_mhz, enc)?;
+                (Inner::Nv12(Box::new(path)), extra)
+            }
         };
-        let params = annexb::param_sets_from_extradata(&extradata).unwrap_or_default();
+        let params = if hevc {
+            annexb::hevc_param_sets_from_extradata(&extradata)
+        } else {
+            annexb::param_sets_from_extradata(&extradata)
+        }
+        .unwrap_or_default();
         Ok(GpuEncoder {
             inner,
             ctx,
             name: name.to_string(),
             params,
             sent_config: false,
+            hevc,
         })
     }
 
-    /// Encodes the BGRA texture `src`. `Ok(None)` if the encoder produced nothing yet.
+    /// Encodes the texture `src` (BGRA, or FP16 scRGB for a ten-bit encoder). `Ok(None)` if the
+    /// encoder produced nothing yet.
     pub fn encode(
         &mut self,
         src: &ID3D11Texture2D,
@@ -176,40 +247,53 @@ impl GpuEncoder {
         // The very first frame is always an IDR.
         let force = force_key || !self.sent_config;
         let packet = match &mut self.inner {
-            Inner::Zero(enc) => {
+            Inner::Zero { enc, hdr } => {
                 let (tex, index) = enc.acquire()?;
                 // SAFETY: `tex` is the ID3D11Texture2D* of a live pool frame; borrowed only for this call.
                 let dst = unsafe { ID3D11Texture2D::from_raw_borrowed(&tex) }
                     .ok_or("encoder returned a null texture")?;
-                // SAFETY: both textures belong to the same device; `index` is the array slice of the frame.
-                unsafe {
-                    self.ctx
-                        .CopySubresourceRegion(dst, index, 0, 0, 0, src, 0, None);
-                    // Make the copy visible to the encoder's own submission queue.
-                    self.ctx.Flush();
+                match hdr {
+                    // Render PQ BT.2020 P010 into the frame.
+                    Some(conv) => conv.convert(src, dst, index)?,
+                    // SAFETY: both textures belong to the same device; `index` is the array slice of the frame.
+                    None => unsafe {
+                        self.ctx
+                            .CopySubresourceRegion(dst, index, 0, 0, 0, src, 0, None)
+                    },
                 }
+                // Make the copy or render visible to the encoder's own submission queue.
+                // SAFETY: plain COM call.
+                unsafe { self.ctx.Flush() };
                 enc.submit(force)?;
                 enc.receive()?.map(|p| (p.data, p.keyframe))
             }
             Inner::Nv12(path) => path.encode(src, force)?,
+            Inner::P010(path) => path.encode(src, force)?,
         };
         let Some((mut data, keyframe)) = packet else {
             return Ok(None);
         };
         if keyframe {
-            data = annexb::with_param_sets(data, &self.params);
+            data = if self.hevc {
+                annexb::with_hevc_param_sets(data, &self.params)
+            } else {
+                annexb::with_param_sets(data, &self.params)
+            };
         }
         let mut codec_config = None;
         if !self.sent_config {
-            let params = if self.params.is_empty() {
-                annexb::extract_h264_param_sets(&data).unwrap_or_default()
-            } else {
+            let params = if !self.params.is_empty() {
                 self.params.clone()
+            } else if self.hevc {
+                annexb::extract_hevc_param_sets(&data).unwrap_or_default()
+            } else {
+                annexb::extract_h264_param_sets(&data).unwrap_or_default()
             };
             if params.is_empty() {
                 return Err(format!(
-                    "{} produced no SPS/PPS (neither in extradata nor in the first frame)",
-                    self.name
+                    "{} produced no {} (neither in extradata nor in the first frame)",
+                    self.name,
+                    if self.hevc { "VPS/SPS/PPS" } else { "SPS/PPS" }
                 ));
             }
             self.params = params.clone();
@@ -438,16 +522,137 @@ impl Nv12Path {
     }
 }
 
+/// P010 -> staging -> system memory -> `ezd_ffmpeg::Encoder` (HEVC Main10 on QSV).
+struct P010Path {
+    ctx: ID3D11DeviceContext,
+    conv: ScrgbToP010,
+    tex: ID3D11Texture2D,
+    staging: ID3D11Texture2D,
+    enc: Encoder,
+    width: u32,
+    height: u32,
+    raw: Vec<u8>,
+}
+
+// SAFETY: the COM objects are only used from the thread that owns the encoder (the device is
+// multithread protected).
+unsafe impl Send for P010Path {}
+
+impl P010Path {
+    fn new(
+        device: &ID3D11Device,
+        ctx: &ID3D11DeviceContext,
+        width: u32,
+        height: u32,
+        enc: Encoder,
+    ) -> Result<P010Path, String> {
+        let conv = ScrgbToP010::new(device, width, height)?;
+        let tex = create_p010_texture(device, width, height)?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: valid out-parameter.
+        unsafe { tex.GetDesc(&mut desc) };
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+        let mut staging = None;
+        // SAFETY: valid descriptor.
+        unsafe { device.CreateTexture2D(&desc, None, Some(&mut staging)) }
+            .map_err(|e| format!("CreateTexture2D(P010 staging): {}", err_str(&e)))?;
+        Ok(P010Path {
+            ctx: ctx.clone(),
+            conv,
+            tex,
+            staging: staging.ok_or("no staging texture")?,
+            enc,
+            width,
+            height,
+            raw: vec![0; RawPixelFormat::P010.frame_len(width, height)],
+        })
+    }
+
+    fn encode(
+        &mut self,
+        src: &ID3D11Texture2D,
+        force: bool,
+    ) -> Result<Option<(Vec<u8>, bool)>, String> {
+        self.conv.convert(src, &self.tex, 0)?;
+        self.read_back()?;
+        let p = self
+            .enc
+            .encode(&self.raw, force)
+            .map_err(|e| e.to_string())?;
+        Ok(p.map(|p| (p.data, p.keyframe)))
+    }
+
+    /// Copies the P010 texture into `self.raw`: the luma plane (`2 * width` bytes a row) then the
+    /// interleaved chroma plane (`height / 2` rows of `2 * width` bytes), tightly packed.
+    fn read_back(&mut self) -> Result<(), String> {
+        let (row, h) = (self.width as usize * 2, self.height as usize);
+        let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+        // SAFETY: staging is a CPU-readable texture; the mapping is released below before returning.
+        unsafe {
+            self.ctx.CopyResource(&self.staging, &self.tex);
+            self.ctx
+                .Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut m))
+                .map_err(|e| format!("Map(staging): {}", err_str(&e)))?;
+            let pitch = m.RowPitch as usize;
+            let base = m.pData as *const u8;
+            // The chroma plane follows the luma plane, `pitch * height` bytes in.
+            for y in 0..h {
+                std::ptr::copy_nonoverlapping(
+                    base.add(y * pitch),
+                    self.raw.as_mut_ptr().add(y * row),
+                    row,
+                );
+            }
+            let uv = base.add(pitch * h);
+            for y in 0..h / 2 {
+                std::ptr::copy_nonoverlapping(
+                    uv.add(y * pitch),
+                    self.raw.as_mut_ptr().add(row * h + y * row),
+                    row,
+                );
+            }
+            self.ctx.Unmap(&self.staging, 0);
+        }
+        Ok(())
+    }
+}
+
 /// Opens `name` on `device` and encodes a black frame; the result is a short description.
+/// HEVC encoders are opened for HDR10 (Main10, BT.2020 PQ, with static metadata) and fed a black
+/// FP16 scRGB frame, as in a real HDR session.
 ///
 /// The input paths of `name` are tried best first: some encoders open on D3D11 frames and then
 /// fail the first one (AMF on older GPUs, with error 18). The first path that encodes is used by
 /// later [`GpuEncoder::open`] calls.
 pub fn probe(device: &ID3D11Device, name: &str, width: u32, height: u32) -> Result<String, String> {
-    let tex = super::capture::create_bgra_texture(device, width, height)?;
+    let ten_bit = name.starts_with("hevc_");
+    let (tex, format) = if ten_bit {
+        let meta = HdrMeta {
+            mastering: Some(ezd_proto::Mastering {
+                primaries: [[35400, 14600], [8500, 39850], [6550, 2300]],
+                white: [15635, 16450],
+                max_luminance: 10_000_000,
+                min_luminance: 1,
+            }),
+            max_cll: 1000,
+            max_fall: 400,
+        };
+        (
+            super::hdr::create_fp16_texture(device, width, height)?,
+            GpuEncoder::hdr10_format(Some(meta)),
+        )
+    } else {
+        (
+            super::capture::create_bgra_texture(device, width, height)?,
+            StreamFormat::SDR,
+        )
+    };
     let mut failed = Vec::new();
     for &path in GpuEncoder::input_paths(name) {
-        match probe_on(device, &tex, name, width, height, path) {
+        let what = path.describe(ten_bit);
+        match probe_on(device, &tex, name, width, height, format, path) {
             Ok(note) => {
                 probed_paths()
                     .lock()
@@ -460,8 +665,8 @@ pub fn probe(device: &ID3D11Device, name: &str, width: u32, height: u32) -> Resu
                 });
             }
             Err(e) => {
-                tracing::warn!("{name}: {} input failed: {e}", path.describe());
-                failed.push(format!("{}: {e}", path.describe()));
+                tracing::warn!("{name}: {what} input failed: {e}");
+                failed.push(format!("{what}: {e}"));
             }
         }
     }
@@ -474,9 +679,11 @@ fn probe_on(
     name: &str,
     width: u32,
     height: u32,
+    format: StreamFormat,
     path: InputPath,
 ) -> Result<String, String> {
-    let mut enc = GpuEncoder::open_on(name, device, width, height, 60_000, 8_000, path)?;
+    let ten_bit = format.ten_bit;
+    let mut enc = GpuEncoder::open_on(name, device, width, height, 60_000, 8_000, format, path)?;
     for _ in 0..4 {
         if let Some(o) = enc.encode(tex, true)? {
             return Ok(format!(
@@ -484,7 +691,7 @@ fn probe_on(
                 o.data.len(),
                 o.keyframe,
                 o.codec_config.as_ref().map_or(0, Vec::len),
-                path.describe()
+                path.describe(ten_bit)
             ));
         }
     }

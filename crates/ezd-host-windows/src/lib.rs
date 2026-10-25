@@ -12,6 +12,7 @@
 
 pub mod annexb;
 pub mod cursor_shape;
+pub mod hdr_math;
 pub mod ident;
 pub mod input_map;
 pub mod pipe_proto;

@@ -13,7 +13,7 @@ default = ["ffmpeg"]
 # Hardware encode through FFmpeg (D3D11 frames). Needs FFmpeg headers/libs at build time,
 # so it is only built in CI / on Windows. `--no-default-features` gives a crate that still
 # builds the capture side and `diag`, and reports "built without ffmpeg" from `create_virtual_source`.
-ffmpeg = ["dep:ezd-ffmpeg"]
+ffmpeg = ["dep:ezd-ffmpeg", "dep:ffmpeg-sys-next"]
 
 [dependencies]
 ezd-host-core.workspace = true
@@ -24,10 +24,13 @@ tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 ezd-ffmpeg = { workspace = true, optional = true }
+# Direct dependency only so that build.rs sees its `ffmpeg_7_1` flag (see build.rs).
+ffmpeg-sys-next = { workspace = true, optional = true }
 windows = { version = "0.62.2", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",

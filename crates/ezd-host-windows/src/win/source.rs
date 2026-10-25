@@ -46,20 +46,29 @@ pub fn create_virtual_source(
 
 #[cfg(feature = "ffmpeg")]
 mod imp {
-    use super::super::capture::{Capture, create_bgra_texture};
+    use super::super::capture::{Capture, CaptureOutput, create_bgra_texture};
     use super::super::dxgi::{self, AdapterEntry};
     use super::super::encode::{self, GpuEncoder};
-    use super::super::vdd;
+    use super::super::ffenc::StreamFormat;
+    use super::super::hdr::{ScrgbToSdr, create_sdr_target};
+    use super::super::{display, vdd};
     use crate::policy::{AdapterInfo, Decision};
     use crate::vdd_xml::Mode;
+    use ezd_ffmpeg::HdrMeta;
     use ezd_host_core::{
-        CursorSink, DisplayMode, EncodedFrame, OutputInfo, PlatformOptions, SourceError,
+        CursorSink, DisplayMode, EncodedFrame, OutputInfo, PlatformOptions, SourceError, SourceHdr,
         VideoSource, now_us,
     };
-    use ezd_proto::{Codec, EncoderCaps, StreamConfig};
+    use ezd_proto::{Codec, DynamicRange, EncoderCaps, StreamColor, StreamConfig};
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+    use windows::Win32::Graphics::Direct3D11::{ID3D11RenderTargetView, ID3D11Texture2D};
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+    /// How long a look at the output's HDR state is reused (`encoders`, `source_hdr` and
+    /// `main10_codecs` are all asked at the start of a session).
+    const HDR_CACHE: Duration = Duration::from_secs(2);
 
     /// Probe size used to decide which encoders work on an adapter.
     pub const PROBE_SIZE: (u32, u32) = (1920, 1080);
@@ -87,9 +96,17 @@ mod imp {
         r
     }
 
+    /// Scales an HDR (scRGB) capture to SDR for clients that get no HDR10.
+    struct ToneMap {
+        conv: ScrgbToSdr,
+        out: ID3D11Texture2D,
+        rtv: ID3D11RenderTargetView,
+    }
+
     struct Running {
         capture: Capture,
         encoder: GpuEncoder,
+        tonemap: Option<ToneMap>,
         // Keeps the device alive for as long as the capture and encoder use it.
         _device: windows::Win32::Graphics::Direct3D11::ID3D11Device,
         output: OutputInfo,
@@ -104,6 +121,25 @@ mod imp {
         encoders: Vec<EncoderCaps>,
         running: Option<Running>,
         want_key: bool,
+        /// Negotiated for the next `start` (SDR until `set_dynamic_range`).
+        range: DynamicRange,
+        color: StreamColor,
+        hdr_seen: Mutex<Option<(Instant, Option<SourceHdr>)>>,
+    }
+
+    /// The output the session will capture, as it is now: the named one, or the VDD output if it
+    /// exists and is attached. `None` when there is none to look at (the VDD is created at start).
+    fn current_output(opts: &PlatformOptions) -> Option<dxgi::OutputEntry> {
+        let adapters = dxgi::enumerate().ok()?;
+        let found = match opts.output_name.as_deref() {
+            Some(name) => dxgi::find_output(&adapters, name).map(|(_, o)| o.clone()),
+            None => {
+                let monitors = display::find_vdd_monitors();
+                vdd::find_vdd_output(&adapters, &monitors)
+                    .map(|(ai, oi)| adapters[ai].outputs[oi].clone())
+            }
+        };
+        found.filter(|o| o.attached)
     }
 
     impl WindowsSource {
@@ -150,7 +186,48 @@ mod imp {
                 encoders,
                 running: None,
                 want_key: true,
+                range: DynamicRange::Sdr,
+                color: StreamColor::sdr_bt709(),
+                hdr_seen: Mutex::new(None),
             })
+        }
+
+        /// HDR10 properties of the output as it is right now (`None`: SDR or no output yet).
+        fn detect_hdr(&self) -> Option<SourceHdr> {
+            let mut seen = self.hdr_seen.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((at, v)) = *seen {
+                if at.elapsed() < HDR_CACHE {
+                    return v;
+                }
+            }
+            let v = current_output(&self.opts)
+                .and_then(|o| o.color)
+                .and_then(|c| c.source_hdr());
+            *seen = Some((Instant::now(), v));
+            v
+        }
+
+        /// The HEVC Main10 encoder that works on the chosen adapter, if any (probed once per
+        /// process, see [`probe_encoder`]). There is no software HDR10 encoder.
+        fn hdr_encoder(&self) -> Option<&'static str> {
+            let entry = self
+                .adapters
+                .iter()
+                .find(|a| a.info.luid == self.decision.adapter.luid)?;
+            self.decision
+                .hdr_chain
+                .iter()
+                .copied()
+                .find(|name| match probe_encoder(entry, name) {
+                    Ok(note) => {
+                        tracing::info!("HDR10 encoder {name} works on {}: {note}", entry.info.name);
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!("HDR10 encoder {name} unusable on {}: {e}", entry.info.name);
+                        false
+                    }
+                })
         }
 
         fn start_inner(
@@ -158,17 +235,26 @@ mod imp {
             cfg: &StreamConfig,
             cursor: CursorSink,
         ) -> Result<Running, String> {
-            if cfg.codec != Codec::H264 {
+            let hdr10 = matches!(self.range, DynamicRange::Hdr10 { .. });
+            let want_codec = if hdr10 { Codec::Hevc } else { Codec::H264 };
+            if cfg.codec != want_codec {
                 return Err(format!(
-                    "codec {:?} is not supported by this host",
-                    cfg.codec
+                    "codec {:?} does not fit this stream (host supports {:?} for {})",
+                    cfg.codec,
+                    want_codec,
+                    if hdr10 { "HDR10" } else { "SDR" }
                 ));
             }
-            if !self.encoders.iter().any(|e| e.name == cfg.encoder_name) {
+            let known = if hdr10 {
+                self.hdr_encoder() == Some(cfg.encoder_name.as_str())
+            } else {
+                self.encoders.iter().any(|e| e.name == cfg.encoder_name)
+            };
+            if !known {
                 return Err(format!(
                     "encoder {:?} is not available here (have: {})",
                     cfg.encoder_name,
-                    self.encoders
+                    self.encoders()
                         .iter()
                         .map(|e| e.name.as_str())
                         .collect::<Vec<_>>()
@@ -214,8 +300,58 @@ mod imp {
                 }
                 (p.adapter, p.output)
             };
+            // The output's HDR state decides the capture format and the conversion. `output` was
+            // enumerated just now, so it is current.
+            let out_hdr = output.color.is_some_and(|c| c.hdr);
+            if hdr10 && !out_hdr {
+                // Negotiated before the display went back to SDR: end the session, the client
+                // reconnects and renegotiates.
+                return Err("display HDR mode changed".into());
+            }
             let device = dxgi::create_device(&adapter.adapter)?;
-            let capture = Capture::start(&device, &output.output, w, h, cursor)?;
+            let capture = Capture::start(
+                &device,
+                &CaptureOutput {
+                    output: &output.output,
+                    device_name: &output.device_name,
+                    hdr: out_hdr,
+                    sdr_white_nits: output.sdr_white_nits,
+                },
+                w,
+                h,
+                cursor,
+            )?;
+            let fp16 = capture.format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+            if hdr10 && !fp16 {
+                return Err(format!(
+                    "the HDR desktop is delivered as {:?}, not FP16 scRGB; HDR10 needs FP16",
+                    capture.format
+                ));
+            }
+            let format = if hdr10 {
+                GpuEncoder::hdr10_format(HdrMeta::from_stream_color(&self.color))
+            } else {
+                StreamFormat::SDR
+            };
+            // HDR output, SDR stream: scale to the SDR white level into a BGRA texture and encode
+            // that as usual.
+            let tonemap = if out_hdr && !hdr10 && fp16 {
+                let (out, rtv) = create_sdr_target(&device, w, h)?;
+                let conv = ScrgbToSdr::new(&device, w, h, output.sdr_white_nits)?;
+                tracing::info!(
+                    "HDR display, SDR stream: scaling to the SDR white level ({} cd/m2)",
+                    output.sdr_white_nits
+                );
+                Some(ToneMap { conv, out, rtv })
+            } else {
+                if out_hdr && !hdr10 {
+                    tracing::warn!(
+                        "HDR display delivered as {:?}: DXGI tone-maps it itself",
+                        capture.format
+                    );
+                }
+                None
+            };
             let encoder = GpuEncoder::open(
                 &cfg.encoder_name,
                 &device,
@@ -223,6 +359,7 @@ mod imp {
                 h,
                 cfg.refresh_mhz,
                 cfg.bitrate_kbps,
+                format,
             )
             .map_err(|e| {
                 format!(
@@ -247,6 +384,7 @@ mod imp {
             Ok(Running {
                 capture,
                 encoder,
+                tonemap,
                 _device: device,
                 output: output_info,
                 last_seq: 0,
@@ -256,7 +394,36 @@ mod imp {
 
     impl VideoSource for WindowsSource {
         fn encoders(&self) -> Vec<EncoderCaps> {
-            self.encoders.clone()
+            let mut v = self.encoders.clone();
+            // The HEVC Main10 encoder is only offered while the display is HDR, so a host without
+            // HDR content advertises exactly what it always did.
+            if self.detect_hdr().is_some() {
+                if let Some(name) = self.hdr_encoder() {
+                    v.push(EncoderCaps {
+                        codec: Codec::Hevc,
+                        name: name.to_string(),
+                        hardware: true,
+                    });
+                }
+            }
+            v
+        }
+
+        fn source_hdr(&self) -> Option<SourceHdr> {
+            self.detect_hdr()
+        }
+
+        fn main10_codecs(&self) -> Vec<Codec> {
+            if self.detect_hdr().is_some() && self.hdr_encoder().is_some() {
+                vec![Codec::Hevc]
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn set_dynamic_range(&mut self, range: DynamicRange, color: &StreamColor) {
+            self.range = range;
+            self.color = *color;
         }
 
         fn gpu_description(&self) -> String {
@@ -288,10 +455,17 @@ mod imp {
                 .map_err(SourceError::msg)?;
             let Some(t) = ticket else { return Ok(None) };
             let force = self.want_key;
-            let out = run
-                .encoder
-                .encode(&run.capture.latest, force)
-                .map_err(SourceError::msg)?;
+            let src = match run.tonemap.as_mut() {
+                Some(t) => {
+                    t.conv.set_white_nits(run.capture.sdr_white_nits());
+                    t.conv
+                        .convert(&run.capture.latest, &t.rtv)
+                        .map_err(SourceError::msg)?;
+                    &t.out
+                }
+                None => &run.capture.latest,
+            };
+            let out = run.encoder.encode(src, force).map_err(SourceError::msg)?;
             run.last_seq = t.seq;
             let Some(o) = out else { return Ok(None) };
             if o.keyframe {

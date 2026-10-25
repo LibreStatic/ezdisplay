@@ -12,6 +12,7 @@ pub mod dxgi;
 pub mod encode;
 #[cfg(feature = "ffmpeg")]
 pub mod ffenc;
+pub mod hdr;
 pub mod input;
 pub mod shell;
 pub mod source;
