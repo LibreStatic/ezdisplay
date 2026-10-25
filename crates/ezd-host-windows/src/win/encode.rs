@@ -2,6 +2,8 @@
 //!
 //! * NVENC and AMF: zero-copy. The BGRA texture is copied (GPU to GPU) into a
 //!   D3D11 frame of the encoder's pool (see [`super::ffenc`]).
+//!   If the encoder rejects those frames, [`probe`] falls back to single textures and then to
+//!   the NV12 path below.
 //! * QSV and libx264: the texture is converted to NV12 by the D3D11 video
 //!   processor, read back, and given to the regular `ezd_ffmpeg::Encoder`
 //!   (QSV uploads the NV12 itself; FFmpeg's QSV encoder wants QSV surfaces or system memory).
@@ -10,8 +12,10 @@ use super::ffenc::ZeroCopyEncoder;
 use super::util::err_str;
 use crate::annexb;
 use ezd_ffmpeg::{Encoder, EncoderConfig, RawPixelFormat};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
+use std::sync::{Mutex, OnceLock};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
     D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
@@ -26,6 +30,34 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_RATIONAL, DXGI_SAMPLE_DESC};
 use windows::core::Interface;
+
+/// How captured frames reach an encoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputPath {
+    /// D3D11 frames from a texture-array pool.
+    ZeroCopyArray,
+    /// D3D11 frames that are each their own texture.
+    ZeroCopySingle,
+    /// NV12 from the video processor, read back into system memory.
+    SystemMemory,
+}
+
+impl InputPath {
+    fn describe(self) -> &'static str {
+        match self {
+            InputPath::ZeroCopyArray => "zero-copy BGRA",
+            InputPath::ZeroCopySingle => "zero-copy BGRA, one texture per frame",
+            InputPath::SystemMemory => "NV12 via video processor",
+        }
+    }
+}
+
+/// The input path [`probe`] found working for each encoder name, used by [`GpuEncoder::open`].
+/// Per process: sessions open the encoders probed on their own adapter.
+fn probed_paths() -> &'static Mutex<HashMap<String, InputPath>> {
+    static PATHS: OnceLock<Mutex<HashMap<String, InputPath>>> = OnceLock::new();
+    PATHS.get_or_init(Default::default)
+}
 
 /// One encoded access unit.
 pub struct Output {
@@ -55,7 +87,21 @@ impl GpuEncoder {
         matches!(name, "h264_nvenc" | "h264_amf")
     }
 
-    /// Opens `name` on `device` for `width x height` frames at `refresh_mhz`.
+    /// The input paths to try for `name`, best first.
+    fn input_paths(name: &str) -> &'static [InputPath] {
+        if Self::is_zero_copy(name) {
+            &[
+                InputPath::ZeroCopyArray,
+                InputPath::ZeroCopySingle,
+                InputPath::SystemMemory,
+            ]
+        } else {
+            &[InputPath::SystemMemory]
+        }
+    }
+
+    /// Opens `name` on `device` for `width x height` frames at `refresh_mhz`, on the input path
+    /// [`probe`] found working (the best one if `name` was not probed).
     pub fn open(
         name: &str,
         device: &ID3D11Device,
@@ -64,15 +110,42 @@ impl GpuEncoder {
         refresh_mhz: u32,
         bitrate_kbps: u32,
     ) -> Result<GpuEncoder, String> {
+        let path = probed_paths()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .copied()
+            .unwrap_or(Self::input_paths(name)[0]);
+        Self::open_on(name, device, width, height, refresh_mhz, bitrate_kbps, path)
+    }
+
+    fn open_on(
+        name: &str,
+        device: &ID3D11Device,
+        width: u32,
+        height: u32,
+        refresh_mhz: u32,
+        bitrate_kbps: u32,
+        path: InputPath,
+    ) -> Result<GpuEncoder, String> {
         // SAFETY: plain COM call.
         let ctx = unsafe { device.GetImmediateContext() }
             .map_err(|e| format!("GetImmediateContext: {}", err_str(&e)))?;
-        let (inner, extradata) = if Self::is_zero_copy(name) {
+        let (inner, extradata) = if path != InputPath::SystemMemory {
             // `into_raw` hands FFmpeg its own COM reference, which it releases when its device context dies.
             let raw: *mut c_void = device.clone().into_raw();
+            let array_pool = path == InputPath::ZeroCopyArray;
             // SAFETY: `raw` is a valid ID3D11Device* and ownership of one reference moves to the call.
             let enc = unsafe {
-                ZeroCopyEncoder::open(name, raw, width, height, refresh_mhz, bitrate_kbps)
+                ZeroCopyEncoder::open(
+                    name,
+                    raw,
+                    width,
+                    height,
+                    refresh_mhz,
+                    bitrate_kbps,
+                    array_pool,
+                )
             }?;
             let extra = enc.extradata().to_vec();
             (Inner::Zero(enc), extra)
@@ -366,21 +439,52 @@ impl Nv12Path {
 }
 
 /// Opens `name` on `device` and encodes a black frame; the result is a short description.
+///
+/// The input paths of `name` are tried best first: some encoders open on D3D11 frames and then
+/// fail the first one (AMF on older GPUs, with error 18). The first path that encodes is used by
+/// later [`GpuEncoder::open`] calls.
 pub fn probe(device: &ID3D11Device, name: &str, width: u32, height: u32) -> Result<String, String> {
     let tex = super::capture::create_bgra_texture(device, width, height)?;
-    let mut enc = GpuEncoder::open(name, device, width, height, 60_000, 8_000)?;
+    let mut failed = Vec::new();
+    for &path in GpuEncoder::input_paths(name) {
+        match probe_on(device, &tex, name, width, height, path) {
+            Ok(note) => {
+                probed_paths()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(name.to_string(), path);
+                return Ok(if failed.is_empty() {
+                    note
+                } else {
+                    format!("{note} (failed: {})", failed.join("; "))
+                });
+            }
+            Err(e) => {
+                tracing::warn!("{name}: {} input failed: {e}", path.describe());
+                failed.push(format!("{}: {e}", path.describe()));
+            }
+        }
+    }
+    Err(failed.join("; "))
+}
+
+fn probe_on(
+    device: &ID3D11Device,
+    tex: &ID3D11Texture2D,
+    name: &str,
+    width: u32,
+    height: u32,
+    path: InputPath,
+) -> Result<String, String> {
+    let mut enc = GpuEncoder::open_on(name, device, width, height, 60_000, 8_000, path)?;
     for _ in 0..4 {
-        if let Some(o) = enc.encode(&tex, true)? {
+        if let Some(o) = enc.encode(tex, true)? {
             return Ok(format!(
                 "encoded {} bytes, keyframe={}, parameter sets {} bytes, {}",
                 o.data.len(),
                 o.keyframe,
                 o.codec_config.as_ref().map_or(0, Vec::len),
-                if GpuEncoder::is_zero_copy(name) {
-                    "zero-copy BGRA"
-                } else {
-                    "NV12 via video processor"
-                }
+                path.describe()
             ));
         }
     }

@@ -75,6 +75,9 @@ impl ZeroCopyEncoder {
     /// `d3d11_device` must be a valid `ID3D11Device*`; this function takes over one
     /// COM reference to it (FFmpeg releases it when the device context is freed,
     /// also on failure).
+    ///
+    /// With `array_pool` the frames are slices of one texture array; without, every frame is its
+    /// own texture (some encoder runtimes reject array slices at the first frame).
     pub unsafe fn open(
         name: &str,
         d3d11_device: *mut c_void,
@@ -82,6 +85,7 @@ impl ZeroCopyEncoder {
         height: u32,
         refresh_mhz: u32,
         bitrate_kbps: u32,
+        array_pool: bool,
     ) -> Result<ZeroCopyEncoder, String> {
         let mut enc = ZeroCopyEncoder {
             ctx: ptr::null_mut(),
@@ -122,7 +126,8 @@ impl ZeroCopyEncoder {
             (*fc).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_BGRA;
             (*fc).width = width as i32;
             (*fc).height = height as i32;
-            (*fc).initial_pool_size = 4;
+            // A fixed pool is one texture array; size 0 makes FFmpeg allocate single textures.
+            (*fc).initial_pool_size = if array_pool { 4 } else { 0 };
             let fh = (*fc).hwctx as *mut D3d11vaFramesContext;
             (*fh).bind_flags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
             let r = ffi::av_hwframe_ctx_init(frames);
