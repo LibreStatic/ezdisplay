@@ -38,6 +38,7 @@
     <string name="action_step_zoom">Zoom in steps</string>
     <string name="action_wheel_zoom">Zoom with the wheel, in steps</string>
     <string name="action_pan">Pan the canvas</string>
+    <string name="action_pan_zoom">Pan or zoom</string>
     <string name="action_none">Nothing</string>
     <string name="settings_zoom_factor">Zoom level</string>
     <string name="settings_air_actions_on">Samsung Air actions are on. They may react to button presses that start with the pen tip down. Turn them off in Settings → Advanced features → S Pen → Air actions.</string>

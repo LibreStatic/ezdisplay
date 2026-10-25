@@ -138,6 +138,22 @@ class SettingsStoreTest {
         assertEquals("raw", s.custom[InputPrefs.CUSTOM_HOLD])
     }
 
+    @Test fun panZoomIsOnlyAcceptedByTheContactDragAndUsesKeys() {
+        store.setProfile("custom")
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "pan_zoom")
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD, "pan_zoom")
+        assertEquals("raw", s.custom[InputPrefs.CUSTOM_HOLD_DRAG_HOVER])
+        assertEquals("raw", s.custom[InputPrefs.CUSTOM_HOLD])
+        assertFalse(InputPrefs.usesKeys(context))
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "pan_zoom")
+        assertEquals("pan_zoom", prefs.getString(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, null))
+        assertTrue(InputPrefs.usesKeys(context))
+        assertEquals(
+            "pan_zoom",
+            JSONObject(InputPrefs.toJson(context)).getJSONObject("custom").getString("hold_drag_contact"),
+        )
+    }
+
     @Test fun panShortcutDefaultsToSpaceAndReachesTheJson() {
         assertEquals(KeyCombo(0, 0x2C), s.keys[InputPrefs.KEYS_PAN])
         store.setKey(InputPrefs.KEYS_PAN, 0x04)

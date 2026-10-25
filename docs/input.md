@@ -65,6 +65,26 @@ the button is released first, the shortcut stays down until the lift. It is also
 range, on cancel and when the session ends. The pan starts at the touch, without waiting for the drag
 distance. If hold is set to a shortcut, the drags are ignored as usual.
 
+### Pan or zoom with one drag
+
+"Pan or zoom" on "Hold + drag touching" (Custom profile, not available in the air) works like the pan/zoom
+button of a graphics-tablet driver: hold the button, touch and drag. The touch is first reported as hover. Once
+the pen has moved farther than the movement tolerance from the touch point, the direction decides, once, until
+the lift: a mostly vertical drag (within about 27 degrees of vertical) zooms like "Zoom with the wheel, in
+steps" (the travel from the touch point counts, so the first step is not delayed), and any other drag pans like
+"Pan the canvas": the pan shortcut is pressed, the contact starts at the point where the tip first touched,
+and the shortcut is released after the lift. A touch that never leaves the tolerance does nothing. With an
+empty pan shortcut the pan branch just forwards the contact. If the button is released mid-touch the mode
+stays until the lift (the pan shortcut stays down, a zoom just stops, and an undecided touch stays hover).
+
+### Button pressed while touching
+
+For "Pan the canvas" and "Pan or zoom" the button may also be pressed while the tip already touches (for
+example while drawing). The stroke ends with a lift sample, then the drag goes on as if the tip had just
+touched with the button held: Pan presses its shortcut and continues the contact from the current point, Pan or
+zoom starts deciding from the current point. The real lift later sends nothing extra. For every other
+configuration the button pressed while touching is still forwarded as is. A shortcut hold still wins.
+
 Keys are physical positions (USB HID usages of a US keyboard); the PC applies its own layout, as
 with a real USB keyboard. The host announces the `KEYS` capability; an older host does not, and
 the tablet then drops the keys and says the host needs an update.
