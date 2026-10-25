@@ -109,7 +109,7 @@ fn pointer_info(kind: POINTER_INPUT_TYPE, id: u32, flags: u32, pos: (i32, i32)) 
 }
 
 fn pen_info(f: &PenFrame, screen: Rect) -> POINTER_TYPE_INFO {
-    let pos = input_map::to_screen(screen, f.x, f.y);
+    let pos = input_map::to_pointer(screen, virtual_screen(), f.x, f.y);
     POINTER_TYPE_INFO {
         r#type: PT_PEN,
         Anonymous: POINTER_TYPE_INFO_0 {
@@ -127,7 +127,7 @@ fn pen_info(f: &PenFrame, screen: Rect) -> POINTER_TYPE_INFO {
 }
 
 fn touch_info(c: &TouchContactOut, screen: Rect) -> POINTER_TYPE_INFO {
-    let pos = input_map::to_screen(screen, c.x, c.y);
+    let pos = input_map::to_pointer(screen, virtual_screen(), c.x, c.y);
     let a = input_map::TOUCH_HALF_AREA;
     POINTER_TYPE_INFO {
         r#type: PT_TOUCH,

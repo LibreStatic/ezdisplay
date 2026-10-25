@@ -38,6 +38,15 @@ pub fn to_screen(rect: Rect, nx: u16, ny: u16) -> (i32, i32) {
     (map(nx, rect.x, rect.w), map(ny, rect.y, rect.h))
 }
 
+/// Maps a normalized point to the `ptPixelLocation` of an injected synthetic pointer.
+/// `InjectSyntheticPointerInput` measures it from the virtual screen's top-left corner, not from
+/// the primary monitor's origin, so with a monitor left of or above the primary every pen and
+/// touch contact would land off by that monitor's size.
+pub fn to_pointer(rect: Rect, virt: Rect, nx: u16, ny: u16) -> (i32, i32) {
+    let (x, y) = to_screen(rect, nx, ny);
+    (x - virt.x, y - virt.y)
+}
+
 /// Maps a desktop pixel to the 0..=65535 range `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK`
 /// expects over the virtual screen `virt`.
 pub fn to_virtual_desk(px: i32, py: i32, virt: Rect) -> (i32, i32) {
@@ -780,6 +789,31 @@ mod tests {
     const DOWN_F: u32 = pf::INRANGE | pf::INCONTACT | pf::DOWN;
     const DRAG_F: u32 = pf::INRANGE | pf::INCONTACT | pf::UPDATE;
     const UP_F: u32 = pf::INRANGE | pf::UP;
+
+    #[test]
+    fn pointer_is_relative_to_the_virtual_screen() {
+        let tablet = Rect {
+            x: -170,
+            y: 1080,
+            w: 2960,
+            h: 1848,
+        };
+        let virt = Rect {
+            x: -1770,
+            y: 0,
+            w: 4560,
+            h: 2928,
+        };
+        assert_eq!(to_pointer(tablet, virt, 0, 0), (1600, 1080));
+        assert_eq!(to_pointer(tablet, virt, 65535, 65535), (4559, 2927));
+        let primary_only = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        assert_eq!(to_pointer(primary_only, primary_only, 65535, 0), (1919, 0));
+    }
 
     #[test]
     fn pen_full_stroke() {
