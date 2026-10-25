@@ -1099,6 +1099,21 @@ impl SettingsView {
         widgets::card(
             ui,
             pal,
+            Some((glyphs::COLOR, &fl!(l, "card-appearance"))),
+            |ui| {
+                widgets::toggle_row(
+                    ui,
+                    pal,
+                    &fl!(l, "system-accent"),
+                    Some(&fl!(l, "system-accent-description")),
+                    &mut self.snap.config.use_system_accent,
+                );
+            },
+        );
+        ui.add_space(CARD_GAP);
+        widgets::card(
+            ui,
+            pal,
             Some((glyphs::FOLDER_OPEN, &fl!(l, "card-diagnostics"))),
             |ui| {
                 let logs = fl!(l, "menu-logs");

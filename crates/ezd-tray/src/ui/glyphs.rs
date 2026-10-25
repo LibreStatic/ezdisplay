@@ -67,6 +67,8 @@ pub const VIDEO: &str = "\u{F84C}";
 pub const CURSOR: &str = "\u{E443}";
 /// Licenses and documents.
 pub const DOCUMENT: &str = "\u{F378}";
+/// Appearance and colour settings.
+pub const COLOR: &str = "\u{F2F5}";
 
 /// Every glyph of the font.
 #[cfg(test)]
@@ -102,4 +104,5 @@ pub const ALL: &[&str] = &[
     VIDEO,
     CURSOR,
     DOCUMENT,
+    COLOR,
 ];

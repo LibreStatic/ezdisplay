@@ -8,8 +8,8 @@ use windows::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows::Win32::System::Registry::{
-    HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
-    RRF_SUBKEY_WOW6464KEY, RegGetValueW,
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD,
+    RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegGetValueW,
 };
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetAwarenessFromDpiAwarenessContext,
@@ -114,6 +114,73 @@ pub fn reg_dword(subkey: &str, name: &str) -> Option<u32> {
         )
     };
     (r == ERROR_SUCCESS).then_some(v)
+}
+
+/// Reads a REG_BINARY value from HKCU.
+fn hkcu_binary(subkey: &str, name: &str) -> Option<Vec<u8>> {
+    let (sk, n) = (wide(subkey), wide(name));
+    let mut bytes = 0u32;
+    // SAFETY: valid NUL-terminated strings; size query with a null data pointer.
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(sk.as_ptr()),
+            PCWSTR(n.as_ptr()),
+            RRF_RT_REG_BINARY,
+            None,
+            None,
+            Some(&mut bytes),
+        )
+    };
+    if r != ERROR_SUCCESS || bytes == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; bytes as usize];
+    // SAFETY: buf is `bytes` bytes long.
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(sk.as_ptr()),
+            PCWSTR(n.as_ptr()),
+            RRF_RT_REG_BINARY,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        )
+    };
+    if r != ERROR_SUCCESS {
+        return None;
+    }
+    buf.truncate(bytes as usize);
+    Some(buf)
+}
+
+/// Reads a REG_DWORD value from HKCU.
+fn hkcu_dword(subkey: &str, name: &str) -> Option<u32> {
+    let (sk, n) = (wide(subkey), wide(name));
+    let mut v = 0u32;
+    let mut bytes = 4u32;
+    // SAFETY: `v` is a valid 4-byte output buffer.
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(sk.as_ptr()),
+            PCWSTR(n.as_ptr()),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&mut v as *mut u32).cast()),
+            Some(&mut bytes),
+        )
+    };
+    (r == ERROR_SUCCESS).then_some(v)
+}
+
+/// The user's accent colour: the base entry of the accent palette, else the DWM accent colour.
+pub fn system_accent() -> Option<[u8; 3]> {
+    use crate::accent::*;
+    hkcu_binary(EXPLORER_ACCENT_KEY, ACCENT_PALETTE_VALUE)
+        .and_then(|b| parse_accent_palette(&b))
+        .or_else(|| hkcu_dword(DWM_KEY, DWM_ACCENT_VALUE).map(parse_dwm_accent))
 }
 
 /// Makes the process Per-Monitor DPI aware v2, so DXGI/GDI report real pixels.

@@ -14,6 +14,8 @@ pub struct TrayConfig {
     /// Windows only: run the app elevated (through its scheduled task) so that pen and touch
     /// reach administrator windows. Ignored elsewhere.
     pub run_elevated: bool,
+    /// Take the accent colour of the window from the system; off keeps the built-in colour.
+    pub use_system_accent: bool,
     /// The host service settings.
     pub service: ServiceConfig,
 }
@@ -23,6 +25,7 @@ impl Default for TrayConfig {
         TrayConfig {
             start_on_launch: true,
             run_elevated: true,
+            use_system_accent: true,
             service: ServiceConfig::default(),
         }
     }
@@ -92,6 +95,7 @@ mod tests {
         let c = TrayConfig::default();
         assert!(c.start_on_launch);
         assert!(c.run_elevated);
+        assert!(c.use_system_accent);
         assert_eq!(c.service, ServiceConfig::default());
         let empty: TrayConfig = toml::from_str("").unwrap();
         assert_eq!(empty, c);
@@ -124,6 +128,7 @@ mod tests {
         let c = TrayConfig {
             start_on_launch: false,
             run_elevated: false,
+            use_system_accent: false,
             service: ServiceConfig {
                 adb: AdbMode::Serial("R52X204YJNW".into()),
                 bitrate_kbps: Some(40_000),

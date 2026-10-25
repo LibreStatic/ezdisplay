@@ -14,7 +14,7 @@ the workspace stays on 1.85. Run cargo with the rustup toolchain (`PATH=$HOME/.c
 - `menu_model.rs`: the tray menu as a pure function of state (unit tested); `tray.rs`: applies it to the
   native items (only changed items are touched; each setter republishes the menu over D-Bus on Linux).
 - `ui/view.rs`: the window as a plain view over a `Snapshot`; it records `Action`s and never touches the
-  tray or the service. `ui/app.rs`: eframe glue (`logic` calls `Controller::tick`). `ui/theme.rs`: palettes.
+  tray or the service. `ui/app.rs`: eframe glue (`logic` calls `Controller::tick`). `ui/theme.rs`: palettes, with the accent derived from the system one (`ui/system_accent.rs`: Windows registry, XDG portal then `kdeglobals` on Linux; brand violet otherwise).
 - `config.rs` (`config.toml`), `ipc.rs` (local socket), `autostart.rs`, `logging.rs`, `icons.rs`,
   `platform.rs`, `text.rs` (status wording), `i18n.rs` + `i18n/<lang>/ezd-tray.ftl`.
 - All unsafe Win32 code lives in `ezd-host-windows` (`ensure_dpi_aware`, `pump_messages`, `run_elevated`,

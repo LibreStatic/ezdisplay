@@ -10,6 +10,7 @@
 //! Windows glue lives in the `cfg(windows)` module `win`. The hardware encoder
 //! needs FFmpeg and is behind the default-on `ffmpeg` feature.
 
+pub mod accent;
 pub mod annexb;
 pub mod cursor_shape;
 pub mod display_topology;
@@ -81,6 +82,12 @@ pub fn isolate_std_handles() {
 #[cfg(windows)]
 pub fn ensure_dpi_aware() -> String {
     win::util::ensure_dpi_aware()
+}
+
+/// The accent colour (RGB) the user picked in Windows settings, if it can be read.
+#[cfg(windows)]
+pub fn system_accent() -> Option<[u8; 3]> {
+    win::util::system_accent()
 }
 
 /// Message text of the `Err` that [`run_elevated`] returns when the user declined the UAC prompt.

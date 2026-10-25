@@ -1649,6 +1649,7 @@ dependencies = [
  "tray-icon",
  "widestring",
  "winresource",
+ "zbus",
 ]
 
 [[package]]

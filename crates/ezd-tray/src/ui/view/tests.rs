@@ -338,7 +338,12 @@ fn general_section_actions() {
     h.get_by_role_and_label(Role::Button, "General").click();
     h.run();
     h.get_by_label("Open logs folder").click();
+    // The About card is below the fold of the 560 px window.
+    h.get_by_label("Licenses").scroll_to_me();
+    h.run();
     h.get_by_label("Licenses").click();
+    h.get_by_label("Start with the session").scroll_to_me();
+    h.run();
     h.get_by_label("Start with the session").click();
     h.run();
     h.get_by_label("ezdisplay 0.1.0");
@@ -780,17 +785,42 @@ fn turning_adb_off_changes_the_config() {
 }
 
 #[test]
-fn the_general_page_has_its_three_cards() {
+fn the_general_page_has_its_four_cards() {
     let mut h = harness(snapshot(HostStatus::Stopped), "en");
     h.get_by_role_and_label(Role::Button, "General").click();
     h.run();
-    for title in ["Startup", "Diagnostics", "About"] {
+    for title in ["Startup", "Appearance", "Diagnostics", "About"] {
         h.get_by_label(title);
     }
     h.get_by_role_and_label(Role::CheckBox, "Stream when ezdisplay opens")
         .click();
     h.run();
     assert!(h.state().snap.config.start_on_launch != TrayConfig::default().start_on_launch);
+}
+
+#[test]
+fn the_system_accent_toggle_changes_the_config() {
+    let mut h = harness(snapshot(HostStatus::Stopped), "en");
+    h.get_by_role_and_label(Role::Button, "General").click();
+    h.run();
+    assert!(h.state().snap.config.use_system_accent);
+    h.get_by_role_and_label(Role::CheckBox, "Use the system accent color")
+        .click();
+    h.run();
+    assert!(!h.state().snap.config.use_system_accent);
+    let actions = h.state_mut().take_actions();
+    let [Action::SetConfig(c)] = actions.as_slice() else {
+        panic!("expected one SetConfig, got {actions:?}");
+    };
+    assert!(!c.use_system_accent);
+}
+
+#[test]
+fn the_system_accent_toggle_is_localized() {
+    let mut h = harness(snapshot(HostStatus::Stopped), "es");
+    h.get_by_role_and_label(Role::Button, "General").click();
+    h.run();
+    h.get_by_role_and_label(Role::CheckBox, "Usar el color de acento del sistema");
 }
 
 #[test]

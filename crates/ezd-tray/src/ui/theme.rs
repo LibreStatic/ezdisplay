@@ -74,15 +74,94 @@ pub fn palette(theme: Theme) -> Palette {
     }
 }
 
-/// The palette of the theme `ui` is drawn in.
-pub fn palette_of(ui: &egui::Ui) -> Palette {
-    palette(ui.ctx().theme())
+/// Minimum contrast of text against its background (WCAG AA).
+const MIN_CONTRAST: f64 = 4.5;
+
+fn luminance(c: Color32) -> f64 {
+    let lin = |v: u8| {
+        let s = f64::from(v) / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
 }
 
-/// Installs the palettes for both themes; egui picks the one of the system.
+/// WCAG contrast ratio of two opaque colours.
+pub fn contrast(a: Color32, b: Color32) -> f64 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// Moves `c` toward `target` in small steps until `ok` holds; `c` itself when it already does.
+/// `target` itself is returned if no step satisfies `ok`.
+fn shift_until(c: Color32, target: Color32, ok: impl Fn(Color32) -> bool) -> Color32 {
+    const STEPS: u32 = 40;
+    (0..=STEPS)
+        .map(|i| c.lerp_to_gamma(target, i as f32 / STEPS as f32))
+        .find(|&x| ok(x))
+        .unwrap_or(target)
+}
+
+/// The palette of `theme` with the accent roles (`accent`, `on_accent`, `accent_text`,
+/// `nav_selected`) derived from the system accent `accent`. Every text pair keeps at least 4.5:1:
+/// in light mode the accent is darkened under white text, in dark mode it is lightened under
+/// near-black text (as Windows 11 does). Neutrals and status colours stay as they are.
+pub fn palette_with_accent(theme: Theme, accent: Color32) -> Palette {
+    let mut p = palette(theme);
+    let accent = Color32::from_rgb(accent.r(), accent.g(), accent.b());
+    let (toward, on_accent, mix) = match theme {
+        Theme::Light => (Color32::BLACK, Color32::WHITE, 0.2),
+        Theme::Dark => (Color32::WHITE, Color32::BLACK, 0.25),
+    };
+    // Light: darken until white text reads on it; dark: lighten until near-black text does.
+    p.on_accent = on_accent;
+    p.accent = shift_until(accent, toward, |c| contrast(on_accent, c) >= MIN_CONTRAST);
+    // The selected row: the navigation fill tinted with the accent, as much as the text allows.
+    let mut m = mix;
+    p.nav_selected = p.nav_bg.lerp_to_gamma(p.accent, m);
+    while m > 0.0 && contrast(p.text, p.nav_selected) < MIN_CONTRAST {
+        m = (m - 0.02).max(0.0);
+        p.nav_selected = p.nav_bg.lerp_to_gamma(p.accent, m);
+    }
+    // Accent text and links on the page, cards and the selected row.
+    let (window_bg, card, nav_selected) = (p.window_bg, p.card, p.nav_selected);
+    p.accent_text = shift_until(accent, toward, |c| {
+        [window_bg, card, nav_selected]
+            .iter()
+            .all(|&bg| contrast(c, bg) >= MIN_CONTRAST)
+    });
+    p
+}
+
+fn palette_id(theme: Theme) -> egui::Id {
+    egui::Id::NULL.with(("ezd-tray-palette", theme == Theme::Dark))
+}
+
+/// The palette of the theme `ui` is drawn in: the one installed in the context, else the brand one.
+pub fn palette_of(ui: &egui::Ui) -> Palette {
+    let ctx = ui.ctx();
+    let theme = ctx.theme();
+    ctx.data(|d| d.get_temp::<Palette>(palette_id(theme)))
+        .unwrap_or_else(|| palette(theme))
+}
+
+/// Installs the brand palettes for both themes; egui picks the one of the system.
 pub fn install(ctx: &egui::Context) {
+    install_accent(ctx, None);
+}
+
+/// Installs the palettes for both themes with the accent derived from `accent`; `None` restores
+/// the brand palettes.
+pub fn install_accent(ctx: &egui::Context, accent: Option<Color32>) {
     for theme in [Theme::Light, Theme::Dark] {
-        let p = palette(theme);
+        let p = match accent {
+            Some(a) => palette_with_accent(theme, a),
+            None => palette(theme),
+        };
+        ctx.data_mut(|d| d.insert_temp(palette_id(theme), p));
         ctx.style_mut_of(theme, |style| {
             let v = &mut style.visuals;
             v.panel_fill = p.window_bg;
@@ -127,23 +206,6 @@ pub fn install(ctx: &egui::Context) {
 mod tests {
     use super::*;
 
-    fn luminance(c: Color32) -> f64 {
-        let lin = |v: u8| {
-            let s = f64::from(v) / 255.0;
-            if s <= 0.04045 {
-                s / 12.92
-            } else {
-                ((s + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
-    }
-
-    fn contrast(a: Color32, b: Color32) -> f64 {
-        let (la, lb) = (luminance(a), luminance(b));
-        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
-    }
-
     #[test]
     fn text_pairs_have_at_least_4_5_to_1_contrast() {
         for (name, p) in [("light", LIGHT), ("dark", DARK)] {
@@ -176,5 +238,59 @@ mod tests {
                 assert!(c >= 3.0, "{name} {what}/card: {c:.2}");
             }
         }
+    }
+
+    const ACCENTS: [u32; 12] = [
+        0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0x00FFFF, 0xFF00FF, 0xFAFAFA, 0x050505, 0x808080,
+        0x0078D4, 0x4F7A9A, 0x625FF0,
+    ];
+
+    fn hex(h: u32) -> Color32 {
+        rgb(h)
+    }
+
+    #[test]
+    fn derived_palettes_keep_the_text_contrast() {
+        for theme in [Theme::Light, Theme::Dark] {
+            for h in ACCENTS {
+                let p = palette_with_accent(theme, hex(h));
+                let pairs = [
+                    ("text/nav_selected", p.text, p.nav_selected),
+                    ("on_accent/accent", p.on_accent, p.accent),
+                    ("accent_text/window_bg", p.accent_text, p.window_bg),
+                    ("accent_text/card", p.accent_text, p.card),
+                    ("accent_text/nav_selected", p.accent_text, p.nav_selected),
+                ];
+                for (what, fg, bg) in pairs {
+                    let c = contrast(fg, bg);
+                    assert!(c >= 4.5, "{theme:?} {h:06X} {what}: {c:.2}");
+                }
+                let base = palette(theme);
+                assert_eq!(p.window_bg, base.window_bg);
+                assert_eq!(p.card, base.card);
+                assert_eq!(p.text, base.text);
+                assert_eq!(p.error, base.error);
+            }
+        }
+    }
+
+    #[test]
+    fn a_passing_accent_is_kept() {
+        // Dark blue passes under white text and as text on light surfaces.
+        let p = palette_with_accent(Theme::Light, hex(0x1F3A8A));
+        assert_eq!(p.accent, hex(0x1F3A8A));
+        assert_eq!(p.accent_text, hex(0x1F3A8A));
+        // Light blue passes under black text and as text on dark surfaces.
+        let p = palette_with_accent(Theme::Dark, hex(0x8AB4F8));
+        assert_eq!(p.accent, hex(0x8AB4F8));
+        assert_eq!(p.accent_text, hex(0x8AB4F8));
+    }
+
+    #[test]
+    fn a_failing_accent_moves_in_the_direction_of_the_theme() {
+        let light = palette_with_accent(Theme::Light, hex(0xFFFF00));
+        assert!(luminance(light.accent) < luminance(hex(0xFFFF00)));
+        let dark = palette_with_accent(Theme::Dark, hex(0x050505));
+        assert!(luminance(dark.accent) > luminance(hex(0x050505)));
     }
 }
