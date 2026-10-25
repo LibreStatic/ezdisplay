@@ -87,6 +87,17 @@ setting-pen = Pen acts as
 pen-tablet = Graphics tablet (pressure and tilt)
 pen-mouse = Mouse pointer
 telemetry = Show the telemetry overlay on the tablet
+input-permission-denied = Touch and pen need permission to create input devices (/dev/uinput).
+input-permission-missing = Touch and pen need the uinput kernel module, which is not loaded (/dev/uinput is missing). Enabling input loads it and sets up the permission.
+input-notice = Touch and pen are blocked: ezdisplay has no permission to create input devices.
+input-enable = Enable input
+input-enable-running = Waiting for authorization…
+input-enable-done = Input is enabled.
+input-enable-cancelled = Cancelled. Nothing was changed.
+input-enable-no-agent = No authentication agent is available. Install the udev rule by hand, see the README.
+input-enable-still-denied = The rule is installed, but access is still denied. Log out and back in, then try again.
+input-enable-failed = Enabling input failed (code { $code }).
+input-enable-error = Enabling input could not run: { $reason }
 
 ## Window: connection
 adb-sdk = { $path } (Android SDK)

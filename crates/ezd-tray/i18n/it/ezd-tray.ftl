@@ -87,6 +87,17 @@ setting-pen = La penna funziona come
 pen-tablet = Tavoletta grafica (pressione e inclinazione)
 pen-mouse = Puntatore del mouse
 telemetry = Mostra l'overlay di telemetria sul tablet
+input-permission-denied = L'input touch e della penna ha bisogno del permesso di creare dispositivi di input (/dev/uinput).
+input-permission-missing = L'input touch e della penna ha bisogno del modulo kernel uinput, che non è caricato (manca /dev/uinput). Abilitando l'input viene caricato e il permesso viene configurato.
+input-notice = L'input touch e della penna è bloccato: ezdisplay non ha il permesso di creare dispositivi di input.
+input-enable = Abilita l'input
+input-enable-running = In attesa dell'autorizzazione…
+input-enable-done = L'input è abilitato.
+input-enable-cancelled = Annullato. Non è cambiato nulla.
+input-enable-no-agent = Nessun agente di autenticazione disponibile. Installa la regola udev a mano, vedi il README.
+input-enable-still-denied = La regola è installata, ma l'accesso è ancora negato. Esci dalla sessione, rientra e riprova.
+input-enable-failed = Abilitazione dell'input non riuscita (codice { $code }).
+input-enable-error = Impossibile eseguire l'abilitazione dell'input: { $reason }
 
 ## Finestra: connessione
 adb-sdk = { $path } (Android SDK)

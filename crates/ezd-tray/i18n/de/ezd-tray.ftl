@@ -87,6 +87,17 @@ setting-pen = Der Stift arbeitet als
 pen-tablet = Grafiktablett (Druck und Neigung)
 pen-mouse = Mauszeiger
 telemetry = Telemetrie-Overlay auf dem Tablet anzeigen
+input-permission-denied = Touch- und Stifteingaben brauchen die Erlaubnis, Eingabegeräte zu erstellen (/dev/uinput).
+input-permission-missing = Touch- und Stifteingaben brauchen das Kernelmodul uinput, das nicht geladen ist (/dev/uinput fehlt). Beim Aktivieren der Eingabe wird es geladen und die Berechtigung eingerichtet.
+input-notice = Touch- und Stifteingaben sind blockiert: ezdisplay darf keine Eingabegeräte erstellen.
+input-enable = Eingabe aktivieren
+input-enable-running = Warte auf die Autorisierung…
+input-enable-done = Die Eingabe ist aktiviert.
+input-enable-cancelled = Abgebrochen. Es wurde nichts geändert.
+input-enable-no-agent = Es ist kein Authentifizierungs-Agent verfügbar. Installiere die udev-Regel von Hand, siehe README.
+input-enable-still-denied = Die Regel ist installiert, der Zugriff wird aber weiterhin verweigert. Melde dich ab und wieder an und versuche es dann erneut.
+input-enable-failed = Das Aktivieren der Eingabe ist fehlgeschlagen (Code { $code }).
+input-enable-error = Das Aktivieren der Eingabe konnte nicht ausgeführt werden: { $reason }
 
 ## Fenster: Verbindung
 adb-sdk = { $path } (Android SDK)

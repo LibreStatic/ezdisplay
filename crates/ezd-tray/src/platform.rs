@@ -1,6 +1,6 @@
 //! Small operating-system helpers: opening folders and links, adb lookup, the display driver.
 
-use crate::ui::view::{AdbInfo, RepairState, VddInfo};
+use crate::ui::view::{AdbInfo, InputAccess, InputFixState, RepairState, VddInfo};
 use std::path::Path;
 use std::process::Command;
 
@@ -84,5 +84,52 @@ pub fn repair_driver() -> RepairState {
     #[cfg(not(windows))]
     {
         RepairState::Failed("the display driver is managed on Windows only".into())
+    }
+}
+
+/// The system's permission to create input devices, behind a trait so tests do not touch it.
+pub trait InputPermission: Send + Sync {
+    fn access(&self) -> InputAccess;
+    /// Tries to grant the permission, asking for authorization. Blocking: call it from a
+    /// background thread. Returns the outcome to show.
+    fn enable(&self) -> InputFixState;
+}
+
+/// The real thing: `/dev/uinput` plus polkit on Linux; nothing to grant elsewhere.
+pub struct SystemInput;
+
+impl InputPermission for SystemInput {
+    fn access(&self) -> InputAccess {
+        #[cfg(target_os = "linux")]
+        {
+            match crate::uinput::access() {
+                crate::uinput::Access::Ok => InputAccess::Ok,
+                crate::uinput::Access::Denied => InputAccess::Denied,
+                crate::uinput::Access::Missing => InputAccess::Missing,
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            InputAccess::Ok
+        }
+    }
+
+    fn enable(&self) -> InputFixState {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::uinput::InstallError;
+            match crate::uinput::install() {
+                Ok(()) => InputFixState::Done,
+                Err(InstallError::Cancelled) => InputFixState::Cancelled,
+                Err(InstallError::NoAgent) => InputFixState::NoAgent,
+                Err(InstallError::StillDenied) => InputFixState::StillDenied,
+                Err(InstallError::Failed(code)) => InputFixState::Failed(code),
+                Err(InstallError::Io(e)) => InputFixState::Error(e),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            InputFixState::Done
+        }
     }
 }

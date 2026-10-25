@@ -6,10 +6,10 @@ use crate::config::{self, TrayConfig};
 use crate::icons::IconKind;
 use crate::ipc;
 use crate::menu_model::{MenuModel, MenuState, menu_model};
-use crate::platform;
+use crate::platform::{self, InputPermission};
 use crate::state::{Lifecycle, Step};
 use crate::tray::{MenuAction, Tray};
-use crate::ui::view::{Action, RepairState, Snapshot};
+use crate::ui::view::{Action, InputAccess, InputFixState, RepairState, Snapshot};
 use crate::{autostart, paths};
 use ezd_host_service::{HostService, HostStatus};
 use i18n_embed::fluent::FluentLanguageLoader;
@@ -52,6 +52,13 @@ impl Waker {
     }
 }
 
+/// Whether input devices can be created, and the outcome of the last attempt to grant it.
+#[derive(Default)]
+struct InputState {
+    access: InputAccess,
+    fix: InputFixState,
+}
+
 struct Quitting {
     since: Instant,
     waiters: Vec<Sender<()>>,
@@ -73,6 +80,8 @@ pub struct Controller {
     tray: Option<Tray>,
     autostart: bool,
     repair: Arc<Mutex<RepairState>>,
+    input_probe: Arc<dyn InputPermission>,
+    input: Arc<Mutex<InputState>>,
     want_settings: bool,
     focus_window: bool,
     quitting: Option<Quitting>,
@@ -103,10 +112,18 @@ impl Controller {
             tray: None,
             autostart: autostart::is_enabled(),
             repair: Arc::new(Mutex::new(RepairState::Idle)),
+            input_probe: Arc::new(platform::SystemInput),
+            input: Arc::new(Mutex::new(InputState::default())),
             want_settings: false,
             focus_window: false,
             quitting: None,
         }
+    }
+
+    /// Replaces the input permission probe (tests).
+    #[cfg(test)]
+    pub fn set_input_permission(&mut self, probe: Arc<dyn InputPermission>) {
+        self.input_probe = probe;
     }
 
     /// A sender other threads (IPC, tray callbacks) use to reach this controller, and the waker
@@ -269,8 +286,18 @@ impl Controller {
         self.autostart = autostart::is_enabled();
     }
 
-    /// Data for the settings window.
+    /// Data for the settings window. Probes the input permission (once per call, so once per
+    /// window opening).
     pub fn snapshot(&self) -> Snapshot {
+        {
+            let mut input = self.input.lock().unwrap_or_else(|e| e.into_inner());
+            if input.fix != InputFixState::Running {
+                input.access = self.input_probe.access();
+                // A finished attempt is only reported while the window that started it is open.
+                input.fix = InputFixState::Idle;
+            }
+        }
+        let (input_access, input_fix) = self.input_state();
         Snapshot {
             lifecycle: self.lifecycle,
             status: self.status.clone(),
@@ -283,6 +310,8 @@ impl Controller {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            input_access,
+            input_fix,
             has_licenses_dir: paths::licenses_dir().is_some(),
             windows: cfg!(windows),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -301,6 +330,12 @@ impl Controller {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+        (snap.input_access, snap.input_fix) = self.input_state();
+    }
+
+    fn input_state(&self) -> (InputAccess, InputFixState) {
+        let input = self.input.lock().unwrap_or_else(|e| e.into_inner());
+        (input.access, input.fix.clone())
     }
 
     /// Carries out what the settings window asked for.
@@ -323,6 +358,7 @@ impl Controller {
                 }
                 Action::OpenUrl(u) => platform::open(&u),
                 Action::Repair => self.repair_driver(),
+                Action::EnableInput => self.enable_input(),
             }
         }
     }
@@ -341,6 +377,29 @@ impl Controller {
             let result = platform::repair_driver();
             tracing::info!("driver repair finished: {result:?}");
             *state.lock().unwrap_or_else(|e| e.into_inner()) = result;
+            waker.wake();
+        });
+    }
+
+    fn enable_input(&mut self) {
+        {
+            let mut input = self.input.lock().unwrap_or_else(|e| e.into_inner());
+            if input.fix == InputFixState::Running {
+                return;
+            }
+            input.fix = InputFixState::Running;
+        }
+        let state = self.input.clone();
+        let probe = self.input_probe.clone();
+        let waker = self.waker.clone();
+        std::thread::spawn(move || {
+            let result = probe.enable();
+            tracing::info!("enabling input finished: {result:?}");
+            let access = probe.access();
+            let mut input = state.lock().unwrap_or_else(|e| e.into_inner());
+            input.access = access;
+            input.fix = result;
+            drop(input);
             waker.wake();
         });
     }

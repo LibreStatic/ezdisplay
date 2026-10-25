@@ -63,6 +63,37 @@ pub enum RepairState {
 /// Exit code of `ezd-host vdd install` when Windows must restart to finish.
 pub const EXIT_REBOOT_REQUIRED: u32 = 3010;
 
+/// Whether the user may create input devices (Linux `/dev/uinput`); always `Ok` elsewhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputAccess {
+    #[default]
+    Ok,
+    /// The device exists but this user may not open it.
+    Denied,
+    /// The kernel module is not loaded.
+    Missing,
+}
+
+/// Outcome of "Enable input" (the privileged install of the udev rule).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum InputFixState {
+    #[default]
+    Idle,
+    Running,
+    Done,
+    /// The user dismissed the authorization dialog: nothing happened.
+    Cancelled,
+    /// No authentication agent (or no pkexec) to ask with.
+    NoAgent,
+    /// The rule is installed but the device is still not accessible.
+    StillDenied,
+    /// The install script failed with this exit code.
+    Failed(i32),
+    Error(String),
+}
+
 /// Everything the window shows, copied from the app each frame.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -74,6 +105,8 @@ pub struct Snapshot {
     /// `Some` only on Windows with the driver page.
     pub vdd: Option<VddInfo>,
     pub repair: RepairState,
+    pub input_access: InputAccess,
+    pub input_fix: InputFixState,
     pub has_licenses_dir: bool,
     /// GPU choices and the USB driver hint are Windows-only.
     pub windows: bool,
@@ -94,6 +127,8 @@ pub enum Action {
     OpenLicenses,
     OpenUrl(String),
     Repair,
+    /// Install the udev rule that lets the app create input devices (asks for authorization).
+    EnableInput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -244,7 +279,7 @@ impl SettingsView {
         match self.section {
             Section::Status => self.status(ui, l, pal),
             Section::Display => self.display(ui, l, pal),
-            Section::Input => self.input(ui, l),
+            Section::Input => self.input(ui, l, pal),
             Section::Connection => self.connection(ui, l, pal),
             Section::General => self.general(ui, l, pal),
             Section::Driver => self.driver(ui, l, pal),
@@ -280,6 +315,11 @@ impl SettingsView {
                 .push(if starts { Action::Start } else { Action::Stop });
         }
         ui.add_space(12.0);
+        if self.input_blocked() {
+            ui.label(RichText::new(fl!(l, "input-notice")).color(pal.error));
+            self.enable_input_button(ui, l, pal);
+            ui.add_space(12.0);
+        }
 
         match self.snap.status.clone() {
             HostStatus::Streaming(live) => self.live(ui, l, pal, &live),
@@ -550,7 +590,65 @@ impl SettingsView {
 
     // ----------------------------------------------------------------- input
 
-    fn input(&mut self, ui: &mut Ui, l: &FluentLanguageLoader) {
+    /// Input is on in the settings but the system refuses to create input devices.
+    fn input_blocked(&self) -> bool {
+        self.snap.config.service.input && self.snap.input_access != InputAccess::Ok
+    }
+
+    /// The "Enable input" button and the outcome of the last attempt.
+    fn enable_input_button(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette) {
+        let running = self.snap.input_fix == InputFixState::Running;
+        if primary_button_enabled(ui, pal, &fl!(l, "input-enable"), !running) {
+            self.actions.push(Action::EnableInput);
+        }
+        match &self.snap.input_fix {
+            InputFixState::Idle | InputFixState::Done => {}
+            InputFixState::Running => {
+                ui.label(fl!(l, "input-enable-running"));
+            }
+            InputFixState::Cancelled => {
+                ui.label(fl!(l, "input-enable-cancelled"));
+            }
+            InputFixState::NoAgent => {
+                ui.colored_label(pal.error, fl!(l, "input-enable-no-agent"));
+            }
+            InputFixState::StillDenied => {
+                ui.colored_label(pal.error, fl!(l, "input-enable-still-denied"));
+            }
+            InputFixState::Failed(code) => {
+                let code = i64::from(*code);
+                ui.colored_label(pal.error, fl!(l, "input-enable-failed", code = code));
+            }
+            InputFixState::Error(reason) => {
+                ui.colored_label(
+                    pal.error,
+                    fl!(l, "input-enable-error", reason = reason.as_str()),
+                );
+            }
+        }
+    }
+
+    fn input(&mut self, ui: &mut Ui, l: &FluentLanguageLoader, pal: Palette) {
+        if self.input_blocked() {
+            let text = if self.snap.input_access == InputAccess::Missing {
+                fl!(l, "input-permission-missing")
+            } else {
+                fl!(l, "input-permission-denied")
+            };
+            egui::Frame::new()
+                .fill(pal.surface_container)
+                .corner_radius(12.0)
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    ui.label(RichText::new(text).color(pal.error));
+                    ui.add_space(6.0);
+                    self.enable_input_button(ui, l, pal);
+                });
+            ui.add_space(12.0);
+        } else if self.snap.input_fix == InputFixState::Done {
+            ui.label(fl!(l, "input-enable-done"));
+            ui.add_space(8.0);
+        }
         let cfg = &mut self.snap.config.service;
         ui.checkbox(&mut cfg.input, fl!(l, "input-enabled"));
         let selected = match cfg.pen_mode {
@@ -759,7 +857,16 @@ const GRID_SPACING: [f32; 2] = [28.0, 6.0];
 
 /// A filled button for the main action of a page.
 fn primary_button(ui: &mut Ui, pal: Palette, text: &str) -> bool {
-    action_button(ui, RichText::new(text).color(pal.on_primary), pal.primary)
+    primary_button_enabled(ui, pal, text, true)
+}
+
+fn primary_button_enabled(ui: &mut Ui, pal: Palette, text: &str, enabled: bool) -> bool {
+    action_button(
+        ui,
+        RichText::new(text).color(pal.on_primary),
+        pal.primary,
+        enabled,
+    )
 }
 
 /// A tonal button: the main action of a page when it is not a call to act, such as Stop.
@@ -768,13 +875,15 @@ fn tonal_button(ui: &mut Ui, pal: Palette, text: &str) -> bool {
         ui,
         RichText::new(text).color(pal.on_surface),
         pal.primary_container,
+        true,
     )
 }
 
-fn action_button(ui: &mut Ui, text: RichText, fill: egui::Color32) -> bool {
+fn action_button(ui: &mut Ui, text: RichText, fill: egui::Color32, enabled: bool) -> bool {
     // In a row, so the label is centred in the button's minimum width.
     ui.horizontal(|ui| {
-        ui.add(
+        ui.add_enabled(
+            enabled,
             egui::Button::new(text.strong())
                 .fill(fill)
                 .min_size(egui::vec2(96.0, 32.0)),

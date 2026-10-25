@@ -54,13 +54,7 @@ impl VkDma {
             let memory = inst.get_physical_device_memory_properties(vk::PhysicalDevice::from_raw(
                 vkc.phys_dev as u64,
             ));
-            let mut queue_families = Vec::new();
-            for qf in &vkc.qf[..vkc.nb_qf.clamp(0, 64) as usize] {
-                let idx = qf.idx as u32;
-                if !queue_families.contains(&idx) {
-                    queue_families.push(idx);
-                }
-            }
+            let queue_families = ezd_ffmpeg::vulkan_queue_families(vkc);
             Ok(VkDma {
                 dev,
                 fd_fns,

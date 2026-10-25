@@ -152,3 +152,85 @@ fn settings_requests_are_consumed_once() {
     assert!(!f.ctl.take_open_request());
     assert!(f.ctl.take_focus_request());
 }
+
+/// Pretends to be the system: starts denied, and `enable` grants access.
+struct FakeInput {
+    granted: std::sync::atomic::AtomicBool,
+    outcome: InputFixState,
+    enables: std::sync::atomic::AtomicUsize,
+}
+
+impl FakeInput {
+    fn new(outcome: InputFixState) -> Arc<FakeInput> {
+        Arc::new(FakeInput {
+            granted: false.into(),
+            outcome,
+            enables: 0.into(),
+        })
+    }
+}
+
+impl InputPermission for FakeInput {
+    fn access(&self) -> InputAccess {
+        if self.granted.load(std::sync::atomic::Ordering::SeqCst) {
+            InputAccess::Ok
+        } else {
+            InputAccess::Denied
+        }
+    }
+
+    fn enable(&self) -> InputFixState {
+        self.enables
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.outcome == InputFixState::Done {
+            self.granted
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.outcome.clone()
+    }
+}
+
+fn wait_for_input_fix(ctl: &Controller, snap: &mut Snapshot, want: InputFixState) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        ctl.refresh_snapshot(snap);
+        if snap.input_fix == want {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the install"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn enabling_input_runs_off_thread_and_reprobes() {
+    let mut f = fixture();
+    let fake = FakeInput::new(InputFixState::Done);
+    f.ctl.set_input_permission(fake.clone());
+    let mut snap = f.ctl.snapshot();
+    assert_eq!(snap.input_access, InputAccess::Denied);
+
+    f.ctl.dispatch(vec![Action::EnableInput]);
+    wait_for_input_fix(&f.ctl, &mut snap, InputFixState::Done);
+    assert_eq!(snap.input_access, InputAccess::Ok);
+    assert_eq!(fake.enables.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Reopening the window probes again and forgets the finished attempt.
+    let snap = f.ctl.snapshot();
+    assert_eq!(snap.input_access, InputAccess::Ok);
+    assert_eq!(snap.input_fix, InputFixState::Idle);
+}
+
+#[test]
+fn a_cancelled_enable_leaves_access_denied() {
+    let mut f = fixture();
+    f.ctl
+        .set_input_permission(FakeInput::new(InputFixState::Cancelled));
+    let mut snap = f.ctl.snapshot();
+    f.ctl.dispatch(vec![Action::EnableInput]);
+    wait_for_input_fix(&f.ctl, &mut snap, InputFixState::Cancelled);
+    assert_eq!(snap.input_access, InputAccess::Denied);
+}

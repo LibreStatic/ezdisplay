@@ -18,6 +18,8 @@ mod state;
 mod text;
 mod tray;
 mod ui;
+#[cfg(target_os = "linux")]
+mod uinput;
 
 use std::process::ExitCode;
 use std::time::Duration;

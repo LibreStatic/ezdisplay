@@ -7,7 +7,7 @@ use auto_launch::{AutoLaunch, AutoLaunchBuilder};
 const NAME: &str = "ezdisplay";
 
 fn handle() -> Result<AutoLaunch, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = crate::paths::launcher();
     AutoLaunchBuilder::new()
         .set_app_name(NAME)
         .set_app_path(&exe.to_string_lossy())

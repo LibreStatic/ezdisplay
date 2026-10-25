@@ -87,6 +87,17 @@ setting-pen = Le stylet fonctionne comme
 pen-tablet = Tablette graphique (pression et inclinaison)
 pen-mouse = Pointeur de souris
 telemetry = Afficher l'incrustation de télémétrie sur la tablette
+input-permission-denied = La saisie tactile et du stylet a besoin de l'autorisation de créer des périphériques d'entrée (/dev/uinput).
+input-permission-missing = La saisie tactile et du stylet a besoin du module noyau uinput, qui n'est pas chargé (/dev/uinput est absent). Activer la saisie le charge et configure l'autorisation.
+input-notice = La saisie tactile et du stylet est bloquée : ezdisplay n'a pas l'autorisation de créer des périphériques d'entrée.
+input-enable = Activer la saisie
+input-enable-running = En attente de l'autorisation…
+input-enable-done = La saisie est activée.
+input-enable-cancelled = Annulé. Rien n'a été modifié.
+input-enable-no-agent = Aucun agent d'authentification n'est disponible. Installez la règle udev à la main, voir le README.
+input-enable-still-denied = La règle est installée, mais l'accès est toujours refusé. Fermez la session, reconnectez-vous, puis réessayez.
+input-enable-failed = L'activation de la saisie a échoué (code { $code }).
+input-enable-error = L'activation de la saisie n'a pas pu s'exécuter : { $reason }
 
 ## Fenêtre : connexion
 adb-sdk = { $path } (Android SDK)

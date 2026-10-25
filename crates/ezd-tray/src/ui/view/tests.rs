@@ -66,6 +66,8 @@ fn snapshot(status: HostStatus) -> Snapshot {
         },
         vdd: None,
         repair: RepairState::Idle,
+        input_access: InputAccess::Ok,
+        input_fix: InputFixState::Idle,
         has_licenses_dir: false,
         windows: false,
         version: "0.1.0".into(),
@@ -305,6 +307,111 @@ fn repair_results_are_explained() {
     }
 }
 
+fn blocked(access: InputAccess) -> Snapshot {
+    let mut snap = snapshot(HostStatus::Stopped);
+    snap.input_access = access;
+    snap
+}
+
+const DENIED: &str = "Touch and pen need permission to create input devices (/dev/uinput).";
+
+#[test]
+fn input_permission_card_offers_to_enable_input() {
+    let mut h = harness(blocked(InputAccess::Denied), "en");
+    h.get_by_role_and_label(Role::Button, "Input").click();
+    h.run();
+    h.get_by_label(DENIED);
+    h.get_by_role_and_label(Role::Button, "Enable input")
+        .click();
+    h.run();
+    assert_eq!(h.state_mut().take_actions(), vec![Action::EnableInput]);
+
+    let mut h = harness(blocked(InputAccess::Denied), "es");
+    h.get_by_role_and_label(Role::Button, "Entrada").click();
+    h.run();
+    h.get_by_role_and_label(Role::Button, "Habilitar la entrada");
+}
+
+#[test]
+fn missing_module_is_explained() {
+    let mut h = harness(blocked(InputAccess::Missing), "en");
+    h.get_by_role_and_label(Role::Button, "Input").click();
+    h.run();
+    h.get_by_label_contains("uinput kernel module");
+    h.get_by_role_and_label(Role::Button, "Enable input");
+}
+
+#[test]
+fn status_page_shows_a_notice_with_the_button() {
+    let mut h = harness(blocked(InputAccess::Denied), "en");
+    h.get_by_label(
+        "Touch and pen are blocked: ezdisplay has no permission to create input devices.",
+    );
+    h.get_by_role_and_label(Role::Button, "Enable input")
+        .click();
+    h.run();
+    assert_eq!(h.state_mut().take_actions(), vec![Action::EnableInput]);
+}
+
+#[test]
+fn nothing_shows_when_access_is_fine_or_input_is_off() {
+    let mut h = harness(blocked(InputAccess::Ok), "en");
+    assert!(h.query_by_label_contains("Enable input").is_none());
+    h.get_by_role_and_label(Role::Button, "Input").click();
+    h.run();
+    assert!(h.query_by_label(DENIED).is_none());
+    assert!(h.query_by_label_contains("Enable input").is_none());
+
+    let mut snap = blocked(InputAccess::Denied);
+    snap.config.service.input = false;
+    let mut h = harness(snap, "en");
+    assert!(h.query_by_label_contains("Enable input").is_none());
+    h.get_by_role_and_label(Role::Button, "Input").click();
+    h.run();
+    assert!(h.query_by_label(DENIED).is_none());
+    assert!(h.query_by_label_contains("Enable input").is_none());
+}
+
+#[test]
+fn enable_input_results_are_explained() {
+    for (state, text) in [
+        (InputFixState::Running, "Waiting for authorization\u{2026}"),
+        (InputFixState::Cancelled, "Cancelled. Nothing was changed."),
+        (
+            InputFixState::NoAgent,
+            "No authentication agent is available. Install the udev rule by hand, see the README.",
+        ),
+        (
+            InputFixState::StillDenied,
+            "The rule is installed, but access is still denied. Log out and back in, then try again.",
+        ),
+        (InputFixState::Failed(3), "Enabling input failed (code 3)."),
+    ] {
+        let running = state == InputFixState::Running;
+        let mut snap = blocked(InputAccess::Denied);
+        snap.input_fix = state;
+        let mut h = harness(snap, "en");
+        h.get_by_role_and_label(Role::Button, "Input").click();
+        h.run();
+        h.get_by_label(text);
+        // The button is disabled while the authorization dialog is open.
+        h.get_by_role_and_label(Role::Button, "Enable input")
+            .click();
+        h.run();
+        assert_eq!(h.state_mut().take_actions().is_empty(), running);
+    }
+}
+
+#[test]
+fn enabled_input_is_confirmed_once() {
+    let mut snap = blocked(InputAccess::Ok);
+    snap.input_fix = InputFixState::Done;
+    let mut h = harness(snap, "en");
+    h.get_by_role_and_label(Role::Button, "Input").click();
+    h.run();
+    h.get_by_label("Input is enabled.");
+}
+
 #[cfg(feature = "snapshots")]
 mod snapshots {
     //! PNG snapshots (`cargo test -p ezd-tray --features snapshots`; refresh them with
@@ -334,6 +441,32 @@ mod snapshots {
         results.extend_harness(&mut h);
     }
 
+    fn input_permission_snapshots(results: &mut egui_kittest::SnapshotResults) {
+        for (theme, t) in [(egui::Theme::Light, "light"), (egui::Theme::Dark, "dark")] {
+            for lang in ["en", "es"] {
+                let l = loader_for(&[lang.parse().unwrap()]);
+                let mut snap = blocked(InputAccess::Denied);
+                snap.input_fix = InputFixState::NoAgent;
+                let mut view = SettingsView::new(snap);
+                view.section = Section::Input;
+                let mut h = Harness::builder()
+                    .with_size(egui::vec2(820.0, 560.0))
+                    .with_theme(theme)
+                    .wgpu()
+                    .build_ui_state(
+                        move |ui, view| {
+                            theme::install(ui.ctx());
+                            view.show(ui, &l);
+                        },
+                        view,
+                    );
+                h.run();
+                h.snapshot(format!("input_permission_{t}_{lang}"));
+                results.extend_harness(&mut h);
+            }
+        }
+    }
+
     #[test]
     fn window_snapshots() {
         let mut results = egui_kittest::SnapshotResults::new();
@@ -342,5 +475,7 @@ mod snapshots {
                 shot(theme, lang, &format!("status_{t}_{lang}"), &mut results);
             }
         }
+        // One test: concurrent GPU harnesses can deadlock.
+        input_permission_snapshots(&mut results);
     }
 }

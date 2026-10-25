@@ -87,6 +87,17 @@ setting-pen = A caneta funciona como
 pen-tablet = Mesa digitalizadora (pressão e inclinação)
 pen-mouse = Ponteiro de mouse
 telemetry = Mostrar a sobreposição de telemetria no tablet
+input-permission-denied = A entrada por toque e caneta precisa de permissão para criar dispositivos de entrada (/dev/uinput).
+input-permission-missing = A entrada por toque e caneta precisa do módulo uinput do kernel, que não está carregado (falta /dev/uinput). Ao habilitar a entrada, ele é carregado e a permissão é configurada.
+input-notice = A entrada por toque e caneta está bloqueada: o ezdisplay não tem permissão para criar dispositivos de entrada.
+input-enable = Habilitar a entrada
+input-enable-running = Aguardando a autorização…
+input-enable-done = A entrada está habilitada.
+input-enable-cancelled = Cancelado. Nada foi alterado.
+input-enable-no-agent = Nenhum agente de autenticação está disponível. Instale a regra do udev manualmente, veja o README.
+input-enable-still-denied = A regra está instalada, mas o acesso continua negado. Encerre a sessão, entre de novo e tente outra vez.
+input-enable-failed = Não foi possível habilitar a entrada (código { $code }).
+input-enable-error = Não foi possível executar a habilitação da entrada: { $reason }
 
 ## Janela: conexão
 adb-sdk = { $path } (Android SDK)

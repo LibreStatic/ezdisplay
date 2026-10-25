@@ -23,6 +23,8 @@ mod hw;
 mod options;
 mod probe;
 mod source;
+#[cfg(target_os = "linux")]
+mod vulkan;
 
 pub use decoder::{DecodedFrame, Decoder};
 pub use encoder::{EncodedPacket, Encoder, EncoderConfig, RawPixelFormat};
@@ -34,3 +36,5 @@ pub use probe::{
     ProbeResult, encoder_available, probe_encoder, probe_encoder_with, software_encoders,
 };
 pub use source::SwVideoSource;
+#[cfg(target_os = "linux")]
+pub use vulkan::vulkan_queue_families;

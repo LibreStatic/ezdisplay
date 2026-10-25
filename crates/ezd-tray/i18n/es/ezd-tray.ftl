@@ -87,6 +87,17 @@ setting-pen = El lápiz actúa como
 pen-tablet = Tableta gráfica (presión e inclinación)
 pen-mouse = Puntero de mouse
 telemetry = Mostrar la superposición de telemetría en la tablet
+input-permission-denied = La entrada táctil y del lápiz necesita permiso para crear dispositivos de entrada (/dev/uinput).
+input-permission-missing = La entrada táctil y del lápiz necesita el módulo uinput del kernel, que no está cargado (falta /dev/uinput). Al habilitar la entrada se carga y se configura el permiso.
+input-notice = La entrada táctil y del lápiz está bloqueada: ezdisplay no tiene permiso para crear dispositivos de entrada.
+input-enable = Habilitar la entrada
+input-enable-running = Esperando la autorización…
+input-enable-done = La entrada está habilitada.
+input-enable-cancelled = Cancelado. No se cambió nada.
+input-enable-no-agent = No hay ningún agente de autenticación disponible. Instalá la regla de udev a mano, mirá el README.
+input-enable-still-denied = La regla está instalada, pero el acceso sigue denegado. Cerrá la sesión, volvé a entrar y probá de nuevo.
+input-enable-failed = No se pudo habilitar la entrada (código { $code }).
+input-enable-error = No se pudo ejecutar la habilitación de la entrada: { $reason }
 
 ## Ventana: conexión
 adb-sdk = { $path } (Android SDK)
