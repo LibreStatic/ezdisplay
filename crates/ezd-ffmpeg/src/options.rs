@@ -71,21 +71,34 @@ pub fn option_sets(name: &str) -> Vec<Vec<(&'static str, String)>> {
             ],
             vec![s("async_depth", "1"), s("forced_idr", "1")],
         ],
-        // Older encoder blocks (VCE) may refuse the ultra-low-latency usage, so fall back to
-        // low latency and then to the driver's defaults.
-        "h264_amf" | "hevc_amf" | "av1_amf" => vec![
-            vec![
-                s("usage", "ultralowlatency"),
-                s("rc", "cbr"),
-                s("forced_idr", "1"),
-            ],
-            vec![
-                s("usage", "lowlatency"),
-                s("rc", "cbr"),
-                s("forced_idr", "1"),
-            ],
-            vec![s("forced_idr", "1")],
-        ],
+        // Older encoder blocks (VCE) refuse the ultra-low-latency usage (Init error 3) and, on
+        // Polaris, low latency with CBR (error 36), so step down to fewer options and finally the
+        // driver's defaults. Every set keeps `async_depth=1`: with FFmpeg's default of 16,
+        // receive_packet returns before the frame is encoded and the packet only comes out with
+        // the next frame (an extra frame of latency, and the last frame stuck while the screen is
+        // still). The speed preset keeps a 2960x1848 frame within a 120 Hz budget on VCE.
+        "h264_amf" | "hevc_amf" | "av1_amf" => {
+            let sets: [&[(&'static str, &str)]; 6] = [
+                &[
+                    ("usage", "ultralowlatency"),
+                    ("rc", "cbr"),
+                    ("quality", "speed"),
+                ],
+                &[("usage", "lowlatency"), ("rc", "cbr"), ("quality", "speed")],
+                &[("usage", "lowlatency"), ("quality", "speed")],
+                &[("rc", "cbr"), ("quality", "speed")],
+                &[("quality", "speed")],
+                &[],
+            ];
+            sets.iter()
+                .map(|set| {
+                    let mut v: Vec<_> = set.iter().map(|&(k, val)| s(k, val)).collect();
+                    v.push(s("forced_idr", "1"));
+                    v.push(s("async_depth", "1"));
+                    v
+                })
+                .collect()
+        }
         _ => vec![vec![]],
     }
 }
@@ -110,6 +123,11 @@ mod tests {
         assert_eq!(option_sets("unknown_enc"), vec![vec![]]);
         assert_eq!(option_sets("h264_vaapi").len(), 3);
         assert_eq!(option_sets("hevc_vaapi").len(), 2);
-        assert_eq!(option_sets("h264_amf").len(), 3);
+        assert_eq!(option_sets("h264_amf").len(), 6);
+        assert!(
+            option_sets("h264_amf")
+                .iter()
+                .all(|set| set.contains(&("async_depth", "1".to_string())))
+        );
     }
 }
