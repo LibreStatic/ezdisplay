@@ -1,4 +1,4 @@
-# ezdisplay wire protocol (version 0.4)
+# ezdisplay wire protocol (version 0.5)
 
 All integers are little endian. The protocol runs over any reliable ordered byte stream (TCP
 through `adb reverse` today; AOA bulk endpoints later). It is implemented in the `ezd-proto`
@@ -8,11 +8,15 @@ crate (messages, framing) and `ezd-link` (prioritized mux).
 
 Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 
-```
- 0       4       5       6       8
- +-------+-------+-------+-------+----------...
- | len   |  ch   | kind  | flags | payload
- | u32   |  u8   |  u8   | u16   |
+```mermaid
+flowchart LR
+  subgraph HDR["8-byte header"]
+    direction LR
+    LEN["bytes 0–3<br/><b>payload_len</b><br/>u32"] --- CH["byte 4<br/><b>channel</b><br/>u8"]
+    CH --- KIND["byte 5<br/><b>kind</b><br/>u8"]
+    KIND --- FLAGS["bytes 6–7<br/><b>flags</b><br/>u16, bit 0 = MORE"]
+  end
+  FLAGS --- PAY["bytes 8 … 8 + payload_len − 1<br/><b>payload</b><br/>postcard-encoded message<br/>(or one fragment of it)"]
 ```
 
 | Field | Meaning |
@@ -77,6 +81,22 @@ the fragments of a message. This is how a cursor update overtakes a large keyfra
 is therefore keyed by `(channel, kind)`. The fragments of one key stay in order. A reassembled
 message must not exceed `MAX_MESSAGE_LEN` = 32 MiB.
 
+```mermaid
+sequenceDiagram
+  participant W as Writer (mux)
+  participant D as FrameDecoder
+  W->>D: Video / VideoFrame, 64 KiB, MORE
+  Note right of D: buffered under (Video, VideoFrame)
+  W->>D: Cursor / CursorState, complete
+  Note right of D: CursorState delivered at once
+  W->>D: Video / VideoFrame, 64 KiB, MORE
+  Note right of D: appended to the buffer
+  W->>D: Control / Ping, complete
+  Note right of D: Ping delivered at once
+  W->>D: Video / VideoFrame, last fragment, no MORE
+  Note right of D: VideoFrame delivered, reassembled
+```
+
 The IO-free `FrameDecoder` accepts bytes in arbitrary pieces (one byte at a time or many frames
 per push) and yields complete messages.
 
@@ -105,25 +125,66 @@ host's `InputStatus.caps` has `KEYS`, and an older host would skip the unknown p
 
 ## Handshake and session
 
-```
-client                                     host
-  |  Hello(role=Client, version, name) ----->|
-  |<----- Hello(role=Host, version, name)    |   either order; major mismatch -> Reject
-  |  ClientCaps(display, decoders, ...) ---->|
-  |  ClientHdr (host minor >= 5) ----------->|   host waits for it if the client minor >= 5
-  |<---------------------- HostCaps(encoders)|
-  |            negotiate_hdr(ClientCaps, HostCaps, Prefs, ...)  (host, pure function)
-  |<----------------- StreamColor (minor >= 5)|   sent before StreamConfig
-  |<-------------------------- StreamConfig |   or Reject{reason}
-  |  open decoder                            |
-  |  ConfigAck ----------------------------->|
-  |                                          |   host starts capture + encode
-  |<=== VideoFrame(CODEC_CONFIG) ============|
-  |<=== VideoFrame(KEYFRAME) ================|
-  |<=== VideoFrame..., CursorShape/State ====|   Ping/Pong both ways, ClientStats ~1 Hz
-  |  FrameAck (per frame, before decode) --->|   releases the host's video credit
-  |  RequestKeyframe (on decode error) ----->|   next frame is an IDR
-  |  Bye ------------------------------------>|   or EOF; host closes its side
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client (tablet)
+  participant H as Host (PC)
+
+  Note over C,H: Handshake on the Control channel (10 s per step)
+  par either order
+    C->>H: Hello(role=Client, proto_major/minor, app_version, device_name)
+  and
+    H->>C: Hello(role=Host, proto_major/minor, app_version, device_name)
+  end
+  alt major versions differ
+    H-->>C: Reject(reason), then close
+  end
+  C->>H: ClientCaps(display, decoders, stylus, max_touch_points)
+  opt host minor ≥ 5
+    C->>H: ClientHdr(display_hdr10, nits, main10 codecs)
+    Note right of H: host waits for it when the client minor ≥ 5
+  end
+  H->>C: HostCaps(os, gpu, encoders)
+  Note right of H: negotiate_hdr(...), a pure function:<br/>codec, size, rate, bitrate, range
+  alt no common configuration
+    H-->>C: Reject(reason), then close
+  else configured
+    opt client minor ≥ 5
+      H->>C: StreamColor(bit depth, H.273 codes, mastering)
+    end
+    H->>C: StreamConfig(codec, width, height, refresh_mhz, bitrate_kbps, encoder_name)
+    Note left of C: opens the decoder
+    C->>H: ConfigAck
+  end
+
+  Note over C,H: Session (host starts capture and encode after ConfigAck)
+  opt client minor ≥ 3
+    H->>C: ClientOptions(flags)
+    H->>C: InputStatus(caps, note), again whenever it changes
+  end
+  H->>C: VideoFrame(CODEC_CONFIG): parameter sets only
+  H->>C: VideoFrame(KEYFRAME)
+  loop every frame, one in flight (video credit)
+    H->>C: VideoFrame
+    C->>H: FrameAck(frame_id, received_us), before decode
+    Note right of H: the ack frees the credit,<br/>host encodes the newest content
+  end
+  par alongside video
+    H->>C: CursorShape (once per shape_id), CursorState (latest wins)
+  and
+    C->>H: Pen, Touch, PointerButton, Scroll, Key (Input channel)
+  and
+    H->>C: Ping every 500 ms (client pings too), peer answers Pong
+  and
+    C->>H: ClientStats about once per second
+  end
+  opt decode error
+    C->>H: RequestKeyframe
+    H->>C: next frame is an IDR
+  end
+  C->>H: Bye(reason) or EOF
+  Note right of H: host closes its side<br/>(sends Bye itself on shutdown)
 ```
 
 Cursor messages may arrive any time after `StreamConfig`; a client must tolerate cursor traffic
