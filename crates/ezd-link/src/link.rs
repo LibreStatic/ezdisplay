@@ -1,6 +1,6 @@
 //! [`Link`]: a reliable ordered byte stream.
 
-use crate::mux::{MuxOptions, MuxReceiver, MuxSender, MuxTask, spawn_mux, spawn_mux_split};
+use crate::mux::{MuxOptions, MuxReceiver, MuxSender, MuxTask, spawn_mux_lanes};
 use std::io;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, ToSocketAddrs};
@@ -10,12 +10,51 @@ pub type BoxRead = Box<dyn AsyncRead + Send + Unpin>;
 /// Boxed write half of a link.
 pub type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
 
+/// The streams of a link besides the control stream, one per channel that gets its own stream.
+///
+/// A channel without a lane (`None`) travels on the control stream, in the mux's priority order.
+/// Audio will be one more field here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lanes<T> {
+    /// Input channel (pen, touch, buttons, scroll, keys).
+    pub input: Option<T>,
+    /// Cursor channel (shapes and the latest-wins cursor state).
+    pub cursor: Option<T>,
+    /// Video channel.
+    pub video: Option<T>,
+}
+
+impl<T> Default for Lanes<T> {
+    fn default() -> Self {
+        Lanes {
+            input: None,
+            cursor: None,
+            video: None,
+        }
+    }
+}
+
+impl<T> Lanes<T> {
+    /// True when no channel has a lane.
+    pub fn is_empty(&self) -> bool {
+        self.input.is_none() && self.cursor.is_none() && self.video.is_none()
+    }
+
+    /// The present lanes in the fixed order input, cursor, video.
+    pub fn into_vec(self) -> Vec<T> {
+        [self.input, self.cursor, self.video]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+}
+
 /// A connected, reliable, ordered byte stream split into halves.
 ///
 /// Transports (TCP and QUIC now; AOA bulk endpoints later) only have to produce a
-/// `Link`; everything above it is transport-agnostic. A link may carry a second
-/// stream for video (see [`Link::with_video`]), which the mux then uses so video
-/// cannot delay control, input or cursor traffic.
+/// `Link`; everything above it is transport-agnostic. A link may carry further streams for
+/// input, cursor and video (see [`Link::with_lanes`]), which the mux then uses so a stalled
+/// channel cannot delay the others.
 pub struct Link {
     /// Read half.
     pub reader: BoxRead,
@@ -23,8 +62,10 @@ pub struct Link {
     pub writer: BoxWrite,
     /// Human readable description of the peer, for logs.
     pub peer: String,
-    /// Separate video stream (read, write), if the transport has one.
-    video: Option<(BoxRead, BoxWrite)>,
+    /// Streams this side reads besides the control stream.
+    read_lanes: Lanes<BoxRead>,
+    /// Streams this side writes besides the control stream.
+    write_lanes: Lanes<BoxWrite>,
 }
 
 impl std::fmt::Debug for Link {
@@ -42,20 +83,22 @@ impl Link {
             reader,
             writer,
             peer: peer.into(),
-            video: None,
+            read_lanes: Lanes::default(),
+            write_lanes: Lanes::default(),
         }
     }
 
-    /// Adds a separate video stream. A side that only receives video passes
-    /// `tokio::io::sink()` as the write half; one that only sends passes `tokio::io::empty()`.
-    pub fn with_video(mut self, reader: BoxRead, writer: BoxWrite) -> Self {
-        self.video = Some((reader, writer));
+    /// Adds the streams besides control. A side that never sends on a channel leaves that write
+    /// lane `None`, and one that never receives on it leaves the read lane `None`.
+    pub fn with_lanes(mut self, read: Lanes<BoxRead>, write: Lanes<BoxWrite>) -> Self {
+        self.read_lanes = read;
+        self.write_lanes = write;
         self
     }
 
-    /// True when the link has a separate video stream.
+    /// True when the link has a separate video stream (in either direction).
     pub fn has_video_stream(&self) -> bool {
-        self.video.is_some()
+        self.read_lanes.video.is_some() || self.write_lanes.video.is_some()
     }
 
     /// Wraps a connected TCP stream and enables `TCP_NODELAY`.
@@ -97,18 +140,9 @@ impl Link {
 
     /// Starts the mux with explicit [`MuxOptions`].
     pub fn into_mux_with(self, opts: MuxOptions) -> (MuxSender, MuxReceiver, MuxTask) {
-        match self.video {
-            None => {
-                let rx = MuxReceiver::new(self.reader);
-                let (tx, task) = spawn_mux(self.writer, opts);
-                (tx, rx, task)
-            }
-            Some((video_r, video_w)) => {
-                let rx = MuxReceiver::new_split(self.reader, video_r);
-                let (tx, task) = spawn_mux_split(self.writer, video_w, opts);
-                (tx, rx, task)
-            }
-        }
+        let rx = MuxReceiver::new_lanes(self.reader, self.read_lanes);
+        let (tx, task) = spawn_mux_lanes(self.writer, self.write_lanes, opts);
+        (tx, rx, task)
     }
 }
 

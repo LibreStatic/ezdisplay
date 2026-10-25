@@ -2,9 +2,10 @@
 //!
 //! A Wi-Fi link is a QUIC connection with mutual TLS (self-signed certificates, pinned by
 //! fingerprint after pairing). The client opens the control stream (bidirectional) and sends a
-//! [`LinkOpen`]; the host answers with a [`LinkReply`]. For a session the host then opens the
-//! video stream (unidirectional), starting with [`VIDEO_STREAM_TAG`], and both sides run the
-//! normal framed protocol. Pairing is a SPAKE2 exchange keyed by a 6-digit PIN, see
+//! [`LinkOpen`]; the host answers with a [`LinkReply`]. For a session each side then opens
+//! one unidirectional stream per channel it sends besides control (the host: cursor and video;
+//! the client: input), each starting with its tag byte ([`CURSOR_STREAM_TAG`],
+//! [`VIDEO_STREAM_TAG`], [`INPUT_STREAM_TAG`]), and both sides run the normal framed protocol. Pairing is a SPAKE2 exchange keyed by a 6-digit PIN, see
 //! `docs/protocol.md`.
 //!
 //! Preamble messages are postcard encoded with a little-endian `u16` length prefix
@@ -14,8 +15,14 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// ALPN protocol id of a Wi-Fi link.
 pub const ALPN: &[u8] = b"ezd/0";
+/// First byte of the client's input stream.
+pub const INPUT_STREAM_TAG: u8 = b'I';
+/// First byte of the host's cursor stream.
+pub const CURSOR_STREAM_TAG: u8 = b'C';
 /// First byte of the host's video stream.
 pub const VIDEO_STREAM_TAG: u8 = b'V';
+/// First byte reserved for the audio stream (not used yet).
+pub const AUDIO_STREAM_TAG: u8 = b'A';
 /// Largest preamble message payload.
 pub const MAX_PREAMBLE_LEN: usize = 1024;
 /// Number of digits in a pairing PIN.

@@ -8,18 +8,24 @@
 //!
 //! Streams (see `docs/protocol.md`):
 //! * control, bidirectional, opened by the client: [`LinkOpen`] / [`LinkReply`], then the framed
-//!   control, input and cursor traffic;
-//! * video, unidirectional, opened by the host after [`LinkReply::Accepted`]: one
-//!   [`VIDEO_STREAM_TAG`] byte, then framed video.
+//!   control traffic;
+//! * cursor and video, unidirectional, opened by the host after [`LinkReply::Accepted`];
+//! * input, unidirectional, opened by the client after it read [`LinkReply::Accepted`].
 //!
-//! The control stream has the higher send priority, and since the streams are independent a
-//! lost video packet never delays cursor or input traffic.
+//! Every unidirectional stream starts with one tag byte ([`CURSOR_STREAM_TAG`],
+//! [`VIDEO_STREAM_TAG`], [`INPUT_STREAM_TAG`]) and then carries the framed messages of its
+//! channel. The receiver dispatches by tag, not by arrival order. Audio will be one more stream
+//! ([`AUDIO_STREAM_TAG`] is reserved).
+//!
+//! Send priorities (higher first): control 4, input 3, cursor 2, audio 1 (reserved), video 0.
+//! Each channel has its own stream, so a lost packet delays only the channel it belongs to.
 
 use crate::identity::{Identity, fingerprint_of};
-use crate::link::Link;
+use crate::link::{BoxRead, BoxWrite, Lanes, Link};
 use ezd_proto::ProtoError;
 use ezd_proto::pair::{
-    self, ALPN, Fingerprint, LinkOpen, LinkReply, MAX_PREAMBLE_LEN, Refusal, VIDEO_STREAM_TAG,
+    self, ALPN, CURSOR_STREAM_TAG, Fingerprint, INPUT_STREAM_TAG, LinkOpen, LinkReply,
+    MAX_PREAMBLE_LEN, Refusal, VIDEO_STREAM_TAG,
 };
 use quinn::{Connection, Endpoint, RecvStream, SendStream, VarInt};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -40,12 +46,16 @@ use tokio::io::{AsyncRead, ReadBuf};
 
 /// TLS server name. Certificates are checked by fingerprint, so it is only a placeholder.
 const SERVER_NAME: &str = "ezdisplay";
-/// Time allowed for each preamble step (open, reply, video stream).
+/// Time allowed for each preamble step (open, reply, lane streams).
 pub const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Application close code for a normal end or a refusal.
 const CLOSE_OK: u32 = 0;
-/// Send priority of the control stream (higher is served first); video uses 0.
-const CONTROL_PRIORITY: i32 = 1;
+/// Send priorities (higher is served first). 1 is left for audio, which slots between cursor
+/// and video.
+const CONTROL_PRIORITY: i32 = 4;
+const INPUT_PRIORITY: i32 = 3;
+const CURSOR_PRIORITY: i32 = 2;
+const VIDEO_PRIORITY: i32 = 0;
 
 /// Congestion controller of a Wi-Fi link.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -138,8 +148,8 @@ enum Side {
 /// Only the host receives from peers it has not authenticated yet (it accepts any client
 /// certificate), so its receive windows are small: it only reads the preamble and input, never
 /// video. The client receives video and needs room for a large keyframe in flight. Each side
-/// allows exactly the streams the other opens: one bidirectional stream from the client, one
-/// unidirectional stream from the host.
+/// allows exactly the streams the other opens: one bidirectional stream and one unidirectional
+/// stream (input) from the client, two unidirectional streams (cursor, video) from the host.
 fn transport(cc: Congestion, side: Side) -> quinn::TransportConfig {
     let mut t = quinn::TransportConfig::default();
     t.keep_alive_interval(Some(Duration::from_secs(1)))
@@ -153,12 +163,12 @@ fn transport(cc: Congestion, side: Side) -> quinn::TransportConfig {
             .stream_receive_window(VarInt::from_u32(256 << 10))
             .receive_window(VarInt::from_u32(256 << 10))
             .max_concurrent_bidi_streams(VarInt::from_u32(1))
-            .max_concurrent_uni_streams(VarInt::from_u32(0)),
+            .max_concurrent_uni_streams(VarInt::from_u32(1)),
         Side::Client => t
             .stream_receive_window(VarInt::from_u32(8 << 20))
             .receive_window(VarInt::from_u32(16 << 20))
             .max_concurrent_bidi_streams(VarInt::from_u32(0))
-            .max_concurrent_uni_streams(VarInt::from_u32(1)),
+            .max_concurrent_uni_streams(VarInt::from_u32(2)),
     };
     if cc == Congestion::Bbr {
         t.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
@@ -355,23 +365,24 @@ impl QuicConn {
                 return Err(QuicError::Unexpected("pairing reply to a session request"));
             }
         }
-        let mut video = tokio::time::timeout(PREAMBLE_TIMEOUT, self.conn.accept_uni())
-            .await
-            .map_err(|_| QuicError::Timeout)??;
-        let mut tag = [0u8; 1];
-        tokio::time::timeout(PREAMBLE_TIMEOUT, video.read_exact(&mut tag))
-            .await
-            .map_err(|_| QuicError::Timeout)??;
-        if tag[0] != VIDEO_STREAM_TAG {
-            return Err(QuicError::Unexpected("video stream tag"));
-        }
+        let input = open_tagged(&self.conn, INPUT_STREAM_TAG, INPUT_PRIORITY).await?;
+        let [cursor, video] =
+            accept_tagged(&self.conn, [CURSOR_STREAM_TAG, VIDEO_STREAM_TAG]).await?;
         let peer = format!("quic:{}", self.conn.remote_address());
         let keep = Arc::new(Lingering(self));
+        let read = Lanes {
+            input: None,
+            cursor: Some(Box::new(Keep::new(cursor, &keep)) as BoxRead),
+            video: Some(Box::new(Keep::new(video, &keep)) as BoxRead),
+        };
+        let write = Lanes {
+            input: Some(Box::new(input) as BoxWrite),
+            cursor: None,
+            video: None,
+        };
         Ok(
-            Link::new(Box::new(Keep::new(recv, &keep)), Box::new(send), peer).with_video(
-                Box::new(Keep::new(video, &keep)),
-                Box::new(tokio::io::sink()),
-            ),
+            Link::new(Box::new(Keep::new(recv, &keep)), Box::new(send), peer)
+                .with_lanes(read, write),
         )
     }
 
@@ -412,23 +423,31 @@ impl Opened {
         self.conn.remote_address()
     }
 
-    /// Accepts a session: answers [`LinkReply::Accepted`], opens the video stream and returns
-    /// the two-stream link.
+    /// Accepts a session: answers [`LinkReply::Accepted`], opens the cursor and video streams,
+    /// accepts the client's input stream and returns the link.
     pub async fn accept_session(mut self) -> Result<Link, QuicError> {
         write_msg(&mut self.send, &LinkReply::Accepted).await?;
-        let mut video = tokio::time::timeout(PREAMBLE_TIMEOUT, self.conn.conn.open_uni())
-            .await
-            .map_err(|_| QuicError::Timeout)??;
-        let _ = video.set_priority(0);
-        video.write_all(&[VIDEO_STREAM_TAG]).await?;
+        let cursor = open_tagged(&self.conn.conn, CURSOR_STREAM_TAG, CURSOR_PRIORITY).await?;
+        let video = open_tagged(&self.conn.conn, VIDEO_STREAM_TAG, VIDEO_PRIORITY).await?;
+        let [input] = accept_tagged(&self.conn.conn, [INPUT_STREAM_TAG]).await?;
         let peer = format!("quic:{}", self.conn.remote_address());
         let keep = Arc::new(Lingering(self.conn));
+        let read = Lanes {
+            input: Some(Box::new(Keep::new(input, &keep)) as BoxRead),
+            cursor: None,
+            video: None,
+        };
+        let write = Lanes {
+            input: None,
+            cursor: Some(Box::new(cursor) as BoxWrite),
+            video: Some(Box::new(video) as BoxWrite),
+        };
         Ok(Link::new(
             Box::new(Keep::new(self.recv, &keep)),
             Box::new(self.send),
             peer,
         )
-        .with_video(Box::new(tokio::io::empty()), Box::new(video)))
+        .with_lanes(read, write))
     }
 
     /// Refuses the request and closes the connection once the answer is delivered (or after
@@ -437,6 +456,46 @@ impl Opened {
         let _ = write_msg(&mut self.send, &LinkReply::Refused(why)).await;
         finish_and_close(&mut self.send, &self.conn, "refused").await;
     }
+}
+
+/// Opens a unidirectional stream with the given send priority and writes its tag byte (which
+/// also makes the stream visible to the peer).
+async fn open_tagged(conn: &Connection, tag: u8, priority: i32) -> Result<SendStream, QuicError> {
+    let mut stream = tokio::time::timeout(PREAMBLE_TIMEOUT, conn.open_uni())
+        .await
+        .map_err(|_| QuicError::Timeout)??;
+    let _ = stream.set_priority(priority);
+    stream.write_all(&[tag]).await?;
+    Ok(stream)
+}
+
+/// Accepts `N` unidirectional streams and returns them in the order of `tags`, whatever order
+/// they arrive in. An unknown or repeated tag is an error. The whole exchange must finish within
+/// [`PREAMBLE_TIMEOUT`].
+async fn accept_tagged<const N: usize>(
+    conn: &Connection,
+    tags: [u8; N],
+) -> Result<[RecvStream; N], QuicError> {
+    let accept = async {
+        let mut found: [Option<RecvStream>; N] = std::array::from_fn(|_| None);
+        for _ in 0..N {
+            let mut stream = conn.accept_uni().await?;
+            let mut tag = [0u8; 1];
+            stream.read_exact(&mut tag).await?;
+            let slot = tags
+                .iter()
+                .position(|&t| t == tag[0])
+                .ok_or(QuicError::Unexpected("unknown stream tag"))?;
+            if found[slot].replace(stream).is_some() {
+                return Err(QuicError::Unexpected("duplicate stream tag"));
+            }
+        }
+        Ok::<_, QuicError>(found)
+    };
+    let found = tokio::time::timeout(PREAMBLE_TIMEOUT, accept)
+        .await
+        .map_err(|_| QuicError::Timeout)??;
+    Ok(found.map(|s| s.expect("every tag was filled once")))
 }
 
 /// Finishes `send`, waits briefly for the peer to read it, then closes the connection.

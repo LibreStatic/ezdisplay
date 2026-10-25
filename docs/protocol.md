@@ -119,16 +119,27 @@ present a long-lived self-signed certificate (ECDSA P-256) and identify each oth
 fingerprint, the SHA-256 of the certificate DER. There is no CA: the client pins the host's
 fingerprint, and the host only starts sessions for fingerprints it has paired with.
 
-Streams:
+Streams, one per channel:
 
-* **Control** (bidirectional, opened by the client, higher stream priority): the preamble
-  below, then the framed protocol for every channel except video.
-* **Video** (unidirectional, opened by the host after accepting a session, lower priority):
-  the byte `'V'`, then the framed `Video` channel messages.
+| Stream | Kind | Opened by | Tag | Send priority |
+| --- | --- | --- | --- | --- |
+| Control | bidirectional | client | none (preamble first) | 4 (highest) |
+| Input | unidirectional | client, after reading `Accepted` | `'I'` | 3 |
+| Cursor | unidirectional | host, after writing `Accepted` | `'C'` | 2 |
+| Audio (reserved) | unidirectional | host | `'A'` | 1 |
+| Video | unidirectional | host, after writing `Accepted` | `'V'` | 0 (lowest) |
 
-Video has its own stream so a lost packet of a large frame does not hold back input, cursor or
-control messages queued behind it. Every other rule of this document (credit, coalescing,
-reassembly) is unchanged; each stream is reassembled on its own.
+Every unidirectional stream starts with its tag byte, then carries the framed messages of its
+channel. Control carries the preamble, then the framed protocol for the control channel. The
+receiver accepts the expected streams (the host one, the client two) within 10 s and dispatches
+them by tag, not by arrival order; an unknown or repeated tag ends the session. The cursor stream
+carries cursor shapes and the latest-wins cursor state, shapes first. There is no compatibility
+with earlier layouts.
+
+Each channel has its own stream so a lost packet on one never holds back another: a lost packet
+of a large video frame does not delay input, cursor or control messages. Every other rule of
+this document (credit, coalescing, reassembly) is unchanged; each stream is reassembled on its
+own, and the priorities above are QUIC send priorities between the streams.
 
 Before the framed protocol the client sends one preamble message (`ezd_proto::pair`). Preamble
 messages are postcard with a `u16` little-endian length prefix, at most 1024 bytes, and each
@@ -138,6 +149,8 @@ step must complete within 10 s.
 client                                     host
   |  LinkOpen::Session --------------------->|   client certificate must be paired
   |<--------------------- LinkReply::Accepted |   or Refused(NotPaired | Busy)
+  |=== input stream: 'I', Pen/Touch ... ===>|   opened after reading Accepted
+  |<== cursor stream: 'C', CursorState ... ==|   opened after writing Accepted
   |<=== video stream: 'V', VideoFrame ... ===|
   |  Hello ... (as in Handshake and session) |
 ```
@@ -147,9 +160,9 @@ Transport settings tuned for latency: keep-alive 1 s, idle timeout 5 s, initial 
 
 The host accepts any client certificate in the handshake, so it treats every peer as untrusted
 until the preamble: it finishes each handshake in its own task within 10 s, keeps at most 8
-connections, allows the client one bidirectional stream and no unidirectional ones, and uses
-256 KiB receive windows (it never receives video). The client allows the host only the video
-stream and uses 8 MiB stream and 16 MiB connection receive windows, room for a large keyframe.
+connections, allows the client one bidirectional stream and one unidirectional one (input), and uses
+256 KiB receive windows (it never receives video). The client allows the host only the cursor
+and video streams and uses 8 MiB stream and 16 MiB connection receive windows, room for a large keyframe.
 A client only opens a session on a connection whose host certificate it pinned.
 
 Hosts advertise themselves over mDNS as `_ezdisplay._udp.local.` with TXT records `fp` (short

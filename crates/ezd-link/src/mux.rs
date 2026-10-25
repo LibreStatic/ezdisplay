@@ -24,16 +24,19 @@
 //!   would corrupt the reference chain); producers coalesce *before* capture by
 //!   pulling the newest frame only when a slot is free.
 //!
-//! [`spawn_mux_split`] serves the same queues onto two byte streams: control,
-//! input and cursor traffic on one, video on the other, so a stalled or
-//! retransmitting video stream cannot delay them (head-of-line blocking on a
-//! QUIC-like transport). [`MuxReceiver::new_split`] is its counterpart.
+//! [`spawn_mux_lanes`] serves the same queues onto several byte streams: a control
+//! stream plus, optionally, one *lane* each for input, cursor and video (audio will be one more).
+//! A stalled or retransmitting lane cannot delay the others (head-of-line blocking on a
+//! QUIC-like transport). A channel without a lane is written on the control stream in the
+//! priority order above. Each lane has its own writer loop and wake-up. [`MuxReceiver::new_lanes`]
+//! is the counterpart.
 //!
 //! Reassembly on the receiving side ([`MuxReceiver`]) is keyed by
 //! `(channel, kind)`, so complete frames interleaved between video fragments are fine.
 
 use crate::link::BoxRead;
 use crate::link::BoxWrite;
+use crate::link::Lanes;
 use ezd_proto::{
     Channel, CursorState, FrameDecoder, Incoming, Message, ProtoError, TouchContact, VideoFrame,
     encode_message, fragments, frame::put_frame,
@@ -44,7 +47,7 @@ use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWriteExt, ReadBuf};
 use tokio::sync::{Notify, watch};
 
 /// The mux (or its link) has been closed; nothing more can be sent.
@@ -213,10 +216,14 @@ struct SlotState {
 
 struct Shared {
     q: Mutex<Queues>,
+    /// Wakes the control writer (and, without lanes, the only writer).
     wake: Notify,
-    /// Wakes the video writer in split mode (`wake` serves control/input/cursor then).
+    /// Wakes the writer of each lane that exists; the other channels use `wake`.
+    wake_input: Notify,
+    wake_cursor: Notify,
     wake_video: Notify,
-    split: bool,
+    /// Which channels have their own stream.
+    lanes: Lanes<()>,
     slot: watch::Sender<SlotState>,
     coalesced: AtomicU64,
     states_sent: AtomicU64,
@@ -251,17 +258,34 @@ impl Shared {
     fn close(&self) {
         self.lock().closing = true;
         self.wake.notify_one();
+        self.wake_input.notify_one();
+        self.wake_cursor.notify_one();
         self.wake_video.notify_one();
     }
 
-    /// Wakes the writer that serves video (`video`) or everything else.
-    fn wake_writer(&self, video: bool) {
-        if video && self.split {
-            self.wake_video.notify_one();
+    /// Wakes the writer that serves `lane`: its own if it has a stream, else the control one.
+    fn wake_writer(&self, lane: Lane) {
+        let (present, notify) = match lane {
+            Lane::Control => (false, &self.wake),
+            Lane::Input => (self.lanes.input.is_some(), &self.wake_input),
+            Lane::Cursor => (self.lanes.cursor.is_some(), &self.wake_cursor),
+            Lane::Video => (self.lanes.video.is_some(), &self.wake_video),
+        };
+        if present {
+            notify.notify_one();
         } else {
             self.wake.notify_one();
         }
     }
+}
+
+/// Which queue a message goes to, for waking the right writer.
+#[derive(Clone, Copy)]
+enum Lane {
+    Control,
+    Input,
+    Cursor,
+    Video,
 }
 
 /// Calls `close` when the last `MuxSender` clone is dropped.
@@ -309,7 +333,7 @@ impl MuxSender {
             payload,
             ack_id,
         };
-        {
+        let lane = {
             let mut q = self.shared.lock();
             if q.closing || self.shared.slot.borrow().closed {
                 return Err(MuxClosed.into());
@@ -319,6 +343,7 @@ impl MuxSender {
                     if q.cursor_state.replace(enc).is_some() {
                         self.shared.coalesced.fetch_add(1, Ordering::Relaxed);
                     }
+                    Lane::Cursor
                 }
                 Message::Pen(_)
                 | Message::Touch(_)
@@ -337,17 +362,24 @@ impl MuxSender {
                     } else {
                         q.input.push_back(QueuedInput { enc, class });
                     }
+                    Lane::Input
                 }
-                Message::CursorShape(_) => q.cursor_shapes.push_back(enc),
+                Message::CursorShape(_) => {
+                    q.cursor_shapes.push_back(enc);
+                    Lane::Cursor
+                }
                 Message::VideoFrame(_) => {
                     q.video.push_back(enc);
                     self.shared.update_slot(&q);
+                    Lane::Video
                 }
-                _ => q.control.push_back(enc),
+                _ => {
+                    q.control.push_back(enc);
+                    Lane::Control
+                }
             }
-        }
-        self.shared
-            .wake_writer(matches!(msg, Message::VideoFrame(_)));
+        };
+        self.shared.wake_writer(lane);
         Ok(())
     }
 
@@ -446,7 +478,7 @@ impl MuxTask {
     }
 }
 
-fn new_shared(opts: MuxOptions, split: bool) -> Arc<Shared> {
+fn new_shared(opts: MuxOptions, lanes: Lanes<()>) -> Arc<Shared> {
     let (slot, _) = watch::channel(SlotState {
         busy: false,
         closed: false,
@@ -454,8 +486,10 @@ fn new_shared(opts: MuxOptions, split: bool) -> Arc<Shared> {
     Arc::new(Shared {
         q: Mutex::new(Queues::default()),
         wake: Notify::new(),
+        wake_input: Notify::new(),
+        wake_cursor: Notify::new(),
         wake_video: Notify::new(),
-        split,
+        lanes,
         slot,
         coalesced: AtomicU64::new(0),
         states_sent: AtomicU64::new(0),
@@ -481,25 +515,28 @@ fn clamp_chunk(opts: MuxOptions) -> usize {
 
 /// Spawns the writer task on the current tokio runtime.
 pub fn spawn_mux(writer: BoxWrite, opts: MuxOptions) -> (MuxSender, MuxTask) {
-    let shared = new_shared(opts, false);
-    let task = tokio::spawn(writer_task(shared.clone(), writer, clamp_chunk(opts)));
-    (sender_for(shared), MuxTask(task))
+    spawn_mux_lanes(writer, Lanes::default(), opts)
 }
 
-/// Like [`spawn_mux`] but with two streams: control, input and cursor traffic
-/// go to `control`, video to `video`. Both writers run in one task; if either
-/// fails the mux closes and the other stops too. On a graceful close each
-/// drains its queues and shuts down its own half.
-pub fn spawn_mux_split(
+/// Like [`spawn_mux`] but with a lane (own stream) for each channel in `lanes` that is `Some`.
+/// A channel without a lane is written on `control` in the priority order of the module docs.
+/// All writer loops run in one task; if one fails the mux closes and the others stop too. On a
+/// graceful close each drains its queues and every half is shut down.
+pub fn spawn_mux_lanes(
     control: BoxWrite,
-    video: BoxWrite,
+    lanes: Lanes<BoxWrite>,
     opts: MuxOptions,
 ) -> (MuxSender, MuxTask) {
-    let shared = new_shared(opts, true);
-    let task = tokio::spawn(split_task(
+    let present = Lanes {
+        input: lanes.input.as_ref().map(|_| ()),
+        cursor: lanes.cursor.as_ref().map(|_| ()),
+        video: lanes.video.as_ref().map(|_| ()),
+    };
+    let shared = new_shared(opts, present);
+    let task = tokio::spawn(lanes_task(
         shared.clone(),
         control,
-        video,
+        lanes,
         clamp_chunk(opts),
     ));
     (sender_for(shared), MuxTask(task))
@@ -513,39 +550,101 @@ enum Next {
     Idle(Option<Instant>),
 }
 
-async fn writer_task(shared: Arc<Shared>, mut w: BoxWrite, chunk_len: usize) -> io::Result<()> {
-    let res = writer_loop(&shared, &mut w, chunk_len).await;
-    {
-        let mut q = shared.lock();
-        q.closing = true;
-    }
+/// Runs the writer loops of every stream; the first error stops the others.
+async fn lanes_task(
+    shared: Arc<Shared>,
+    mut control: BoxWrite,
+    mut lanes: Lanes<BoxWrite>,
+    chunk_len: usize,
+) -> io::Result<()> {
+    let serves = Serves {
+        input: lanes.input.is_none(),
+        cursor: lanes.cursor.is_none(),
+        video: lanes.video.is_none(),
+    };
+    let res = {
+        // `try_join!` returns at the first error and otherwise waits for every loop to drain.
+        // Audio: add its lane to `Lanes`, `Serves` and this join.
+        tokio::try_join!(
+            writer_loop(&shared, &mut control, chunk_len, serves),
+            async {
+                match lanes.input.as_mut() {
+                    Some(w) => input_loop(&shared, w, chunk_len).await,
+                    None => Ok(()),
+                }
+            },
+            async {
+                match lanes.cursor.as_mut() {
+                    Some(w) => cursor_loop(&shared, w, chunk_len).await,
+                    None => Ok(()),
+                }
+            },
+            async {
+                match lanes.video.as_mut() {
+                    Some(w) => video_loop(&shared, w, chunk_len).await,
+                    None => Ok(()),
+                }
+            },
+        )
+        .map(|_| ())
+    };
+    shared.lock().closing = true;
     shared.slot.send_modify(|s| s.closed = true);
-    let _ = w.shutdown().await;
+    async fn shut(w: Option<&mut BoxWrite>) {
+        if let Some(w) = w {
+            let _ = w.shutdown().await;
+        }
+    }
+    let _ = tokio::join!(
+        shut(Some(&mut control)),
+        shut(lanes.input.as_mut()),
+        shut(lanes.cursor.as_mut()),
+        shut(lanes.video.as_mut()),
+    );
     if let Err(e) = &res {
         tracing::debug!("mux writer stopped: {e}");
     }
     res
 }
 
-async fn writer_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io::Result<()> {
+/// Channels the control writer serves because they have no stream of their own.
+#[derive(Clone, Copy)]
+struct Serves {
+    input: bool,
+    cursor: bool,
+    video: bool,
+}
+
+/// Writer of the control stream: control, then (when they have no lane) input, cursor shapes,
+/// cursor state and video chunks, in that order.
+async fn writer_loop(
+    shared: &Shared,
+    w: &mut BoxWrite,
+    chunk_len: usize,
+    serves: Serves,
+) -> io::Result<()> {
     // Video frame currently being written and the offset of its next chunk.
     let mut in_flight: Option<(Encoded, usize)> = None;
     let mut buf: Vec<u8> = Vec::with_capacity(chunk_len + 16);
     loop {
         let next = {
             let mut q = shared.lock();
-            let deadline = expire_acks(shared, &mut q);
+            let deadline = if serves.video {
+                expire_acks(shared, &mut q)
+            } else {
+                None
+            };
             if let Some(m) = q.control.pop_front() {
                 Next::Whole(m, false)
-            } else if !q.input.is_empty() {
+            } else if serves.input && !q.input.is_empty() {
                 Next::Input(q.input.drain(..).map(|i| i.enc).collect())
-            } else if let Some(m) = q.cursor_shapes.pop_front() {
+            } else if let Some(m) = serves.cursor.then(|| q.cursor_shapes.pop_front()).flatten() {
                 Next::Whole(m, false)
-            } else if let Some(m) = q.cursor_state.take() {
+            } else if let Some(m) = serves.cursor.then(|| q.cursor_state.take()).flatten() {
                 Next::Whole(m, true)
             } else if in_flight.is_some() {
                 Next::VideoChunk
-            } else if let Some(v) = q.video.pop_front() {
+            } else if let Some(v) = serves.video.then(|| q.video.pop_front()).flatten() {
                 in_flight = Some((v, 0));
                 q.writing = true;
                 Next::VideoChunk
@@ -656,48 +755,32 @@ fn finish_video(shared: &Shared, ack_id: Option<u64>) {
     shared.update_slot(&q);
 }
 
-/// Runs both split writers; the first error stops the other one.
-async fn split_task(
-    shared: Arc<Shared>,
-    mut control: BoxWrite,
-    mut video: BoxWrite,
-    chunk_len: usize,
-) -> io::Result<()> {
-    let res = {
-        let c = control_loop(&shared, &mut control, chunk_len);
-        let v = video_loop(&shared, &mut video, chunk_len);
-        tokio::pin!(c, v);
-        tokio::select! {
-            r = &mut c => match r {
-                Ok(()) => v.await,
-                Err(e) => Err(e),
-            },
-            r = &mut v => match r {
-                Ok(()) => c.await,
-                Err(e) => Err(e),
-            },
+/// Writer of the input lane: reliable FIFO, one write and flush per batch.
+async fn input_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io::Result<()> {
+    let mut buf: Vec<u8> = Vec::with_capacity(chunk_len + 16);
+    loop {
+        let (batch, closing) = {
+            let mut q = shared.lock();
+            let batch: Vec<Encoded> = q.input.drain(..).map(|i| i.enc).collect();
+            (batch, q.closing)
+        };
+        if !batch.is_empty() {
+            write_input(shared, w, &mut buf, &batch, chunk_len).await?;
+        } else if closing {
+            return Ok(());
+        } else {
+            shared.wake_input.notified().await;
         }
-    };
-    shared.lock().closing = true;
-    shared.slot.send_modify(|s| s.closed = true);
-    let _ = tokio::join!(control.shutdown(), video.shutdown());
-    if let Err(e) = &res {
-        tracing::debug!("mux writer stopped: {e}");
     }
-    res
 }
 
-/// Split-mode writer for control > input > cursor shapes > cursor state.
-async fn control_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io::Result<()> {
+/// Writer of the cursor lane: shapes (FIFO) before the latest-wins state.
+async fn cursor_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io::Result<()> {
     let mut buf: Vec<u8> = Vec::with_capacity(chunk_len + 16);
     loop {
         let next = {
             let mut q = shared.lock();
-            if let Some(m) = q.control.pop_front() {
-                Next::Whole(m, false)
-            } else if !q.input.is_empty() {
-                Next::Input(q.input.drain(..).map(|i| i.enc).collect())
-            } else if let Some(m) = q.cursor_shapes.pop_front() {
+            if let Some(m) = q.cursor_shapes.pop_front() {
                 Next::Whole(m, false)
             } else if let Some(m) = q.cursor_state.take() {
                 Next::Whole(m, true)
@@ -712,13 +795,12 @@ async fn control_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io
             Next::Whole(m, is_state) => {
                 write_whole(shared, w, &mut buf, &m, is_state, chunk_len).await?;
             }
-            Next::Input(batch) => write_input(shared, w, &mut buf, &batch, chunk_len).await?,
-            _ => shared.wake.notified().await,
+            _ => shared.wake_cursor.notified().await,
         }
     }
 }
 
-/// Split-mode writer for video; also expires ack deadlines while idle.
+/// Writer of the video lane; also expires ack deadlines while idle.
 async fn video_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io::Result<()> {
     let mut buf: Vec<u8> = Vec::with_capacity(chunk_len + 16);
     loop {
@@ -780,25 +862,31 @@ fn expire_acks(shared: &Shared, q: &mut Queues) -> Option<Instant> {
     q.unacked.front().map(|&(_, at)| at + timeout)
 }
 
-/// Reads and decodes messages from a link's read half (or from the two halves
-/// of a split link).
+/// Reads and decodes messages from a link's read half (or from the control stream and the lane
+/// streams of a link with lanes).
 pub struct MuxReceiver {
-    reader: BoxRead,
-    decoder: FrameDecoder,
-    buf: Vec<u8>,
+    /// The control stream first, then the lanes; polled in this order.
+    streams: Vec<Side>,
     unknown: u64,
-    /// Video stream of a split receiver; `None` for a single-stream one.
-    video: Option<Side>,
-    /// The primary reader ended cleanly (split mode only).
-    ended: bool,
 }
 
-/// Reader, decoder and read buffer of the second stream of a split receiver.
+/// Reader, decoder and read buffer of one stream of a receiver.
 struct Side {
     reader: BoxRead,
     decoder: FrameDecoder,
     buf: Vec<u8>,
     ended: bool,
+}
+
+impl Side {
+    fn new(reader: BoxRead) -> Self {
+        Side {
+            reader,
+            decoder: FrameDecoder::new(),
+            buf: vec![0; 64 * 1024],
+            ended: false,
+        }
+    }
 }
 
 impl std::fmt::Debug for MuxReceiver {
@@ -824,20 +912,15 @@ fn pop_known(decoder: &mut FrameDecoder, unknown: &mut u64) -> Result<Option<Mes
 }
 
 /// Handles the result of a read: feeds the decoder, or marks a clean EOF.
-fn feed(
-    decoder: &mut FrameDecoder,
-    buf: &[u8],
-    n: io::Result<usize>,
-    ended: &mut bool,
-) -> Result<(), MuxError> {
+fn feed(side: &mut Side, n: io::Result<usize>) -> Result<(), MuxError> {
     let n = n?;
     if n == 0 {
-        if decoder.buffered() != 0 {
+        if side.decoder.buffered() != 0 {
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
         }
-        *ended = true;
+        side.ended = true;
     } else {
-        decoder.push(&buf[..n]);
+        side.decoder.push(&side.buf[..n]);
     }
     Ok(())
 }
@@ -845,27 +928,19 @@ fn feed(
 impl MuxReceiver {
     /// Wraps a read half.
     pub fn new(reader: BoxRead) -> Self {
-        MuxReceiver {
-            reader,
-            decoder: FrameDecoder::new(),
-            buf: vec![0; 64 * 1024],
-            unknown: 0,
-            video: None,
-            ended: false,
-        }
+        Self::new_lanes(reader, Lanes::default())
     }
 
-    /// Wraps the two read halves of a split link (see [`spawn_mux_split`]).
-    /// Each stream has its own decoder; control is preferred when both have data.
-    pub fn new_split(control: BoxRead, video: BoxRead) -> Self {
+    /// Wraps the control read half and the lane streams of a link (see [`spawn_mux_lanes`]).
+    /// Each stream has its own decoder; control is preferred when several have data.
+    pub fn new_lanes(control: BoxRead, lanes: Lanes<BoxRead>) -> Self {
+        let streams = std::iter::once(control)
+            .chain(lanes.into_vec())
+            .map(Side::new)
+            .collect();
         MuxReceiver {
-            video: Some(Side {
-                reader: video,
-                decoder: FrameDecoder::new(),
-                buf: vec![0; 64 * 1024],
-                ended: false,
-            }),
-            ..Self::new(control)
+            streams,
+            unknown: 0,
         }
     }
 
@@ -875,58 +950,41 @@ impl MuxReceiver {
     }
 
     /// Receives the next known message; `Ok(None)` on a clean EOF between messages
-    /// (for a split receiver: once both streams ended). Unknown message kinds are
-    /// skipped transparently. Cancel-safe.
+    /// (with lanes: once every stream ended). Unknown message kinds are skipped
+    /// transparently. A stream that ends in the middle of a message is an error. Cancel-safe.
     pub async fn recv(&mut self) -> Result<Option<Message>, MuxError> {
-        if self.video.is_some() {
-            return self.recv_split().await;
-        }
         loop {
-            match self.decoder.pop()? {
-                Some(Incoming::Message(m)) => return Ok(Some(m)),
-                Some(Incoming::Unknown { channel, kind, len }) => {
-                    self.unknown += 1;
-                    tracing::debug!(channel, kind, len, "skipping unknown message");
-                    continue;
+            for s in &mut self.streams {
+                if let Some(m) = pop_known(&mut s.decoder, &mut self.unknown)? {
+                    return Ok(Some(m));
                 }
-                None => {}
             }
-            let n = self.reader.read(&mut self.buf).await?;
-            if n == 0 {
-                return if self.decoder.buffered() == 0 {
-                    Ok(None)
-                } else {
-                    Err(io::Error::from(io::ErrorKind::UnexpectedEof).into())
-                };
-            }
-            self.decoder.push(&self.buf[..n]);
-        }
-    }
-
-    async fn recv_split(&mut self) -> Result<Option<Message>, MuxError> {
-        let Some(video) = self.video.as_mut() else {
-            return Ok(None);
-        };
-        loop {
-            if let Some(m) = pop_known(&mut self.decoder, &mut self.unknown)? {
-                return Ok(Some(m));
-            }
-            if let Some(m) = pop_known(&mut video.decoder, &mut self.unknown)? {
-                return Ok(Some(m));
-            }
-            if self.ended && video.ended {
+            if self.streams.iter().all(|s| s.ended) {
                 return Ok(None);
             }
-            // Reads are cancel-safe: the losing branch of the select drops no data.
-            tokio::select! {
-                biased;
-                n = self.reader.read(&mut self.buf), if !self.ended => {
-                    feed(&mut self.decoder, &self.buf, n, &mut self.ended)?;
+            // A read completes inside the poll that returns it, so dropping this future never
+            // loses data that was already read.
+            let streams = &mut self.streams;
+            let (i, n) = std::future::poll_fn(|cx| {
+                for (i, s) in streams.iter_mut().enumerate() {
+                    if s.ended {
+                        continue;
+                    }
+                    let mut rb = ReadBuf::new(&mut s.buf);
+                    match std::pin::Pin::new(&mut s.reader).poll_read(cx, &mut rb) {
+                        std::task::Poll::Ready(Ok(())) => {
+                            return std::task::Poll::Ready((i, Ok(rb.filled().len())));
+                        }
+                        std::task::Poll::Ready(Err(e)) => {
+                            return std::task::Poll::Ready((i, Err(e)));
+                        }
+                        std::task::Poll::Pending => {}
+                    }
                 }
-                n = video.reader.read(&mut video.buf), if !video.ended => {
-                    feed(&mut video.decoder, &video.buf, n, &mut video.ended)?;
-                }
-            }
+                std::task::Poll::Pending
+            })
+            .await;
+            feed(&mut self.streams[i], n)?;
         }
     }
 }
@@ -1545,16 +1603,47 @@ mod tests {
         assert!(tx.video_slot_free());
     }
 
-    /// Split mux over two duplex streams; returns the sender, its task and a split receiver.
-    fn split_pair(
+    /// Capacities of the duplex streams of a test mux (`None`: that channel has no lane).
+    type Caps = Lanes<usize>;
+
+    fn video_caps(cap: usize) -> Caps {
+        Lanes {
+            video: Some(cap),
+            ..Lanes::default()
+        }
+    }
+
+    fn all_caps(cap: usize) -> Caps {
+        Lanes {
+            input: Some(cap),
+            cursor: Some(cap),
+            video: Some(cap),
+        }
+    }
+
+    /// Mux over duplex streams (control plus one per lane in `caps`); returns the sender, its
+    /// task and the matching lanes receiver.
+    fn lanes_pair(
         ctl_cap: usize,
-        vid_cap: usize,
+        caps: Caps,
         opts: MuxOptions,
     ) -> (MuxSender, MuxTask, MuxReceiver) {
         let (cw, cr) = tokio::io::duplex(ctl_cap);
-        let (vw, vr) = tokio::io::duplex(vid_cap);
-        let (tx, task) = spawn_mux_split(Box::new(cw), Box::new(vw), opts);
-        (tx, task, MuxReceiver::new_split(Box::new(cr), Box::new(vr)))
+        let mut writes = Lanes::<BoxWrite>::default();
+        let mut reads = Lanes::<BoxRead>::default();
+        for (cap, w, r) in [
+            (caps.input, &mut writes.input, &mut reads.input),
+            (caps.cursor, &mut writes.cursor, &mut reads.cursor),
+            (caps.video, &mut writes.video, &mut reads.video),
+        ] {
+            if let Some(cap) = cap {
+                let (lw, lr) = tokio::io::duplex(cap);
+                *w = Some(Box::new(lw));
+                *r = Some(Box::new(lr));
+            }
+        }
+        let (tx, task) = spawn_mux_lanes(Box::new(cw), writes, opts);
+        (tx, task, MuxReceiver::new_lanes(Box::new(cr), reads))
     }
 
     /// Writer that fails every write.
@@ -1581,27 +1670,46 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn split_stalled_video_does_not_delay_control_traffic() {
-        let (cw, cr) = tokio::io::duplex(64 * 1024);
-        let (vw, _vr_never_read) = tokio::io::duplex(1024);
-        let (tx, _task) = spawn_mux_split(Box::new(cw), Box::new(vw), onwrite(4096));
-        let mut rx = MuxReceiver::new(Box::new(cr));
-        tx.send_video(vf(1, 1024 * 1024)).unwrap();
-        sleep(Duration::from_millis(50)).await; // video writer is blocked on a full stream
-        tx.send_control(Message::Ping(Ping { seq: 1, t0_us: 0 }))
-            .unwrap();
-        tx.send(&pen(7, PenSample::IN_RANGE)).unwrap();
-        tx.send(&Message::CursorShape(CursorShape {
-            shape_id: 4,
+    fn shape(id: u32) -> Message {
+        Message::CursorShape(CursorShape {
+            shape_id: id,
             width: 1,
             height: 1,
             hot_x: 0,
             hot_y: 0,
             rgba: vec![0; 4],
-        }))
-        .unwrap();
+        })
+    }
+
+    fn ping(seq: u32) -> Message {
+        Message::Ping(Ping { seq, t0_us: 0 })
+    }
+
+    /// Raw frame bytes of `msg`, as a lane peer would write them.
+    fn framed(msg: &Message) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let (ch, kind, payload) = encode_message(msg).unwrap();
+        put_frame(&mut buf, ch as u8, kind, 0, &payload);
+        buf
+    }
+
+    #[tokio::test]
+    async fn lanes_stalled_video_does_not_delay_control_traffic() {
+        let (cw, cr) = tokio::io::duplex(64 * 1024);
+        let (vw, _vr_never_read) = tokio::io::duplex(1024);
+        let lanes = Lanes {
+            video: Some(Box::new(vw) as BoxWrite),
+            ..Lanes::default()
+        };
+        let (tx, _task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(4096));
+        let mut rx = MuxReceiver::new(Box::new(cr));
+        tx.send_video(vf(1, 1024 * 1024)).unwrap();
+        sleep(Duration::from_millis(50)).await; // video writer is blocked on a full stream
+        tx.send_control(ping(1)).unwrap();
+        tx.send(&pen(7, PenSample::IN_RANGE)).unwrap();
+        tx.send(&shape(4)).unwrap();
         tx.send_cursor_state(cs(5)).unwrap();
+        // Input and cursor have no lane here: control stream, in priority order.
         assert!(matches!(recv(&mut rx).await, Message::Ping(_)));
         assert!(matches!(recv(&mut rx).await, Message::Pen(p) if p.t_us == 7));
         assert!(matches!(recv(&mut rx).await, Message::CursorShape(s) if s.shape_id == 4));
@@ -1610,19 +1718,131 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn split_delivers_both_streams_in_per_channel_order() {
-        let (tx, _task, mut rx) = split_pair(4096, 4096, onwrite(1024));
+    async fn lanes_stalled_video_does_not_delay_cursor_lane() {
+        let (cw, _cr) = tokio::io::duplex(64 * 1024);
+        let (iw, _ir) = tokio::io::duplex(64 * 1024);
+        let (kw, kr) = tokio::io::duplex(64 * 1024);
+        let (vw, _vr_never_read) = tokio::io::duplex(1024);
+        let lanes = Lanes {
+            input: Some(Box::new(iw) as BoxWrite),
+            cursor: Some(Box::new(kw) as BoxWrite),
+            video: Some(Box::new(vw) as BoxWrite),
+        };
+        let (tx, _task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(4096));
+        let mut rx = MuxReceiver::new(Box::new(kr));
+        tx.send_video(vf(1, 1024 * 1024)).unwrap();
+        sleep(Duration::from_millis(50)).await;
+        tx.send(&shape(2)).unwrap();
+        tx.send_cursor_state(cs(9)).unwrap();
+        assert!(matches!(recv(&mut rx).await, Message::CursorShape(s) if s.shape_id == 2));
+        assert!(matches!(recv(&mut rx).await, Message::CursorState(s) if s.x == 9));
+    }
+
+    #[tokio::test]
+    async fn lanes_stalled_cursor_does_not_delay_input_or_control() {
+        let (cw, cr) = tokio::io::duplex(64 * 1024);
+        let (iw, ir) = tokio::io::duplex(64 * 1024);
+        let (kw, _kr_never_read) = tokio::io::duplex(64);
+        let lanes = Lanes {
+            input: Some(Box::new(iw) as BoxWrite),
+            cursor: Some(Box::new(kw) as BoxWrite),
+            video: None,
+        };
+        let (tx, _task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(4096));
+        let mut ctl = MuxReceiver::new(Box::new(cr));
+        let mut inp = MuxReceiver::new(Box::new(ir));
+        tx.send(&shape(1)).unwrap();
+        tx.send(&Message::CursorShape(CursorShape {
+            shape_id: 2,
+            width: 64,
+            height: 64,
+            hot_x: 0,
+            hot_y: 0,
+            rgba: vec![0; 64 * 64 * 4],
+        }))
+        .unwrap();
+        sleep(Duration::from_millis(50)).await; // cursor writer is blocked on a full stream
+        tx.send(&pen(3, PenSample::IN_RANGE)).unwrap();
+        tx.send_control(ping(2)).unwrap();
+        assert!(matches!(recv(&mut inp).await, Message::Pen(p) if p.t_us == 3));
+        assert!(matches!(recv(&mut ctl).await, Message::Ping(_)));
+    }
+
+    #[tokio::test]
+    async fn lanes_stalled_input_does_not_delay_control() {
+        let (cw, cr) = tokio::io::duplex(64 * 1024);
+        let (iw, _ir_never_read) = tokio::io::duplex(64);
+        let lanes = Lanes {
+            input: Some(Box::new(iw) as BoxWrite),
+            ..Lanes::default()
+        };
+        let (tx, _task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(4096));
+        let mut rx = MuxReceiver::new(Box::new(cr));
+        for i in 0..200 {
+            tx.send(&pen(i, PenSample::IN_RANGE)).unwrap();
+        }
+        sleep(Duration::from_millis(50)).await;
+        tx.send_control(ping(1)).unwrap();
+        tx.send_cursor_state(cs(1)).unwrap();
+        // Control first, then the cursor traffic that has no lane here.
+        assert!(matches!(recv(&mut rx).await, Message::Ping(_)));
+        assert!(matches!(recv(&mut rx).await, Message::CursorState(_)));
+    }
+
+    #[tokio::test]
+    async fn lanes_absent_traffic_falls_back_to_control_in_priority_order() {
+        let (cw, cr) = tokio::io::duplex(1 << 20);
+        let (tx, _task) = spawn_mux_lanes(Box::new(cw), Lanes::default(), onwrite(4096));
+        let mut rx = MuxReceiver::new(Box::new(cr));
+        // Everything is queued before the writer can run (single-threaded test runtime).
+        tx.send_cursor_state(cs(1)).unwrap();
+        tx.send(&shape(1)).unwrap();
+        tx.send(&pen(1, PenSample::IN_RANGE)).unwrap();
+        tx.send_control(ping(1)).unwrap();
+        assert!(matches!(recv(&mut rx).await, Message::Ping(_)));
+        assert!(matches!(recv(&mut rx).await, Message::Pen(_)));
+        assert!(matches!(recv(&mut rx).await, Message::CursorShape(_)));
+        assert!(matches!(recv(&mut rx).await, Message::CursorState(_)));
+    }
+
+    #[tokio::test]
+    async fn lanes_each_channel_uses_its_own_stream() {
+        let (cw, cr) = tokio::io::duplex(1 << 20);
+        let (iw, ir) = tokio::io::duplex(1 << 20);
+        let (kw, kr) = tokio::io::duplex(1 << 20);
+        let (vw, vr) = tokio::io::duplex(1 << 20);
+        let lanes = Lanes {
+            input: Some(Box::new(iw) as BoxWrite),
+            cursor: Some(Box::new(kw) as BoxWrite),
+            video: Some(Box::new(vw) as BoxWrite),
+        };
+        let (tx, _task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(4096));
+        tx.send_control(ping(1)).unwrap();
+        tx.send(&pen(1, PenSample::IN_RANGE)).unwrap();
+        tx.send(&shape(1)).unwrap();
+        tx.send_cursor_state(cs(1)).unwrap();
+        tx.send_video(vf(1, 100)).unwrap();
+        let mut c = MuxReceiver::new(Box::new(cr));
+        let mut i = MuxReceiver::new(Box::new(ir));
+        let mut k = MuxReceiver::new(Box::new(kr));
+        let mut v = MuxReceiver::new(Box::new(vr));
+        assert!(matches!(recv(&mut c).await, Message::Ping(_)));
+        assert!(matches!(recv(&mut i).await, Message::Pen(_)));
+        assert!(matches!(recv(&mut k).await, Message::CursorShape(_)));
+        assert!(matches!(recv(&mut k).await, Message::CursorState(_)));
+        assert!(matches!(recv(&mut v).await, Message::VideoFrame(_)));
+    }
+
+    #[tokio::test]
+    async fn lanes_deliver_all_streams_in_per_channel_order() {
+        let (tx, _task, mut rx) = lanes_pair(4096, all_caps(4096), onwrite(1024));
         let sender = {
             let tx = tx.clone();
             tokio::spawn(async move {
                 for i in 0..10u64 {
                     tx.send_video(vf(i, 20_000)).unwrap();
                     tx.send(&pen(i, PenSample::IN_RANGE)).unwrap();
-                    tx.send_control(Message::Ping(Ping {
-                        seq: i as u32,
-                        t0_us: 0,
-                    }))
-                    .unwrap();
+                    tx.send_control(ping(i as u32)).unwrap();
                     tx.wait_video_slot().await.unwrap();
                 }
             })
@@ -1652,8 +1872,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn split_credit_is_held_until_ack_and_early_ack_works() {
-        let (tx, _task, mut rx) = split_pair(1 << 20, 1 << 20, acked(1, 5000));
+    async fn lanes_credit_is_held_until_ack_and_early_ack_works() {
+        let (tx, _task, mut rx) = lanes_pair(1 << 20, video_caps(1 << 20), acked(1, 5000));
         tx.send_video(vf(7, 100)).unwrap();
         assert!(matches!(recv(&mut rx).await, Message::VideoFrame(_)));
         sleep(Duration::from_millis(50)).await;
@@ -1675,8 +1895,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn split_ack_timeout_frees_slot_while_idle() {
-        let (tx, _task, mut rx) = split_pair(1 << 20, 1 << 20, acked(1, 100));
+    async fn lanes_ack_timeout_frees_slot_while_idle() {
+        let (tx, _task, mut rx) = lanes_pair(1 << 20, video_caps(1 << 20), acked(1, 100));
         tx.send_video(vf(1, 100)).unwrap();
         recv(&mut rx).await;
         timeout(Duration::from_secs(2), tx.wait_video_slot())
@@ -1687,10 +1907,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn split_close_flushes_both_streams_then_ends() {
-        let (tx, task, mut rx) = split_pair(64 * 1024, 64 * 1024, onwrite(1024));
+    async fn lanes_close_flushes_every_stream_then_ends() {
+        let (tx, task, mut rx) = lanes_pair(64 * 1024, all_caps(64 * 1024), onwrite(1024));
         tx.send_video(vf(1, 10_000)).unwrap();
         tx.send_cursor_state(cs(3)).unwrap();
+        tx.send(&pen(4, PenSample::IN_RANGE)).unwrap();
         tx.send_control(Message::Bye(Bye {
             reason: "done".into(),
         }))
@@ -1705,9 +1926,10 @@ mod tests {
         {
             got.push(m);
         }
-        assert_eq!(got.len(), 3);
+        assert_eq!(got.len(), 4);
         assert!(got.iter().any(|m| matches!(m, Message::Bye(_))));
         assert!(got.iter().any(|m| matches!(m, Message::CursorState(_))));
+        assert!(got.iter().any(|m| matches!(m, Message::Pen(_))));
         assert!(
             got.iter()
                 .any(|m| matches!(m, Message::VideoFrame(v) if v.data.len() == 10_000))
@@ -1716,47 +1938,87 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn split_receiver_survives_one_stream_eof() {
+    async fn lanes_receiver_ends_only_when_all_streams_end() {
         let (mut cw, cr) = tokio::io::duplex(4096);
+        let (mut iw, ir) = tokio::io::duplex(4096);
+        let (mut kw, kr) = tokio::io::duplex(4096);
         let (mut vw, vr) = tokio::io::duplex(4096);
-        let mut rx = MuxReceiver::new_split(Box::new(cr), Box::new(vr));
-        let mut buf = Vec::new();
-        let (ch, kind, payload) = encode_message(&Message::ConfigAck).unwrap();
-        put_frame(&mut buf, ch as u8, kind, 0, &payload);
-        cw.write_all(&buf).await.unwrap();
+        let lanes = Lanes {
+            input: Some(Box::new(ir) as BoxRead),
+            cursor: Some(Box::new(kr) as BoxRead),
+            video: Some(Box::new(vr) as BoxRead),
+        };
+        let mut rx = MuxReceiver::new_lanes(Box::new(cr), lanes);
+        cw.write_all(&framed(&Message::ConfigAck)).await.unwrap();
         cw.shutdown().await.unwrap(); // control ends first
         assert!(matches!(recv(&mut rx).await, Message::ConfigAck));
+        iw.write_all(&framed(&pen(1, PenSample::IN_RANGE)))
+            .await
+            .unwrap();
+        iw.shutdown().await.unwrap();
+        assert!(matches!(recv(&mut rx).await, Message::Pen(_)));
+        kw.shutdown().await.unwrap();
         assert!(
             timeout(Duration::from_millis(100), rx.recv())
                 .await
                 .is_err(),
             "video is still open"
         );
-        let (ch, kind, payload) = encode_message(&Message::VideoFrame(vf(1, 10))).unwrap();
-        buf.clear();
-        put_frame(&mut buf, ch as u8, kind, 0, &payload);
-        vw.write_all(&buf).await.unwrap();
+        let frame = framed(&Message::VideoFrame(vf(1, 10)));
+        vw.write_all(&frame).await.unwrap();
         assert!(matches!(recv(&mut rx).await, Message::VideoFrame(_)));
-        // Mid-message EOF on video is an error.
-        vw.write_all(&buf[..5]).await.unwrap();
         vw.shutdown().await.unwrap();
+        assert!(rx.recv().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn lanes_receiver_mid_message_eof_on_a_lane_is_an_error() {
+        let (_cw, cr) = tokio::io::duplex(4096);
+        let (mut kw, kr) = tokio::io::duplex(4096);
+        let lanes = Lanes {
+            cursor: Some(Box::new(kr) as BoxRead),
+            ..Lanes::default()
+        };
+        let mut rx = MuxReceiver::new_lanes(Box::new(cr), lanes);
+        let frame = framed(&Message::CursorState(cs(1)));
+        kw.write_all(&frame[..5]).await.unwrap();
+        kw.shutdown().await.unwrap();
         assert!(matches!(rx.recv().await, Err(MuxError::Io(_))));
     }
 
     #[tokio::test]
-    async fn split_video_write_error_closes_the_mux() {
-        let (cw, _cr) = tokio::io::duplex(4096);
-        let (tx, task) = spawn_mux_split(Box::new(cw), Box::new(FailWriter), onwrite(1024));
-        tx.send_video(vf(1, 100)).unwrap();
-        let err = timeout(Duration::from_secs(5), task.join())
-            .await
-            .unwrap()
-            .unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
-        assert!(matches!(
-            tx.send_control(Message::ConfigAck),
-            Err(MuxError::Closed(_))
-        ));
-        assert!(tx.wait_video_slot().await.is_err());
+    async fn lanes_write_error_on_any_lane_closes_the_mux() {
+        for failing in ["input", "cursor", "video"] {
+            let (cw, _cr) = tokio::io::duplex(4096);
+            let (ow, _or) = tokio::io::duplex(4096);
+            let bad = || Some(Box::new(FailWriter) as BoxWrite);
+            let ok = || Some(Box::new(ow) as BoxWrite);
+            let mut lanes = Lanes {
+                input: ok(),
+                cursor: None,
+                video: None,
+            };
+            match failing {
+                "input" => lanes.input = bad(),
+                "cursor" => lanes.cursor = bad(),
+                _ => lanes.video = bad(),
+            }
+            let (tx, task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(1024));
+            match failing {
+                "input" => tx.send(&pen(1, PenSample::IN_RANGE)).unwrap(),
+                "cursor" => tx.send_cursor_state(cs(1)).unwrap(),
+                _ => tx.send_video(vf(1, 100)).unwrap(),
+            }
+            let err = timeout(Duration::from_secs(5), task.join())
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::BrokenPipe, "{failing}");
+            assert!(matches!(
+                tx.send_control(Message::ConfigAck),
+                Err(MuxError::Closed(_))
+            ));
+            assert!(tx.wait_video_slot().await.is_err());
+        }
     }
 }

@@ -16,7 +16,7 @@ pub mod pair;
 #[cfg(feature = "quic")]
 pub mod quic;
 
-pub use link::{BoxRead, BoxWrite, Link};
+pub use link::{BoxRead, BoxWrite, Lanes, Link};
 pub use mux::{
     MuxClosed, MuxError, MuxOptions, MuxReceiver, MuxSender, MuxStats, MuxTask, VideoCredit,
 };
