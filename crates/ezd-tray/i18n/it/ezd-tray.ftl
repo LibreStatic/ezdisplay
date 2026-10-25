@@ -1,0 +1,133 @@
+## Riga di comando
+about = ezdisplay: usa il tablet come secondo schermo. Gira nell'area di notifica.
+arg-settings = Apre la finestra delle impostazioni.
+arg-quit = Chiude l'ezdisplay in esecuzione e attende che si sia fermato.
+arg-autostart = Attiva o disattiva l'avvio con la sessione, poi esce.
+usage-label = Uso:
+heading-options = Opzioni
+help-flag = Mostra l'aiuto
+version-flag = Mostra la versione
+
+## Stato del servizio
+status-stopped = Fermo
+status-stopping = Arresto in corso…
+status-waiting = In attesa del tablet
+status-unauthorized = Accetta il debug USB sul tablet
+status-streaming = Trasmissione verso { $device } · { $width }×{ $height } a { $hz } Hz
+error-bind = Impossibile mettersi in ascolto su { $addr }: { $reason }
+error-adb-not-found = adb non trovato
+error-adb-reverse = adb reverse non riuscito per { $serial }: { $reason }
+error-unsupported = Questo sistema non supporta ancora gli schermi virtuali
+error-source = Impossibile creare la sorgente video: { $reason }
+
+## Menu dell'area di notifica
+menu-start = Avvia
+menu-stop = Ferma
+menu-scale = Scala
+menu-scale-option = { $percent }%
+menu-telemetry = Overlay di telemetria
+menu-settings = Impostazioni…
+menu-autostart = Avvia con la sessione
+menu-logs = Apri la cartella dei log
+menu-quit = Esci
+
+## Finestra: sezioni
+section-status = Stato
+section-display = Schermo
+section-input = Input
+section-connection = Connessione
+section-general = Generale
+section-driver = Driver dello schermo
+
+## Finestra: stato
+devices-heading = Dispositivi
+stats-heading = Statistiche in tempo reale
+stats-waiting = In attesa delle prime misurazioni…
+stat-device = Tablet
+stat-mode = Modalità
+stat-encoder = Encoder
+stat-fps = Frequenza dei fotogrammi
+stat-bitrate = Bitrate
+stat-e2e = Latenza dalla cattura allo schermo
+stat-decode = Tempo di decodifica
+stat-transfer = Tempo di trasferimento
+stat-input = Latenza dell'input
+stat-drops = Fotogrammi persi
+stat-rtt = Andata e ritorno
+mode-value = { $width }×{ $height } a { $hz } Hz, { $codec }
+encoder-value = { $encoder } a { $mbps } Mbps
+value-fps = { $fps } fps
+value-mbps = { $mbps } Mbps
+value-hz = { $hz } Hz
+value-ms = { $ms } ms
+value-ms-pair = { $p50 } ms (95° percentile: { $p95 } ms)
+value-drops = { $dropped } dal tablet, { $late ->
+        [one] { $late } conferma in ritardo
+       *[other] { $late } conferme in ritardo
+    }
+
+## Finestra: schermo
+display-hint = Le modifiche valgono dalla prossima connessione. Usa «Applica ora» per riconnetterti subito.
+setting-scale = Scala
+setting-refresh = Frequenza di aggiornamento massima
+setting-bitrate = Bitrate
+bitrate-auto = Automatico
+setting-encoder = Encoder
+encoder-auto = Automatico
+setting-gpu = Scheda grafica
+gpu-auto = Automatica
+gpu-prefer-dgpu = Preferisci la scheda grafica dedicata
+gpu-named = Scegli per nome
+gpu-name-hint = Nome dell'adattatore, come mostrato da «ezd-host diag»
+apply-now = Applica ora (riconnette)
+
+## Finestra: input
+input-enabled = Invia l'input touch e della penna a questo computer
+setting-pen = La penna funziona come
+pen-tablet = Tavoletta grafica (pressione e inclinazione)
+pen-mouse = Puntatore del mouse
+telemetry = Mostra l'overlay di telemetria sul tablet
+
+## Finestra: connessione
+adb-sdk = { $path } (Android SDK)
+adb-bundled = { $path } (incluso in ezdisplay)
+devices-count =
+    { $count ->
+        [one] { $count } dispositivo
+       *[other] { $count } dispositivi
+    }
+devices-none = Nessun dispositivo. Collega il tablet con un cavo USB e attiva il debug USB.
+samsung-driver = Driver USB Android di Samsung
+device-line = { $name } ({ $serial }): { $state }
+device-ready = pronto
+device-unauthorized = in attesa che accetti il debug USB
+device-offline = offline
+open-app = Apri l'app sul tablet quando si connette
+use-adb = Connetti via USB con adb
+advanced = Avanzate
+setting-port = Porta
+port-hint = Il tablet raggiunge questo computer su questa porta. Le modifiche valgono quando non c'è nessuna sessione in corso.
+
+## Finestra: generale
+start-on-launch = Trasmetti all'apertura di ezdisplay
+about-version = ezdisplay { $version }
+licenses = Licenze
+
+## Finestra: driver dello schermo
+driver-state = Driver
+driver-installed = Installato
+driver-missing = Non installato
+driver-owner = Installato da
+driver-owner-ours = ezdisplay
+driver-owner-other = un altro programma (non toccato)
+driver-owner-none = —
+driver-folder = Cartella del driver
+driver-hint = Ripara reinstalla il driver dello schermo virtuale fornito con ezdisplay. Windows chiede prima il permesso.
+driver-repair = Ripara
+repair-running = Riparazione in corso…
+repair-cancelled = Annullato. Non è cambiato nulla.
+repair-done = Il driver è installato.
+repair-restart = Riavvia Windows per completare l'installazione del driver.
+repair-failed = La riparazione non è riuscita (codice { $code }).
+repair-log = Dettagli: { $path }
+repair-error = Impossibile eseguire la riparazione: { $reason }

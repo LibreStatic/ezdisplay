@@ -73,6 +73,30 @@ pub fn isolate_std_handles() {
     win::util::isolate_std_handles()
 }
 
+/// Makes the process Per-Monitor DPI aware v2 (screen capture and input injection depend on real
+/// pixels). Call first thing in `main`, before any window exists. Returns what happened.
+#[cfg(windows)]
+pub fn ensure_dpi_aware() -> String {
+    win::util::ensure_dpi_aware()
+}
+
+/// Message text of the `Err` that [`run_elevated`] returns when the user declined the UAC prompt.
+pub const ELEVATION_CANCELLED: &str = "cancelled";
+
+/// Waits up to `timeout` for window messages of the calling thread and dispatches them: the loop
+/// a thread that owns a tray icon must run.
+#[cfg(windows)]
+pub fn pump_messages(timeout: std::time::Duration) {
+    win::shell::pump_messages(timeout)
+}
+
+/// Runs `exe args` elevated (UAC prompt, hidden), waits for it and returns its exit code.
+/// `Err(ELEVATION_CANCELLED)` means the user declined the prompt.
+#[cfg(windows)]
+pub fn run_elevated(exe: &std::path::Path, args: &str) -> Result<u32, String> {
+    win::shell::run_elevated(exe, args)
+}
+
 /// `ezd-host vdd status`: report on the VDD installation (Windows only).
 #[cfg(windows)]
 pub fn vdd_status() -> serde_json::Value {

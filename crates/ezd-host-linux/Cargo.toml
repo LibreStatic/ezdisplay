@@ -14,11 +14,14 @@ rust-version.workspace = true
 ezd-host-core.workspace = true
 ezd-ffmpeg.workspace = true
 ezd-proto.workspace = true
-ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast"] }
+# zbus runs on its own async-io executor rather than on tokio: in the tray app other zbus users
+# (the tray icon, the window's accessibility bridge) run on threads without a tokio runtime, and
+# zbus' `tokio` feature would make every one of them need one. The futures still run inside tokio.
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
 pipewire = "0.10"
 libc = "0.2"
 evdev = "0.13"
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus = { version = "5", default-features = false, features = ["async-io"] }
 tokio = { workspace = true }
 serde_json.workspace = true
 tracing.workspace = true

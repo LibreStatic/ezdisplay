@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Name=ezdisplay
+Name[es]=ezdisplay
+Name[fr]=ezdisplay
+Name[pt]=ezdisplay
+Name[it]=ezdisplay
+Name[de]=ezdisplay
+Comment=Use your tablet as a second display
+Comment[es]=Usá tu tablet como segunda pantalla
+Comment[fr]=Utilisez votre tablette comme second écran
+Comment[pt]=Use seu tablet como segunda tela
+Comment[it]=Usa il tablet come secondo schermo
+Comment[de]=Nutze dein Tablet als zweiten Bildschirm
+Exec=ezdisplay
+Icon=com.librestatic.ezdisplay
+Categories=Utility;
+StartupWMClass=com.librestatic.ezdisplay
+Terminal=false

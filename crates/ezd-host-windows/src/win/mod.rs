@@ -13,6 +13,7 @@ pub mod encode;
 #[cfg(feature = "ffmpeg")]
 pub mod ffenc;
 pub mod input;
+pub mod shell;
 pub mod source;
 pub mod util;
 pub mod vdd;
