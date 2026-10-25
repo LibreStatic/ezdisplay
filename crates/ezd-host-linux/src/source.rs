@@ -1,5 +1,5 @@
 //! [`VideoSource`] for Linux: a compositor-specific virtual output (see `provider.rs`) -> PipeWire
-//! -> hardware encode.
+//! or direct Wayland capture (`wl_capture.rs`) -> hardware encode.
 
 use crate::adapter::{self, RenderNode};
 use crate::ahead::{ConvertAhead, Item, Start};
@@ -7,9 +7,11 @@ use crate::encode::{
     Converter, Encoder, Kind, Pipeline, Plan, StreamTags, plan_encoders, plan_hdr_encoders,
     probe_plan,
 };
+use crate::frame::{Frame, NegotiatedFormat};
 use crate::portal::SourceKind;
 use crate::provider::{FrameSource, OutputRequest, VirtualOutputProvider};
-use crate::pw::{PwCapture, PwParams, default_intel_modifiers, default_nvidia_modifiers};
+use crate::pw::{Frames, PwCapture, PwParams, default_intel_modifiers, default_nvidia_modifiers};
+use crate::wl_capture::WlCapture;
 use ezd_host_core::{
     CursorSink, EncodedFrame, OutputInfo, PlatformOptions, SourceError, SourceHdr, VideoSource,
 };
@@ -101,10 +103,61 @@ enum Input {
     },
 }
 
+/// Where the frames come from: PipeWire (KDE, GNOME) or the compositor's Wayland capture
+/// protocols (sway, Hyprland).
+enum Capture {
+    Pw(PwCapture),
+    Wl(WlCapture),
+}
+
+impl Capture {
+    fn wait_format(&self, want: (u32, u32), timeout: Duration) -> Option<NegotiatedFormat> {
+        match self {
+            Capture::Pw(c) => c.wait_format(want, timeout),
+            Capture::Wl(c) => c.wait_format(want, timeout),
+        }
+    }
+
+    fn wait_any_format(&self, timeout: Duration) -> Option<NegotiatedFormat> {
+        match self {
+            Capture::Pw(c) => c.wait_any_format(timeout),
+            Capture::Wl(c) => c.wait_any_format(timeout),
+        }
+    }
+
+    fn next(&self, timeout: Duration) -> Result<Option<Frame>, String> {
+        match self {
+            Capture::Pw(c) => c.next(timeout),
+            Capture::Wl(c) => c.next(timeout),
+        }
+    }
+
+    fn frames(&self) -> Frames {
+        match self {
+            Capture::Pw(c) => c.frames(),
+            Capture::Wl(c) => c.frames(),
+        }
+    }
+
+    fn counters(&self) -> (u64, u64) {
+        match self {
+            Capture::Pw(c) => c.counters(),
+            Capture::Wl(c) => c.counters(),
+        }
+    }
+
+    /// Falls back to shared memory (PipeWire only: Wayland capture never uses DMA-BUF).
+    fn disable_dmabuf(&self) {
+        if let Capture::Pw(c) = self {
+            c.disable_dmabuf();
+        }
+    }
+}
+
 struct Running {
     // Field order matters for drop: stop converting, then capture, then destroy the output.
     input: Input,
-    pw: PwCapture,
+    capture: Capture,
     /// The provider's hold on the virtual output.
     _output: Box<dyn Send>,
     dmabuf_ok: bool,
@@ -259,18 +312,30 @@ impl VideoSource for LinuxSource {
         })?;
         self.output = opened.info;
 
-        let params = PwParams {
-            width: cfg.width,
-            height: cfg.height,
-            fps: cfg.refresh_mhz.div_ceil(1000),
-            dmabuf_modifiers: self.dmabuf_modifiers(&plan),
+        let capture = match opened.frames {
+            FrameSource::PipeWire { fd, target } => {
+                let params = PwParams {
+                    width: cfg.width,
+                    height: cfg.height,
+                    fps: cfg.refresh_mhz.div_ceil(1000),
+                    dmabuf_modifiers: self.dmabuf_modifiers(&plan),
+                };
+                Capture::Pw(PwCapture::start(fd, target, params, cursor).map_err(SourceError::msg)?)
+            }
+            FrameSource::Wayland { output } => {
+                let wl = WlCapture::start(&output, cursor).map_err(SourceError::msg)?;
+                tracing::info!(
+                    protocol = wl.protocol().name(),
+                    separate_cursor = wl.protocol().separate_cursor(),
+                    "capturing {output} over Wayland"
+                );
+                Capture::Wl(wl)
+            }
         };
-        let FrameSource::PipeWire { fd, target } = opened.frames;
-        let pw = PwCapture::start(fd, target, params, cursor).map_err(SourceError::msg)?;
-        let fmt = pw
+        let fmt = capture
             .wait_format((cfg.width, cfg.height), Duration::from_secs(5))
-            .or_else(|| pw.wait_any_format(Duration::from_secs(5)))
-            .ok_or_else(|| SourceError::msg("PipeWire stream did not negotiate a format"))?;
+            .or_else(|| capture.wait_any_format(Duration::from_secs(5)))
+            .ok_or_else(|| SourceError::msg("the capture did not negotiate a format"))?;
         if (fmt.width, fmt.height) != (cfg.width, cfg.height) {
             tracing::warn!(
                 "stream is {}x{} but {}x{} was negotiated with the client; encoding at the stream size",
@@ -299,7 +364,7 @@ impl VideoSource for LinuxSource {
                 enc: Encoder::new(plan.name, cfg.refresh_mhz, cfg.bitrate_kbps).with_tags(tags),
                 conv: ConvertAhead::start(
                     Converter::new(plan, cfg.refresh_mhz).with_tags(tags),
-                    pw.frames(),
+                    capture.frames(),
                     start,
                 )
                 .map_err(SourceError::msg)?,
@@ -310,7 +375,7 @@ impl VideoSource for LinuxSource {
         };
         self.running = Some(Running {
             input,
-            pw,
+            capture,
             _output: opened.guard,
             dmabuf_ok: fmt.modifier.is_some(),
             dmabuf_off_at: None,
@@ -327,7 +392,7 @@ impl VideoSource for LinuxSource {
         // `start_us`: when this frame's conversion (serial) or encoding (ahead) began.
         let (result, start_us, capture_us, seq, was_dma) = match &mut r.input {
             Input::Serial(pipeline) => {
-                let frame = match r.pw.next(timeout) {
+                let frame = match r.capture.next(timeout) {
                     Ok(Some(f)) => f,
                     Ok(None) => {
                         self.force_key |= force;
@@ -391,7 +456,7 @@ impl VideoSource for LinuxSource {
                 tracing::warn!("DMA-BUF encode failed ({e}); falling back to shared memory");
                 r.dmabuf_ok = false;
                 r.dmabuf_off_at = Some(Instant::now());
-                r.pw.disable_dmabuf();
+                r.capture.disable_dmabuf();
                 self.force_key = true;
                 Ok(None)
             }
@@ -416,7 +481,7 @@ impl VideoSource for LinuxSource {
         // Drop order: converter and encoder, PipeWire, then the output guard (removes the
         // virtual output).
         if let Some(r) = &self.running {
-            let (produced, coalesced) = r.pw.counters();
+            let (produced, coalesced) = r.capture.counters();
             tracing::info!(produced, coalesced, "capture stopped");
         }
         self.running = None;

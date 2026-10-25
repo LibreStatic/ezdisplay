@@ -7,7 +7,7 @@
 pkgname=ezdisplay
 pkgver=0.1.0 # replaced by pkgver() with the workspace version
 pkgrel=1
-pkgdesc='Use an Android tablet as an extended monitor over USB (KDE Plasma and GNOME host, and tray app)'
+pkgdesc='Use an Android tablet as an extended monitor over USB (KDE Plasma, GNOME, Sway and Hyprland host, and tray app)'
 arch=(x86_64)
 url='https://github.com/LibreStatic/ezdisplay'
 license=('MIT OR Apache-2.0')
