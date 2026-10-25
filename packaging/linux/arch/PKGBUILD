@@ -7,11 +7,14 @@
 pkgname=ezdisplay
 pkgver=0.1.0 # replaced by pkgver() with the workspace version
 pkgrel=1
-pkgdesc='Use an Android tablet as an extended monitor over USB (KDE Plasma host and tray app)'
+pkgdesc='Use an Android tablet as an extended monitor over USB (KDE Plasma and GNOME host, and tray app)'
 arch=(x86_64)
 url='https://github.com/LibreStatic/ezdisplay'
 license=('MIT OR Apache-2.0')
-depends=(ffmpeg pipewire libva gcc-libs glibc android-tools xdg-desktop-portal-kde libkscreen)
+depends=(ffmpeg pipewire libva gcc-libs glibc android-tools)
+optdepends=('xdg-desktop-portal-kde: virtual display on KDE Plasma'
+            'libkscreen: sizes the virtual display on KDE Plasma (kscreen-doctor)'
+            'mutter: virtual display and touch/pen mapping on GNOME (the session already has it)')
 makedepends=(rust clang pkgconf)
 options=(!lto !debug)
 install=ezdisplay.install

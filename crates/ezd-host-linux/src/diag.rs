@@ -1,6 +1,7 @@
 //! `ezd-host diag` platform section. Never opens the portal dialog.
 
 use crate::adapter::list_render_nodes;
+use crate::backend::{self, LinuxBackend};
 use crate::encode::{Kind, Plan};
 use crate::kscreen;
 use crate::portal::{self, SourceKind};
@@ -58,12 +59,14 @@ pub fn section() -> Value {
     };
     let sw = plan_works(&x264);
     let token = |k| portal::token_path(k).is_some_and(|p| p.exists());
-    json!({
-        "backend": "linux-kde",
+    let detected = backend::current();
+    let name = detected.as_ref().map_or("unknown", |b| b.name());
+    let mut v = json!({
+        "backend": format!("linux-{name}"),
+        "backend_supported": detected.as_ref().is_ok_and(|b| b.supported()),
+        "backend_error": detected.as_ref().err(),
         "xdg_current_desktop": std::env::var("XDG_CURRENT_DESKTOP").ok(),
         "wayland_display": std::env::var("WAYLAND_DISPLAY").ok(),
-        "kwin_version": kwin_version(),
-        "kwin_drm_devices": crate::adapter::kwin_drm_devices(),
         "portal": portal::query_properties(),
         "render_nodes": probes,
         "software_encoder": { "libx264": sw.is_ok(), "error": sw.err() },
@@ -72,12 +75,28 @@ pub fn section() -> Value {
             "monitor": token(SourceKind::Monitor),
             "path": portal::token_path(SourceKind::Virtual),
         },
-        "kscreen_doctor": kscreen::available(),
-        "input": {
-            "uinput": uinput_state(),
-            "kwin_input_dbus": crate::kwin_input::manager_available(),
-        },
-    })
+        "input": { "uinput": uinput_state() },
+    });
+    let extra = match detected {
+        Ok(LinuxBackend::Gnome) => json!({ "gnome": crate::gnome::diag() }),
+        _ => json!({
+            "kwin_version": kwin_version(),
+            "kwin_drm_devices": crate::adapter::kwin_drm_devices(),
+            "kscreen_doctor": kscreen::available(),
+        }),
+    };
+    if let (Some(obj), Some(more)) = (v.as_object_mut(), extra.as_object()) {
+        obj.extend(more.clone());
+    }
+    if matches!(detected, Ok(LinuxBackend::Kde) | Err(_))
+        && let Some(input) = v.get_mut("input").and_then(Value::as_object_mut)
+    {
+        input.insert(
+            "kwin_input_dbus".into(),
+            json!(crate::kwin_input::manager_available()),
+        );
+    }
+    v
 }
 
 /// Whether `/dev/uinput` can be opened (no device is created).
