@@ -190,3 +190,28 @@ logs-description = Abre a pasta onde o ezdisplay grava seus logs.
 about-description = Tela USB de código aberto para tablets Android.
 repository = Código-fonte
 driver-reinstall = Reinstalar o driver
+
+## Window: Wi-Fi
+card-wifi = Wi-Fi
+wifi-enable = Conectar por Wi-Fi
+wifi-latency-warning = O Wi-Fi acrescenta latência e jitter; o USB é o melhor para desenhar.
+wifi-starts-with-stream = O Wi-Fi é ativado quando a transmissão começa.
+wifi-address = Endereço
+wifi-fingerprint = Impressão digital do host
+wifi-pair = Parear um dispositivo
+wifi-pair-cancel = Cancelar
+wifi-pair-hint = No tablet, escaneie este QR code ou digite o PIN.
+wifi-pin = PIN
+wifi-qr-label = QR code de pareamento
+wifi-pair-expires = Fecha em { $seconds } s
+wifi-notice-paired = Pareado com { $device }.
+wifi-notice-attempts = O pareamento foi fechado: PINs incorretos demais.
+wifi-notice-expired = O pareamento foi fechado: o tempo acabou.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } dispositivo pareado
+       *[other] { $count } dispositivos pareados
+    }
+wifi-paired-none = Ainda não há dispositivos pareados.
+wifi-forget = Esquecer
+error-wifi = Não foi possível iniciar o Wi-Fi: { $reason }

@@ -7,7 +7,7 @@ use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use ezd_host_core::LiveStats;
-use ezd_host_service::{HdrChoice, LiveSession};
+use ezd_host_service::{HdrChoice, LiveSession, Transport};
 use ezd_proto::{ClientStats, Codec, DynamicRange, SdrReason, StreamConfig};
 use std::time::Duration;
 
@@ -26,6 +26,7 @@ fn live(stats: Option<LiveStats>) -> HostStatus {
         devices: vec![],
         stats,
         input: None,
+        transport: Transport::Tcp,
     })
 }
 
@@ -79,6 +80,7 @@ fn snapshot(status: HostStatus) -> Snapshot {
         input_access: InputAccess::Ok,
         input_fix: InputFixState::Idle,
         has_licenses_dir: false,
+        wifi: WifiState::default(),
         windows: false,
         version: "0.1.0".into(),
     }
@@ -1240,4 +1242,156 @@ mod snapshots {
         hdr_snapshots(&mut results);
         page_snapshots(&mut results);
     }
+}
+
+fn wifi_snapshot(wifi: WifiState) -> Snapshot {
+    let mut snap = snapshot(HostStatus::Waiting { devices: vec![] });
+    snap.wifi = wifi;
+    snap
+}
+
+fn wifi_info() -> WifiInfo {
+    WifiInfo {
+        addr: "192.168.1.20:27183".parse().unwrap(),
+        fingerprint: "3f2a91c0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        fingerprint_short: "3f2a-91c0-aaaa-aaaa".into(),
+        host_name: "desk".into(),
+        pairing_open: false,
+    }
+}
+
+fn wifi_on() -> WifiState {
+    WifiState {
+        supported: true,
+        enabled: true,
+        info: Some(wifi_info()),
+        ..WifiState::default()
+    }
+}
+
+fn connection_page(snap: Snapshot, lang: &str) -> Harness<'static, SettingsView> {
+    // Tall enough for the whole page, so that nothing needs scrolling.
+    let mut h = harness_sized(snap, lang, egui::vec2(820.0, 1400.0));
+    let nav = match lang {
+        "es" => "Conexi\u{f3}n",
+        "de" => "Verbindung",
+        _ => "Connection",
+    };
+    h.get_by_role_and_label(Role::Button, nav).click();
+    h.run();
+    h
+}
+
+#[test]
+fn the_wifi_card_is_hidden_without_support() {
+    let h = connection_page(wifi_snapshot(WifiState::default()), "en");
+    assert!(h.query_by_label("Connect over Wi-Fi").is_none());
+}
+
+#[test]
+fn the_wifi_switch_warns_about_latency_and_asks_to_turn_on() {
+    let wifi = WifiState {
+        supported: true,
+        ..WifiState::default()
+    };
+    let mut h = connection_page(wifi_snapshot(wifi), "en");
+    h.get_by_label("Wi-Fi adds latency and jitter; USB is best for drawing.");
+    // Off: nothing but the switch.
+    assert!(h.query_by_label("Pair a device").is_none());
+    h.get_by_label("Connect over Wi-Fi").click();
+    h.run();
+    assert_eq!(h.state_mut().take_actions(), vec![Action::SetWifi(true)]);
+
+    let h = connection_page(
+        wifi_snapshot(WifiState {
+            supported: true,
+            ..WifiState::default()
+        }),
+        "es",
+    );
+    h.get_by_label("Conectar por Wi-Fi");
+    h.get_by_label("El Wi-Fi agrega latencia y jitter; el USB es lo mejor para dibujar.");
+}
+
+#[test]
+fn enabled_wifi_without_a_listener_says_when_it_starts() {
+    let wifi = WifiState {
+        info: None,
+        ..wifi_on()
+    };
+    let h = connection_page(wifi_snapshot(wifi), "en");
+    h.get_by_label("Wi-Fi turns on when streaming starts.");
+    assert!(h.query_by_label("Pair a device").is_none());
+}
+
+#[test]
+fn the_wifi_card_shows_the_fingerprint_and_opens_pairing() {
+    let mut h = connection_page(wifi_snapshot(wifi_on()), "en");
+    h.get_by_label("3f2a-91c0-aaaa-aaaa");
+    h.get_by_label("192.168.1.20:27183");
+    h.get_by_label("No devices are paired yet.");
+    h.get_by_label("Pair a device").click();
+    h.run();
+    assert_eq!(h.state_mut().take_actions(), vec![Action::PairDevice]);
+}
+
+#[test]
+fn an_open_pairing_window_shows_the_pin_the_qr_code_and_can_be_cancelled() {
+    let wifi = WifiState {
+        pairing: Some(PairingOffer {
+            pin: "123456".into(),
+            uri: "ezd://pair?a=192.168.1.20:27183&pin=123456".into(),
+            expires: Instant::now() + Duration::from_secs(120),
+        }),
+        ..wifi_on()
+    };
+    let mut h = connection_page(wifi_snapshot(wifi), "en");
+    h.get_by_label("123456");
+    h.get_by_role_and_label(Role::Image, "Pairing QR code");
+    h.get_by_label_contains("Closes in 1");
+    assert!(h.query_by_label("Pair a device").is_none());
+    h.get_by_label("Cancel").click();
+    h.run();
+    assert_eq!(h.state_mut().take_actions(), vec![Action::ClosePairing]);
+}
+
+#[test]
+fn paired_devices_are_listed_and_can_be_forgotten() {
+    let wifi = WifiState {
+        paired: vec![
+            PairedEntry {
+                name: "Galaxy Tab S9".into(),
+                fingerprint: "b00b".repeat(16),
+            },
+            PairedEntry {
+                name: "Pixel Tablet".into(),
+                fingerprint: "c0de".repeat(16),
+            },
+        ],
+        notice: Some(WifiNotice::Paired("Galaxy Tab S9".into())),
+        ..wifi_on()
+    };
+    let mut h = connection_page(wifi_snapshot(wifi), "en");
+    h.get_by_label("2 paired devices");
+    h.get_by_label("Paired with Galaxy Tab S9.");
+    h.get_by_label("b00b-b00b-b00b-b00b");
+    let forget: Vec<_> = h.get_all_by_label("Forget").collect();
+    assert_eq!(forget.len(), 2);
+    forget[1].click();
+    h.run();
+    assert_eq!(
+        h.state_mut().take_actions(),
+        vec![Action::ForgetDevice("c0de".repeat(16))]
+    );
+}
+
+#[test]
+fn pairing_notices_are_localized() {
+    let wifi = WifiState {
+        notice: Some(WifiNotice::TooManyAttempts),
+        ..wifi_on()
+    };
+    let h = connection_page(wifi_snapshot(wifi), "de");
+    h.get_by_label("Kopplung geschlossen: zu viele falsche PINs.");
+    h.get_by_label("Gerät koppeln");
 }

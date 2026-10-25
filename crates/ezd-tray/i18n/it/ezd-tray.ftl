@@ -190,3 +190,28 @@ logs-description = Apre la cartella in cui ezdisplay salva i log.
 about-description = Schermo USB open source per tablet Android.
 repository = Codice sorgente
 driver-reinstall = Reinstalla il driver
+
+## Window: Wi-Fi
+card-wifi = Wi-Fi
+wifi-enable = Connetti tramite Wi-Fi
+wifi-latency-warning = Il Wi-Fi aggiunge latenza e jitter; l'USB è il migliore per disegnare.
+wifi-starts-with-stream = Il Wi-Fi si attiva quando inizia lo streaming.
+wifi-address = Indirizzo
+wifi-fingerprint = Impronta dell'host
+wifi-pair = Associa un dispositivo
+wifi-pair-cancel = Annulla
+wifi-pair-hint = Sul tablet, inquadra questo codice QR o digita il PIN.
+wifi-pin = PIN
+wifi-qr-label = Codice QR di associazione
+wifi-pair-expires = Si chiude tra { $seconds } s
+wifi-notice-paired = Associato con { $device }.
+wifi-notice-attempts = Associazione chiusa: troppi PIN errati.
+wifi-notice-expired = Associazione chiusa: il tempo è scaduto.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } dispositivo associato
+       *[other] { $count } dispositivi associati
+    }
+wifi-paired-none = Nessun dispositivo è ancora associato.
+wifi-forget = Dimentica
+error-wifi = Impossibile avviare il Wi-Fi: { $reason }

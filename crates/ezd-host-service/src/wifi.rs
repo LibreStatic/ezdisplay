@@ -9,7 +9,7 @@ use crate::error::ServiceError;
 use crate::mdns::Advertiser;
 use crate::service::{Inner, finish_session, lock};
 use crate::status::{HostEvent, PairingCloseReason, RefusedWhy, Transport, WifiInfo};
-use crate::store::{PairedStore, default_config_dir};
+use crate::store::{ForgetError, PairedDevice, PairedStore, StoreError, default_config_dir};
 use ezd_link::identity::{Identity, fingerprint_hex, fingerprint_short};
 use ezd_link::pair::{CloseReason, PairUri, PairingWindow, WindowState, clean_name, host_pair};
 use ezd_link::quic::{Congestion, QuicIncoming, QuicServer};
@@ -105,6 +105,14 @@ impl Wifi {
         let pin = self.window.open(self.ttl);
         self.changed.notify_one();
         pin
+    }
+
+    pub(crate) fn paired(&self) -> Result<Vec<PairedDevice>, StoreError> {
+        self.store.list()
+    }
+
+    pub(crate) fn forget(&self, query: &str) -> Result<PairedDevice, ForgetError> {
+        self.store.forget(query)
     }
 
     pub(crate) fn refresh_pairing(&self) {

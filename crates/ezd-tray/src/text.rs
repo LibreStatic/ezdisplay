@@ -74,6 +74,7 @@ pub fn error_text(l: &FluentLanguageLoader, e: &ServiceError) -> String {
             reason = reason.as_str()
         ),
         ServiceError::UnsupportedPlatform => fl!(l, "error-unsupported"),
+        ServiceError::Wifi(reason) => fl!(l, "error-wifi", reason = reason.as_str()),
         ServiceError::Source(reason) => fl!(l, "error-source", reason = reason.as_str()),
     }
 }

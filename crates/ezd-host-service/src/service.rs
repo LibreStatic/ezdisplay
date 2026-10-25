@@ -4,6 +4,8 @@ use crate::adb::{AdbClient, AdbLocator, Watcher, locate_system_adb};
 use crate::config::{AdbMode, ServiceConfig, SourceKind};
 use crate::error::ServiceError;
 use crate::status::{DeviceInfo, HostEvent, HostStatus, LiveSession, Transport, WifiInfo};
+#[cfg(feature = "wifi")]
+use crate::store::{ForgetError, PairedDevice, StoreError};
 use ezd_host_core::{SessionEvent, VideoSource, run_host_session_with};
 use ezd_link::Link;
 use ezd_proto::Prefs;
@@ -298,6 +300,19 @@ impl HostService {
         if let Some(w) = &self.inner.wifi {
             w.close_pairing();
         }
+    }
+
+    /// The paired devices; `None` while Wi-Fi is off.
+    #[cfg(feature = "wifi")]
+    pub fn paired_devices(&self) -> Option<Result<Vec<PairedDevice>, StoreError>> {
+        Some(self.inner.wifi.as_ref()?.paired())
+    }
+
+    /// Forgets the paired device matching `query` (name or fingerprint, see
+    /// [`PairedStore::forget`](crate::store::PairedStore::forget)); `None` while Wi-Fi is off.
+    #[cfg(feature = "wifi")]
+    pub fn forget_paired(&self, query: &str) -> Option<Result<PairedDevice, ForgetError>> {
+        Some(self.inner.wifi.as_ref()?.forget(query))
     }
 
     /// Current state; changes are pushed to the receiver.

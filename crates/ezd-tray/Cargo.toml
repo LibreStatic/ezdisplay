@@ -15,10 +15,13 @@ name = "ezdisplay"
 path = "src/main.rs"
 
 [features]
-default = ["ffmpeg"]
+default = ["ffmpeg", "wifi"]
 # FFmpeg paths of the service. `--no-default-features` builds without FFmpeg headers (the Windows
 # cross-check in CI).
 ffmpeg = ["ezd-host-service/ffmpeg"]
+# Wi-Fi card: the QUIC transport and PIN pairing of the service. `--no-default-features` leaves it
+# out (ring has C code the Windows cross-check from Linux cannot build).
+wifi = ["ezd-host-service/wifi"]
 # Local only: PNG snapshots of the window (needs a GPU/wgpu). CI never enables it.
 snapshots = ["egui_kittest/snapshot", "egui_kittest/wgpu"]
 
@@ -34,6 +37,7 @@ i18n-embed.workspace = true
 i18n-embed-fl.workspace = true
 interprocess = "2.4"
 png = "0.18"
+qrcode.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
 tokio.workspace = true
