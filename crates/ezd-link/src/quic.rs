@@ -541,12 +541,25 @@ impl QuicServer {
     /// Waits for the next incoming connection without completing its handshake, so a slow
     /// client never delays the next one: complete it with [`QuicIncoming::handshake`] in its
     /// own task. `None` once the endpoint is closed.
+    ///
+    /// An attempt whose source address is not validated yet (a spoofed source would never
+    /// answer) gets a stateless retry here and is never returned: callers only see attempts
+    /// from addresses that proved they can receive, so they cost no connection slot.
     pub async fn accept_incoming(&self) -> Option<QuicIncoming> {
-        let incoming = self.endpoint.accept().await?;
-        Some(QuicIncoming {
-            incoming,
-            local_fp: self.local_fp,
-        })
+        loop {
+            let incoming = self.endpoint.accept().await?;
+            if !incoming.remote_address_validated() {
+                // Costs the client one extra round trip; nothing is kept for the attempt.
+                if let Err(e) = incoming.retry() {
+                    tracing::debug!("cannot send a retry: {e}");
+                }
+                continue;
+            }
+            return Some(QuicIncoming {
+                incoming,
+                local_fp: self.local_fp,
+            });
+        }
     }
 
     /// Waits for the next client handshake; `None` once the endpoint is closed. A failed
@@ -582,7 +595,7 @@ pub struct QuicIncoming {
 }
 
 impl QuicIncoming {
-    /// Address of the peer (not yet validated).
+    /// Address of the peer (validated by a retry, see [`QuicServer::accept_incoming`]).
     pub fn remote_address(&self) -> SocketAddr {
         self.incoming.remote_address()
     }

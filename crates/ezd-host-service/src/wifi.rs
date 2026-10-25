@@ -10,7 +10,7 @@ use crate::mdns::Advertiser;
 use crate::service::{Inner, finish_session, lock};
 use crate::status::{HostEvent, PairingCloseReason, RefusedWhy, Transport, WifiInfo};
 use crate::store::{ForgetError, PairedDevice, PairedStore, StoreError, default_config_dir};
-use ezd_link::identity::{Identity, fingerprint_hex, fingerprint_short};
+use ezd_link::identity::{Identity, fingerprint_hex, fingerprint_short, parse_fingerprint};
 use ezd_link::pair::{CloseReason, PairUri, PairingWindow, WindowState, clean_name, host_pair};
 use ezd_link::quic::{Congestion, QuicIncoming, QuicServer};
 use ezd_proto::pair::{Fingerprint, Refusal};
@@ -24,6 +24,17 @@ use tokio::task::JoinSet;
 const MAX_CONNECTIONS: usize = 8;
 /// Time a client has to complete the handshake and say what it wants.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How often a running session checks that its device is still paired. This is what ends a
+/// session when the record is removed by another process (`ezd-host paired forget`, an edit of
+/// the file); a forget through the service ends it at once.
+const RECHECK_EVERY: Duration = Duration::from_secs(2);
+
+/// The paired device that streams over Wi-Fi now, and how to end its session.
+struct LiveSession {
+    fingerprint: String,
+    revoke: watch::Sender<bool>,
+}
 
 /// Everything the Wi-Fi tasks share.
 pub(crate) struct Wifi {
@@ -40,6 +51,10 @@ pub(crate) struct Wifi {
     /// Address written into the pairing URI.
     advertised: SocketAddr,
     ttl: Duration,
+    /// The streaming session, if any (at most one: see `Inner::slot`).
+    live: Mutex<Option<LiveSession>>,
+    /// How often a session re-reads the store.
+    recheck: Duration,
 }
 
 impl Wifi {
@@ -88,6 +103,8 @@ impl Wifi {
             bound,
             advertised: pick_lan_addr(bound, outbound_ip(bound)),
             ttl,
+            live: Mutex::new(None),
+            recheck: RECHECK_EVERY,
         }))
     }
 
@@ -111,8 +128,28 @@ impl Wifi {
         self.store.list()
     }
 
+    /// Forgets a device by name or fingerprint (typed input) and ends its live session.
     pub(crate) fn forget(&self, query: &str) -> Result<PairedDevice, ForgetError> {
-        self.store.forget(query)
+        let gone = self.store.forget(query)?;
+        self.revoke(&gone.fingerprint);
+        Ok(gone)
+    }
+
+    /// Forgets the device with exactly this fingerprint (hex) and ends its live session.
+    pub(crate) fn forget_fingerprint(&self, hex: &str) -> Result<PairedDevice, ForgetError> {
+        let fp = parse_fingerprint(hex).ok_or(ForgetError::NotFound)?;
+        let gone = self.store.forget_by_fingerprint(&fp)?;
+        self.revoke(&gone.fingerprint);
+        Ok(gone)
+    }
+
+    /// Ends the live session if it belongs to this fingerprint (hex).
+    fn revoke(&self, hex: &str) {
+        if let Some(live) = &*lock(&self.live)
+            && live.fingerprint == hex
+        {
+            live.revoke.send_replace(true);
+        }
     }
 
     pub(crate) fn refresh_pairing(&self) {
@@ -422,8 +459,66 @@ async fn session(
             return;
         }
     };
-    finish_session(inner, &cfg, link, Transport::Wifi, source, &mut stop).await;
+    let (revoke_tx, mut revoke_rx) = watch::channel(false);
+    *lock(&wifi.live) = Some(LiveSession {
+        fingerprint: fingerprint_hex(&fp),
+        revoke: revoke_tx,
+    });
+    // One end signal for everything that stops the session: the service stopping, a forget
+    // through the service, and the store no longer listing the device. The guard checks the
+    // store right away, which covers a forget since the check above.
+    let (end_tx, mut end_rx) = watch::channel(false);
+    {
+        let run = finish_session(inner, &cfg, link, Transport::Wifi, source, &mut end_rx);
+        tokio::pin!(run);
+        let guard = guard_session(wifi, &fp, &mut stop, &mut revoke_rx, &end_tx);
+        tokio::pin!(guard);
+        // The guard never completes; it is dropped when the session returns.
+        tokio::select! {
+            () = &mut run => {}
+            () = &mut guard => unreachable!("the guard never completes"),
+        }
+    }
+    *lock(&wifi.live) = None;
     drop(permit);
+}
+
+/// Sends the end signal when the session must stop for a reason of its own: the service stops,
+/// the device is forgotten through the service (`revoke`) or the store no longer has it. It
+/// then waits forever, so the caller keeps the session running until it returns. A store that
+/// cannot be read does not end the session.
+async fn guard_session(
+    wifi: &Wifi,
+    fp: &Fingerprint,
+    stop: &mut watch::Receiver<bool>,
+    revoke: &mut watch::Receiver<bool>,
+    end: &watch::Sender<bool>,
+) {
+    let mut tick = tokio::time::interval(wifi.recheck);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            () = stopped(stop) => break,
+            r = async { revoke.wait_for(|v| *v).await.is_ok() } => {
+                if r {
+                    tracing::info!("the device was forgotten, ending its Wi-Fi session");
+                    break;
+                }
+                // The sender is gone only after the session; nothing to do.
+                std::future::pending::<()>().await;
+            }
+            _ = tick.tick() => match wifi.store.is_paired(fp) {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::info!("the device is no longer paired, ending its Wi-Fi session");
+                    break;
+                }
+                Err(e) => tracing::debug!("cannot re-check the paired devices: {e}"),
+            },
+        }
+    }
+    end.send_replace(true);
+    std::future::pending::<()>().await;
 }
 
 #[cfg(test)]
@@ -741,6 +836,100 @@ mod tests {
         .await
         .unwrap();
         assert!(bye, "the client never got the Bye");
+    }
+
+    /// Pairs `id` into `dir`, streams, and returns what a test needs to watch the end.
+    async fn stream(
+        dir: &TempDir,
+        id: &Identity,
+    ) -> (
+        HostService,
+        broadcast::Receiver<HostEvent>,
+        ezd_link::MuxReceiver,
+        ezd_link::MuxSender,
+    ) {
+        seed(dir, id, "A");
+        let svc = start(wifi_cfg(dir, false), hooks());
+        let mut status = svc.status();
+        let events = svc.events();
+        let (addr, fp) = host_fp(&svc);
+        let (tx, rx) = handshake(session_link(addr, id, fp).await.unwrap()).await;
+        wait_status(&mut status, |s| matches!(s, HostStatus::Streaming(_))).await;
+        (svc, events, rx, tx)
+    }
+
+    async fn client_sees_the_end(mut rx: ezd_link::MuxReceiver) {
+        let bye = timeout(WAIT, async {
+            loop {
+                match rx.recv().await {
+                    Ok(Some(Message::Bye(_))) => return true,
+                    Ok(Some(_)) => {}
+                    _ => return false,
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(bye, "the client never got the Bye");
+    }
+
+    #[tokio::test]
+    async fn forgetting_the_streaming_device_ends_its_session() {
+        let dir = TempDir::new("wifi-forget-live");
+        let id = Identity::generate().unwrap();
+        let (svc, mut events, rx, _tx) = stream(&dir, &id).await;
+        let fp_hex = fingerprint_hex(&id.fingerprint());
+        let started = Instant::now();
+        svc.forget_paired_fingerprint(&fp_hex).unwrap().unwrap();
+        timeout(Duration::from_secs(3), wait_session_end(&mut events))
+            .await
+            .expect("the session outlived the forget");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        client_sees_the_end(rx).await;
+        assert!(PairedStore::new(&dir.0).list().unwrap().is_empty());
+        // The device is refused from now on.
+        let (addr, fp) = host_fp(&svc);
+        let err = session_link(addr, &id, fp).await.unwrap_err();
+        assert!(
+            matches!(err, QuicError::Refused(Refusal::NotPaired)),
+            "{err:?}"
+        );
+        timeout(WAIT, svc.stop()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn removing_the_record_from_the_file_ends_the_session() {
+        let dir = TempDir::new("wifi-forget-file");
+        let id = Identity::generate().unwrap();
+        let (svc, mut events, rx, _tx) = stream(&dir, &id).await;
+        // Another process (the CLI) forgets the device.
+        PairedStore::new(&dir.0)
+            .forget_by_fingerprint(&id.fingerprint())
+            .unwrap();
+        timeout(Duration::from_secs(4), wait_session_end(&mut events))
+            .await
+            .expect("the periodic re-check never ended the session");
+        client_sees_the_end(rx).await;
+        timeout(WAIT, svc.stop()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_store_does_not_end_the_session() {
+        let dir = TempDir::new("wifi-store-unreadable");
+        let id = Identity::generate().unwrap();
+        let (svc, mut events, _rx, _tx) = stream(&dir, &id).await;
+        let path = dir.0.join(crate::store::PAIRED_FILE);
+        let good = std::fs::read(&path).unwrap();
+        std::fs::write(&path, "garbage").unwrap();
+        // Several re-checks pass while the file is corrupt.
+        assert!(
+            timeout(Duration::from_millis(4500), wait_session_end(&mut events))
+                .await
+                .is_err(),
+            "a read error ended the session"
+        );
+        std::fs::write(&path, good).unwrap();
+        timeout(WAIT, svc.stop()).await.unwrap();
     }
 
     #[test]

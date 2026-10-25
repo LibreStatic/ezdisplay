@@ -310,9 +310,22 @@ impl HostService {
 
     /// Forgets the paired device matching `query` (name or fingerprint, see
     /// [`PairedStore::forget`](crate::store::PairedStore::forget)); `None` while Wi-Fi is off.
+    /// If the device is streaming, its session ends at once.
     #[cfg(feature = "wifi")]
     pub fn forget_paired(&self, query: &str) -> Option<Result<PairedDevice, ForgetError>> {
         Some(self.inner.wifi.as_ref()?.forget(query))
+    }
+
+    /// Forgets the paired device with exactly this fingerprint (hex), never one that merely has
+    /// it as a name; `None` while Wi-Fi is off. If the device is streaming, its session ends at
+    /// once. Another process that forgets a device (`ezd-host paired forget`) cannot signal
+    /// the service: its session ends at the next periodic check of the store (about 2 s).
+    #[cfg(feature = "wifi")]
+    pub fn forget_paired_fingerprint(
+        &self,
+        fingerprint: &str,
+    ) -> Option<Result<PairedDevice, ForgetError>> {
+        Some(self.inner.wifi.as_ref()?.forget_fingerprint(fingerprint))
     }
 
     /// Current state; changes are pushed to the receiver.

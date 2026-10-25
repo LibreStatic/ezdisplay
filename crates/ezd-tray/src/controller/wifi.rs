@@ -131,7 +131,7 @@ impl Controller {
         match self
             .service
             .as_ref()
-            .and_then(|s| s.forget_paired(fingerprint))
+            .and_then(|s| s.forget_paired_fingerprint(fingerprint))
         {
             Some(Ok(d)) => tracing::info!("forgot the paired device {}", d.name),
             Some(Err(e)) => tracing::warn!("cannot forget the device: {e}"),

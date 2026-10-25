@@ -167,7 +167,9 @@ impl PairedStore {
         self.write(&devices)
     }
 
-    /// Records that the device started a session now. Unknown devices are ignored.
+    /// Records that the device started a session now. The file is read again under the lock and
+    /// a record that is gone (forgotten meanwhile) is never added back: unknown devices are
+    /// ignored.
     pub fn touch(&self, fp: &Fingerprint) -> Result<(), StoreError> {
         let _g = self.guard();
         let mut devices = self.read()?;
@@ -179,27 +181,50 @@ impl PairedStore {
         self.write(&devices)
     }
 
-    /// Removes the device whose name (any case) equals `query`, or whose fingerprint is
-    /// `query` in hex or in the short dashed form, in full or as a prefix of at least 4 digits.
-    /// A name wins over a fingerprint prefix.
+    /// Removes the device with exactly this fingerprint. Names are never consulted, so a device
+    /// cannot take another one's place by announcing a fingerprint as its name.
+    pub fn forget_by_fingerprint(&self, fp: &Fingerprint) -> Result<PairedDevice, ForgetError> {
+        let _g = self.guard();
+        let mut devices = self.read()?;
+        let hex = fingerprint_hex(fp);
+        let Some(i) = devices.iter().position(|d| d.fingerprint == hex) else {
+            return Err(ForgetError::NotFound);
+        };
+        let gone = devices.remove(i);
+        self.write(&devices)?;
+        Ok(gone)
+    }
+
+    /// Removes the device whose full fingerprint is `query` in hex, else the one whose name
+    /// (any case) equals `query`, else the one whose fingerprint starts with `query` (hex or the
+    /// short dashed form, at least 4 digits). For typed input (the CLI); callers that hold a
+    /// fingerprint use [`forget_by_fingerprint`](Self::forget_by_fingerprint).
     pub fn forget(&self, query: &str) -> Result<PairedDevice, ForgetError> {
         let _g = self.guard();
         let mut devices = self.read()?;
         let query = query.trim();
-        let mut hits: Vec<usize> = (0..devices.len())
-            .filter(|&i| devices[i].name.eq_ignore_ascii_case(query))
-            .collect();
+        let prefix: String = query
+            .chars()
+            .filter(|c| *c != '-')
+            .collect::<String>()
+            .to_ascii_lowercase();
+        // A full fingerprint is exact and cannot be shadowed by a device name.
+        let mut hits: Vec<usize> = if parse_fingerprint(&prefix).is_some() {
+            (0..devices.len())
+                .filter(|&i| devices[i].fingerprint == prefix)
+                .collect()
+        } else {
+            Vec::new()
+        };
         if hits.is_empty() {
-            let prefix: String = query
-                .chars()
-                .filter(|c| *c != '-')
-                .collect::<String>()
-                .to_ascii_lowercase();
-            if prefix.len() >= 4 && prefix.chars().all(|c| c.is_ascii_hexdigit()) {
-                hits = (0..devices.len())
-                    .filter(|&i| devices[i].fingerprint.starts_with(&prefix))
-                    .collect();
-            }
+            hits = (0..devices.len())
+                .filter(|&i| devices[i].name.eq_ignore_ascii_case(query))
+                .collect();
+        }
+        if hits.is_empty() && prefix.len() >= 4 && prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+            hits = (0..devices.len())
+                .filter(|&i| devices[i].fingerprint.starts_with(&prefix))
+                .collect();
         }
         match hits.as_slice() {
             [] => Err(ForgetError::NotFound),
@@ -304,6 +329,53 @@ pub(crate) mod tests {
         assert!(matches!(store.forget("ab"), Err(ForgetError::NotFound)));
         assert_eq!(store.forget("cfcf-cfcf").unwrap().name, "Other");
         assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn touch_after_an_external_removal_does_not_re_add_the_record() {
+        let dir = TempDir::new("store-touch-removed");
+        let store = PairedStore::new(&dir.0);
+        store.add(&client("a", 1)).unwrap();
+        store.add(&client("b", 2)).unwrap();
+        // Another process forgets the device.
+        PairedStore::new(&dir.0).forget("a").unwrap();
+        store.touch(&[1; 32]).unwrap();
+        let list = store.list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "b");
+    }
+
+    #[test]
+    fn forget_by_fingerprint_ignores_names() {
+        let dir = TempDir::new("store-forget-fp");
+        let store = PairedStore::new(&dir.0);
+        let victim = "cd".repeat(32);
+        // A device that names itself after another one's fingerprint.
+        store.add(&client(&victim, 0xab)).unwrap();
+        store.add(&client("Pixel", 0xcd)).unwrap();
+        assert!(matches!(
+            store.forget_by_fingerprint(&[0xee; 32]),
+            Err(ForgetError::NotFound)
+        ));
+        assert_eq!(
+            store.forget_by_fingerprint(&[0xcd; 32]).unwrap().name,
+            "Pixel"
+        );
+        let left = store.list().unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].fingerprint, "ab".repeat(32));
+    }
+
+    #[test]
+    fn forget_prefers_an_exact_fingerprint_over_a_name() {
+        let dir = TempDir::new("store-forget-exact");
+        let store = PairedStore::new(&dir.0);
+        let victim = "cd".repeat(32);
+        store.add(&client(&victim, 0xab)).unwrap();
+        store.add(&client("Pixel", 0xcd)).unwrap();
+        assert_eq!(store.forget(&victim).unwrap().name, "Pixel");
+        // Only the name-squatter is left, and it can still be forgotten by its name.
+        assert_eq!(store.forget(&victim).unwrap().fingerprint, "ab".repeat(32));
     }
 
     #[test]
