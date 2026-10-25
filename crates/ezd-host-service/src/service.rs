@@ -3,18 +3,25 @@
 use crate::adb::{AdbClient, AdbLocator, Watcher, locate_system_adb};
 use crate::config::{AdbMode, ServiceConfig, SourceKind};
 use crate::error::ServiceError;
-use crate::status::{DeviceInfo, HostEvent, HostStatus, LiveSession};
+use crate::status::{DeviceInfo, HostEvent, HostStatus, LiveSession, Transport, WifiInfo};
 use ezd_host_core::{SessionEvent, VideoSource, run_host_session_with};
 use ezd_link::Link;
+use ezd_proto::Prefs;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{Semaphore, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
 /// How often the adb watcher lists the devices.
 pub const ADB_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Default lifetime of a pairing window.
+#[cfg(feature = "wifi")]
+const DEFAULT_PAIRING_TTL: Duration = ezd_link::pair::DEFAULT_WINDOW;
+#[cfg(not(feature = "wifi"))]
+const DEFAULT_PAIRING_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// Creates the video source for one client connection.
 pub type SourceFactory =
@@ -29,6 +36,8 @@ pub struct ServiceHooks {
     pub locate_adb: AdbLocator,
     /// Builds the source of a session.
     pub create_source: SourceFactory,
+    /// How long a pairing window stays open.
+    pub pairing_ttl: Duration,
 }
 
 impl Default for ServiceHooks {
@@ -37,6 +46,7 @@ impl Default for ServiceHooks {
             adb_poll_interval: ADB_POLL_INTERVAL,
             locate_adb: Arc::new(locate_system_adb),
             create_source: Arc::new(create_source),
+            pairing_ttl: DEFAULT_PAIRING_TTL,
         }
     }
 }
@@ -63,15 +73,15 @@ fn synthetic_source() -> Result<Box<dyn VideoSource>, ServiceError> {
 
 // One live session at a time, so the size of the variant does not matter.
 #[allow(clippy::large_enum_variant)]
-enum Phase {
+pub(crate) enum Phase {
     Waiting,
     Streaming(LiveSession),
     Error(ServiceError),
     Stopped,
 }
 
-struct State {
-    phase: Phase,
+pub(crate) struct State {
+    pub(crate) phase: Phase,
     devices: Vec<DeviceInfo>,
     /// adb problem (not found, reverse failing); shown while no session is running.
     adb_error: Option<ServiceError>,
@@ -96,8 +106,8 @@ impl State {
     }
 }
 
-struct Inner {
-    cfg: watch::Sender<ServiceConfig>,
+pub(crate) struct Inner {
+    pub(crate) cfg: watch::Sender<ServiceConfig>,
     status: watch::Sender<HostStatus>,
     events: broadcast::Sender<HostEvent>,
     state: Mutex<State>,
@@ -106,16 +116,22 @@ struct Inner {
     /// Ends the running session when it holds `true`.
     session_stop: Mutex<Option<Arc<watch::Sender<bool>>>>,
     /// Set by `stop`.
-    stop: watch::Sender<bool>,
-    hooks: ServiceHooks,
+    pub(crate) stop: watch::Sender<bool>,
+    pub(crate) hooks: ServiceHooks,
+    /// One permit: held for as long as a session streams, whichever transport it came from.
+    pub(crate) slot: Arc<Semaphore>,
+    /// The Wi-Fi listener, when on.
+    pub(crate) wifi_info: watch::Sender<Option<WifiInfo>>,
+    #[cfg(feature = "wifi")]
+    pub(crate) wifi: Option<Arc<crate::wifi::Wifi>>,
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Inner {
-    fn update(&self, f: impl FnOnce(&mut State)) {
+    pub(crate) fn update(&self, f: impl FnOnce(&mut State)) {
         let mut st = lock(&self.state);
         f(&mut st);
         let new = st.status();
@@ -128,11 +144,11 @@ impl Inner {
         });
     }
 
-    fn emit(&self, ev: HostEvent) {
+    pub(crate) fn emit(&self, ev: HostEvent) {
         let _ = self.events.send(ev);
     }
 
-    fn on_session_event(&self, ev: SessionEvent) {
+    fn on_session_event(&self, ev: SessionEvent, transport: Transport) {
         self.update(|st| match ev {
             SessionEvent::Configured {
                 client_hello,
@@ -147,6 +163,7 @@ impl Inner {
                     devices: Vec::new(),
                     stats: None,
                     input: None,
+                    transport,
                 });
             }
             SessionEvent::Stats(s) => {
@@ -177,6 +194,8 @@ pub struct HostService {
     inner: Arc<Inner>,
     serve: Option<JoinHandle<()>>,
     watch: Option<JoinHandle<()>>,
+    /// Wi-Fi tasks (accept loop, pairing watcher).
+    wifi_tasks: Vec<JoinHandle<()>>,
 }
 
 impl HostService {
@@ -206,6 +225,11 @@ impl HostService {
         };
         let local = listener.local_addr().map_err(bind_err)?;
 
+        #[cfg(feature = "wifi")]
+        let wifi = match &cfg.wifi {
+            Some(w) => Some(crate::wifi::Wifi::setup(handle, w, hooks.pairing_ttl)?),
+            None => None,
+        };
         let requested = cfg.listen;
         let status = HostStatus::Waiting {
             devices: Vec::new(),
@@ -223,15 +247,57 @@ impl HostService {
             session_stop: Mutex::new(None),
             stop: watch::channel(false).0,
             hooks,
+            slot: Arc::new(Semaphore::new(1)),
+            wifi_info: watch::channel(None).0,
+            #[cfg(feature = "wifi")]
+            wifi,
         });
         inner.set_addr(Some(local));
+        #[allow(unused_mut)]
+        let mut wifi_tasks = Vec::new();
+        #[cfg(feature = "wifi")]
+        if let Some(w) = &inner.wifi {
+            inner.wifi_info.send_replace(Some(w.info()));
+            wifi_tasks.push(handle.spawn(crate::wifi::serve(inner.clone(), w.clone())));
+            wifi_tasks.push(handle.spawn(crate::wifi::watch_pairing(inner.clone(), w.clone())));
+        }
         let serve = handle.spawn(serve(inner.clone(), listener, requested));
         let watch = handle.spawn(watch_adb(inner.clone()));
         Ok(HostService {
             inner,
             serve: Some(serve),
             watch: Some(watch),
+            wifi_tasks,
         })
+    }
+
+    /// The Wi-Fi listener; `None` while Wi-Fi is off.
+    pub fn wifi(&self) -> watch::Receiver<Option<WifiInfo>> {
+        self.inner.wifi_info.subscribe()
+    }
+
+    /// Opens the pairing window with a new PIN (the PIN and QR URI arrive as
+    /// [`HostEvent::PairingOpen`]). Returns the PIN, or `None` when Wi-Fi is off.
+    #[cfg(feature = "wifi")]
+    pub fn open_pairing(&self) -> Option<String> {
+        Some(self.inner.wifi.as_ref()?.open_pairing())
+    }
+
+    /// Emits [`HostEvent::PairingOpen`] again if a window is open: for a frontend that
+    /// subscribed to [`events`](Self::events) after the service started with the window open.
+    #[cfg(feature = "wifi")]
+    pub fn refresh_pairing(&self) {
+        if let Some(w) = &self.inner.wifi {
+            w.refresh_pairing();
+        }
+    }
+
+    /// Closes the pairing window.
+    #[cfg(feature = "wifi")]
+    pub fn close_pairing(&self) {
+        if let Some(w) = &self.inner.wifi {
+            w.close_pairing();
+        }
     }
 
     /// Current state; changes are pushed to the receiver.
@@ -264,12 +330,17 @@ impl HostService {
     /// tearing a hardware encoder down while the process exits can deadlock in the driver.
     pub async fn stop(mut self) {
         self.inner.stop.send_replace(true);
-        for task in [self.serve.take(), self.watch.take()].into_iter().flatten() {
+        let tasks = [self.serve.take(), self.watch.take()]
+            .into_iter()
+            .flatten()
+            .chain(std::mem::take(&mut self.wifi_tasks));
+        for task in tasks {
             if let Err(e) = task.await {
                 tracing::error!("service task failed: {e}");
             }
         }
         self.inner.addr.send_replace(None);
+        self.inner.wifi_info.send_replace(None);
         self.inner.update(|st| st.phase = Phase::Stopped);
     }
 }
@@ -342,31 +413,62 @@ async fn serve(inner: Arc<Inner>, first: TcpListener, requested: SocketAddr) {
                 continue;
             }
         };
-        let source = match (inner.hooks.create_source)(&cfg) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("cannot create virtual source: {e}");
-                inner.emit(HostEvent::SourceFailed(e.clone()));
-                inner.update(|st| st.phase = Phase::Error(e));
-                continue;
-            }
+        // One session at a time across transports: while a Wi-Fi session streams, this client
+        // waits for it (like a second client in the listen backlog did before).
+        let permit = tokio::select! {
+            p = inner.slot.clone().acquire_owned() => p.expect("the slot is never closed"),
+            _ = stop_rx.changed() => break,
         };
-        let result = run_session(&inner, &cfg, link, source, &mut stop_rx).await;
-        inner.update(|st| st.phase = Phase::Waiting);
-        match &result {
-            Ok(s) => tracing::debug!(end = ?s.end, "session returned"),
-            Err(e) => tracing::debug!("session failed: {e}"),
-        }
-        inner.emit(HostEvent::SessionEnded(result.map_err(|e| e.to_string())));
+        stream_session(&inner, &cfg, link, Transport::Tcp, &mut stop_rx).await;
+        drop(permit);
     }
     // Close the listener before reporting that serving stopped.
     drop(listener);
+}
+
+/// Creates the source and runs one session on `link`; the caller holds the session slot.
+async fn stream_session(
+    inner: &Inner,
+    cfg: &ServiceConfig,
+    link: Link,
+    transport: Transport,
+    stop_rx: &mut watch::Receiver<bool>,
+) {
+    let source = match (inner.hooks.create_source)(cfg) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("cannot create virtual source: {e}");
+            inner.emit(HostEvent::SourceFailed(e.clone()));
+            inner.update(|st| st.phase = Phase::Error(e));
+            return;
+        }
+    };
+    finish_session(inner, cfg, link, transport, source, stop_rx).await;
+}
+
+/// Runs a session with an existing source and reports its end.
+pub(crate) async fn finish_session(
+    inner: &Inner,
+    cfg: &ServiceConfig,
+    link: Link,
+    transport: Transport,
+    source: Box<dyn VideoSource>,
+    stop_rx: &mut watch::Receiver<bool>,
+) {
+    let result = run_session(inner, cfg, link, transport, source, stop_rx).await;
+    inner.update(|st| st.phase = Phase::Waiting);
+    match &result {
+        Ok(s) => tracing::debug!(end = ?s.end, "session returned"),
+        Err(e) => tracing::debug!("session failed: {e}"),
+    }
+    inner.emit(HostEvent::SessionEnded(result.map_err(|e| e.to_string())));
 }
 
 async fn run_session(
     inner: &Inner,
     cfg: &ServiceConfig,
     link: Link,
+    transport: Transport,
     source: Box<dyn VideoSource>,
     stop_rx: &mut watch::Receiver<bool>,
 ) -> Result<ezd_host_core::SessionSummary, ezd_host_core::SessionError> {
@@ -374,10 +476,15 @@ async fn run_session(
     let end_tx = Arc::new(end_tx);
     *lock(&inner.session_stop) = Some(end_tx.clone());
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
+    // A Wi-Fi session is always a network link, whatever `cfg.link` says.
+    let prefs: Prefs = match transport {
+        Transport::Tcp => cfg.prefs(),
+        Transport::Wifi => cfg.wifi_prefs(),
+    };
     let session = run_host_session_with(
         link,
         source,
-        cfg.prefs(),
+        prefs,
         cfg.session_options(end_rx, Some(ev_tx)),
     );
     tokio::pin!(session);
@@ -385,7 +492,7 @@ async fn run_session(
     let result = loop {
         tokio::select! {
             r = &mut session => break r,
-            Some(ev) = ev_rx.recv() => inner.on_session_event(ev),
+            Some(ev) = ev_rx.recv() => inner.on_session_event(ev, transport),
             _ = stop_rx.changed(), if !stop_forwarded => {
                 // The session stops the source before it returns.
                 tracing::info!("stopping, ending the session");
@@ -472,7 +579,7 @@ async fn release_all(watcher: &Arc<Mutex<Watcher>>, adb: &Arc<dyn AdbClient>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::adb::fake::{FakeAdb, device};
     use ezd_host_core::testing::ScriptedSource;
@@ -484,9 +591,9 @@ mod tests {
     };
     use tokio::time::timeout;
 
-    const WAIT: Duration = Duration::from_secs(10);
+    pub(crate) const WAIT: Duration = Duration::from_secs(10);
 
-    fn cfg() -> ServiceConfig {
+    pub(crate) fn cfg() -> ServiceConfig {
         ServiceConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             adb: AdbMode::Off,
@@ -495,17 +602,18 @@ mod tests {
         }
     }
 
-    fn hooks() -> ServiceHooks {
+    pub(crate) fn hooks() -> ServiceHooks {
         ServiceHooks {
             adb_poll_interval: Duration::from_millis(20),
             locate_adb: Arc::new(|| None),
             create_source: Arc::new(|_| {
                 Ok(Box::new(ScriptedSource::new(Duration::from_millis(5), 200)))
             }),
+            pairing_ttl: Duration::from_secs(60),
         }
     }
 
-    fn start(cfg: ServiceConfig, hooks: ServiceHooks) -> HostService {
+    pub(crate) fn start(cfg: ServiceConfig, hooks: ServiceHooks) -> HostService {
         HostService::start_with(&tokio::runtime::Handle::current(), cfg, hooks).unwrap()
     }
 
@@ -517,7 +625,7 @@ mod tests {
             .port()
     }
 
-    fn caps() -> ClientCaps {
+    pub(crate) fn caps() -> ClientCaps {
         ClientCaps {
             display: DisplayInfo {
                 width_px: 1280,
@@ -541,9 +649,14 @@ mod tests {
     }
 
     /// Connects like the tablet and completes the handshake.
-    async fn connect(addr: SocketAddr) -> (MuxSender, MuxReceiver) {
+    pub(crate) async fn connect(addr: SocketAddr) -> (MuxSender, MuxReceiver) {
         let sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (tx, mut rx, _t) = Link::from_tcp(sock).unwrap().into_mux(DEFAULT_CHUNK_LEN);
+        handshake(Link::from_tcp(sock).unwrap()).await
+    }
+
+    /// Completes the handshake on `link` like the tablet.
+    pub(crate) async fn handshake(link: Link) -> (MuxSender, MuxReceiver) {
+        let (tx, mut rx, _t) = link.into_mux(DEFAULT_CHUNK_LEN);
         tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "tablet")))
             .unwrap();
         tx.send_control(Message::ClientCaps(caps())).unwrap();
@@ -563,7 +676,7 @@ mod tests {
         (tx, rx)
     }
 
-    async fn wait_status(
+    pub(crate) async fn wait_status(
         rx: &mut watch::Receiver<HostStatus>,
         pred: impl FnMut(&HostStatus) -> bool,
     ) -> HostStatus {
@@ -574,7 +687,9 @@ mod tests {
             .clone()
     }
 
-    async fn wait_session_end(ev: &mut broadcast::Receiver<HostEvent>) -> ezd_host_core::EndReason {
+    pub(crate) async fn wait_session_end(
+        ev: &mut broadcast::Receiver<HostEvent>,
+    ) -> ezd_host_core::EndReason {
         loop {
             if let HostEvent::SessionEnded(r) = timeout(WAIT, ev.recv()).await.unwrap().unwrap() {
                 return r.unwrap().end;

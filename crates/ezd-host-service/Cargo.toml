@@ -9,13 +9,19 @@ repository.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["ffmpeg"]
+default = ["ffmpeg", "wifi"]
 # The software (synthetic) source and the Windows hardware encode go through FFmpeg, which needs
 # its headers/libs at build time. `--no-default-features` builds on a machine without them (the
 # Windows cross-check in CI); the synthetic source then reports "built without ffmpeg".
 ffmpeg = ["dep:ezd-ffmpeg", "ezd-host-windows/ffmpeg"]
+# Wi-Fi (QUIC) transport with PIN pairing and mDNS discovery. ring (QUIC's crypto) has C code that
+# the Windows cross-check from Linux cannot build, hence the feature, like `ffmpeg`.
+wifi = ["ezd-link/quic", "dep:mdns-sd", "dep:dirs", "dep:gethostname"]
 
 [dependencies]
+dirs = { workspace = true, optional = true }
+gethostname = { workspace = true, optional = true }
+mdns-sd = { workspace = true, optional = true }
 ezd-ffmpeg = { workspace = true, optional = true }
 ezd-host-core.workspace = true
 ezd-link.workspace = true

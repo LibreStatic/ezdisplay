@@ -8,6 +8,8 @@
 #[macro_use]
 pub mod i18n;
 mod script;
+#[cfg(feature = "wifi")]
+pub mod wifi;
 
 use ezd_client_core::{
     ClientConfig, ClientError as CoreError, ClientHandle, ClientHandler, Flow, HandlerResult,

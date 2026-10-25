@@ -82,6 +82,57 @@ impl From<HdrChoice> for HdrMode {
     }
 }
 
+/// Congestion controller of the Wi-Fi link.
+#[cfg(feature = "wifi")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CongestionChoice {
+    /// CUBIC.
+    #[default]
+    Cubic,
+    /// BBR (experimental).
+    Bbr,
+}
+
+#[cfg(feature = "wifi")]
+impl From<CongestionChoice> for ezd_link::quic::Congestion {
+    fn from(c: CongestionChoice) -> Self {
+        match c {
+            CongestionChoice::Cubic => Self::Cubic,
+            CongestionChoice::Bbr => Self::Bbr,
+        }
+    }
+}
+
+/// The Wi-Fi (QUIC) listener. It is read when the service starts; changing it later needs a
+/// restart of the service.
+#[cfg(feature = "wifi")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WifiConfig {
+    /// UDP address the tablets connect to.
+    pub listen: SocketAddr,
+    /// Open the pairing window at start even if a device is already paired.
+    pub pair_on_start: bool,
+    /// Congestion controller.
+    pub congestion: CongestionChoice,
+    /// Where the identity and the paired devices live; `None` is the `ezdisplay` folder in the
+    /// user's config directory.
+    pub config_dir: Option<std::path::PathBuf>,
+}
+
+#[cfg(feature = "wifi")]
+impl Default for WifiConfig {
+    fn default() -> Self {
+        WifiConfig {
+            listen: SocketAddr::from(([0, 0, 0, 0], ezd_proto::DEFAULT_PORT)),
+            pair_on_start: false,
+            congestion: CongestionChoice::default(),
+            config_dir: None,
+        }
+    }
+}
+
 /// Everything the service needs to run; loads from a file with missing or unknown keys.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -120,6 +171,10 @@ pub struct ServiceConfig {
     pub open_app_on_connect: bool,
     /// HDR10 streaming policy (`hdr = "auto" | "off"`).
     pub hdr: HdrChoice,
+    /// Wi-Fi listener; `None` leaves Wi-Fi off. Sessions on it always use the network link kind,
+    /// whatever `link` says.
+    #[cfg(feature = "wifi")]
+    pub wifi: Option<WifiConfig>,
 }
 
 impl Default for ServiceConfig {
@@ -142,6 +197,8 @@ impl Default for ServiceConfig {
             pen_mode: PenChoice::default(),
             open_app_on_connect: true,
             hdr: HdrChoice::default(),
+            #[cfg(feature = "wifi")]
+            wifi: None,
         }
     }
 }
@@ -160,6 +217,14 @@ impl ServiceConfig {
             scale_permille: self.scale_permille,
             hdr: self.hdr.into(),
             ..Prefs::default()
+        }
+    }
+
+    /// Preferences of a Wi-Fi session: the network link kind, the rest as [`prefs`](Self::prefs).
+    pub fn wifi_prefs(&self) -> Prefs {
+        Prefs {
+            link: LinkKind::Network,
+            ..self.prefs()
         }
     }
 
@@ -238,6 +303,19 @@ mod tests {
                 scale_permille: 750,
                 hdr: HdrMode::Off,
                 ..Prefs::default()
+            }
+        );
+    }
+
+    #[test]
+    fn wifi_sessions_use_the_network_link_kind() {
+        let c = ServiceConfig::default();
+        assert_eq!(c.prefs().link, LinkKind::Usb);
+        assert_eq!(
+            c.wifi_prefs(),
+            Prefs {
+                link: LinkKind::Network,
+                ..c.prefs()
             }
         );
     }
