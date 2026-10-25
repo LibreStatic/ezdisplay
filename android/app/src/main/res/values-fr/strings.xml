@@ -25,6 +25,7 @@
     <string name="trigger_click">Clic</string>
     <string name="trigger_double_click">Double clic</string>
     <string name="trigger_hold">Maintenir</string>
+    <string name="trigger_double_hold">Double clic + maintien</string>
     <string name="trigger_hold_drag_contact">Maintenir + glisser en touchant</string>
     <string name="trigger_hold_drag_hover">Maintenir + déplacer en l\'air</string>
     <string name="action_raw">Bouton brut</string>
@@ -34,19 +35,27 @@
     <string name="action_eraser">Gomme</string>
     <string name="action_scroll">Défilement</string>
     <string name="action_pc_zoom">Zoom sur le PC</string>
+    <string name="action_step_zoom">Zoom par paliers</string>
+    <string name="action_wheel_zoom">Zoom par molette, par paliers</string>
+    <string name="action_pan">Déplacer le canevas</string>
     <string name="action_none">Aucune</string>
     <string name="settings_zoom_factor">Niveau de zoom</string>
     <string name="settings_air_actions_on">Les actions aériennes de Samsung sont activées. Elles peuvent réagir aux appuis sur le bouton qui commencent avec la pointe posée. Désactivez-les dans Paramètres → Fonctions avancées → S Pen → Actions aériennes.</string>
     <string name="settings_air_actions_unknown">Si le bouton du stylet déclenche les actions aériennes de Samsung, désactivez-les dans Paramètres → Fonctions avancées → S Pen → Actions aériennes.</string>
     <string name="profile_graphics_tablet">Tablette graphique</string>
-    <string name="profile_graphics_tablet_desc">Maintenir le bouton appuie sur un raccourci clavier (Ctrl+Espace par défaut), comme le bouton du stylet d\'une tablette graphique ; clic = clic droit ; double clic = zoom local.</string>
+    <string name="profile_graphics_tablet_desc">Maintenir le bouton appuie sur un raccourci clavier (Ctrl+Espace par défaut), comme le bouton du stylet d\'une tablette graphique ; clic = clic droit ; double clic = zoom local. Double clic + maintien appuie sur un second raccourci (Ctrl+Alt+Espace par défaut).</string>
     <string name="action_keys">Raccourci clavier</string>
     <string name="keys_title_hold">Raccourci au maintien</string>
+    <string name="keys_title_double_hold">Raccourci au double clic + maintien</string>
+    <string name="keys_title_zoom_in">Raccourci pour zoomer</string>
+    <string name="keys_title_zoom_out">Raccourci pour dézoomer</string>
+    <string name="keys_title_pan">Raccourci pour déplacer le canevas</string>
     <string name="keys_title_click">Raccourci au clic</string>
     <string name="keys_title_double_click">Raccourci au double clic</string>
     <string name="keys_preset_ctrl_space">Ctrl + Espace</string>
     <string name="keys_preset_space">Espace</string>
     <string name="keys_preset_alt_space">Alt + Espace</string>
+    <string name="keys_preset_ctrl_alt_space">Ctrl + Alt + Espace</string>
     <string name="keys_preset_ctrl_z">Ctrl + Z</string>
     <string name="keys_preset_ctrl_shift_z">Ctrl + Maj + Z</string>
     <string name="keys_mod_ctrl">Ctrl</string>

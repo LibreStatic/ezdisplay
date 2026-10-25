@@ -25,6 +25,7 @@
     <string name="trigger_click">Clique</string>
     <string name="trigger_double_click">Clique duplo</string>
     <string name="trigger_hold">Manter</string>
+    <string name="trigger_double_hold">Clique duplo + manter</string>
     <string name="trigger_hold_drag_contact">Manter + arrastar tocando</string>
     <string name="trigger_hold_drag_hover">Manter + mover no ar</string>
     <string name="action_raw">Botão direto</string>
@@ -34,19 +35,27 @@
     <string name="action_eraser">Borracha</string>
     <string name="action_scroll">Rolar</string>
     <string name="action_pc_zoom">Zoom no PC</string>
+    <string name="action_step_zoom">Zoom em etapas</string>
+    <string name="action_wheel_zoom">Zoom com a roda, em etapas</string>
+    <string name="action_pan">Mover a tela</string>
     <string name="action_none">Nada</string>
     <string name="settings_zoom_factor">Nível de zoom</string>
     <string name="settings_air_actions_on">As ações aéreas da Samsung estão ativadas. Elas podem reagir a pressionamentos do botão que começam com a ponta apoiada. Desative-as em Configurações → Recursos avançados → S Pen → Ações aéreas.</string>
     <string name="settings_air_actions_unknown">Se o botão da caneta acionar as ações aéreas da Samsung, desative-as em Configurações → Recursos avançados → S Pen → Ações aéreas.</string>
     <string name="profile_graphics_tablet">Mesa digitalizadora</string>
-    <string name="profile_graphics_tablet_desc">Manter o botão pressiona um atalho de teclado (Ctrl+Espaço por padrão), como o botão da caneta de uma mesa digitalizadora; clique = clique direito; clique duplo = zoom local.</string>
+    <string name="profile_graphics_tablet_desc">Manter o botão pressiona um atalho de teclado (Ctrl+Espaço por padrão), como o botão da caneta de uma mesa digitalizadora; clique = clique direito; clique duplo = zoom local. Clique duplo + manter pressiona um segundo atalho (Ctrl+Alt+Espaço por padrão).</string>
     <string name="action_keys">Atalho de teclado</string>
     <string name="keys_title_hold">Atalho ao manter</string>
+    <string name="keys_title_double_hold">Atalho ao clicar duas vezes e manter</string>
+    <string name="keys_title_zoom_in">Atalho para aumentar o zoom</string>
+    <string name="keys_title_zoom_out">Atalho para diminuir o zoom</string>
+    <string name="keys_title_pan">Atalho para mover a tela</string>
     <string name="keys_title_click">Atalho ao clicar</string>
     <string name="keys_title_double_click">Atalho ao clicar duas vezes</string>
     <string name="keys_preset_ctrl_space">Ctrl + Espaço</string>
     <string name="keys_preset_space">Espaço</string>
     <string name="keys_preset_alt_space">Alt + Espaço</string>
+    <string name="keys_preset_ctrl_alt_space">Ctrl + Alt + Espaço</string>
     <string name="keys_preset_ctrl_z">Ctrl + Z</string>
     <string name="keys_preset_ctrl_shift_z">Ctrl + Shift + Z</string>
     <string name="keys_mod_ctrl">Ctrl</string>

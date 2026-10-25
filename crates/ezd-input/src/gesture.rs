@@ -27,7 +27,18 @@ pub(crate) enum DragKind {
     Scroll,
     /// Ctrl + wheel, pen up = zoom in.
     PcZoom,
+    /// Shortcut-and-click zoom steps, pen up = zoom in. `rem.1` holds the
+    /// signed upward travel in view px that has not made a step yet.
+    StepZoom,
+    /// Plain wheel notches (+-120) in zoom steps, pen up = zoom in. Steps are
+    /// counted like [`DragKind::StepZoom`].
+    WheelZoom,
 }
+
+/// Minimum time between two zoom steps (pen sample time).
+const STEP_ZOOM_GAP_US: u64 = 60_000;
+/// Zoom steps that can be queued by fast travel; the rest is dropped.
+const STEP_ZOOM_BACKLOG: f32 = 3.0;
 
 /// A resolved gesture whose barrel button is still down.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,6 +56,10 @@ pub(crate) enum Held {
     },
     /// Panning the locally zoomed view.
     Pan,
+    /// Pan action with the tip down or ready to touch: the pan combination is
+    /// pressed (`PenState::keys_held`) while the tip touches and released at
+    /// the lift. The pen reports contact and motion as usual.
+    PanDrag,
     /// The hold key combination is pressed (`PenState::keys_held`); the pen
     /// reports contact and motion as usual.
     Keys,
@@ -79,20 +94,32 @@ pub(crate) enum Gesture {
         /// Pen position (view px) at the release; the click happens there.
         pos: (f32, f32),
     },
+    /// Second press of a double click in hover, withheld while `double_hold`
+    /// is enabled. Resolves like the first press: the release fires the double
+    /// click; the hold time, the tip touching or the pen moving start the
+    /// double-hold action.
+    DoublePending { press: (f32, f32), press_t: u64 },
     /// Resolved, barrel still down.
     Held(Held),
 }
 
 /// True for the actions that turn pen motion into scrolling or zooming.
 fn drag_effect(a: ButtonAction) -> bool {
-    matches!(a, ButtonAction::Scroll | ButtonAction::PcZoom)
+    matches!(
+        a,
+        ButtonAction::Scroll
+            | ButtonAction::PcZoom
+            | ButtonAction::StepZoom
+            | ButtonAction::WheelZoom
+    )
 }
 
 fn drag_kind(a: ButtonAction) -> DragKind {
-    if a == ButtonAction::Scroll {
-        DragKind::Scroll
-    } else {
-        DragKind::PcZoom
+    match a {
+        ButtonAction::Scroll => DragKind::Scroll,
+        ButtonAction::StepZoom => DragKind::StepZoom,
+        ButtonAction::WheelZoom => DragKind::WheelZoom,
+        _ => DragKind::PcZoom,
     }
 }
 
@@ -117,6 +144,8 @@ fn drag_units(kind: DragKind, notch_px: f32, d: (f32, f32), rem: &mut (f32, f32)
             rem.1 += -d.1 * k;
             Scroll::CTRL
         }
+        // Not wheel units, see `step_zoom_dir`.
+        DragKind::StepZoom | DragKind::WheelZoom => return None,
     };
     let (ix, iy) = (rem.0.trunc(), rem.1.trunc());
     rem.0 -= ix;
@@ -128,6 +157,28 @@ fn drag_units(kind: DragKind, notch_px: f32, d: (f32, f32), rem: &mut (f32, f32)
     }
 }
 
+/// Adds a pen delta to the step-zoom travel `acc` (upward positive, capped to
+/// the backlog) and says whether a step is due: `Some(true)` zoom in,
+/// `Some(false)` zoom out. A due step consumes `step` px of travel and is
+/// rate limited by `last` (pen sample time of the previous step).
+fn step_zoom_dir(
+    acc: &mut f32,
+    dy: f32,
+    step: f32,
+    last: &mut Option<u64>,
+    t: u64,
+) -> Option<bool> {
+    let cap = step * STEP_ZOOM_BACKLOG;
+    *acc = (*acc - dy).clamp(-cap, cap);
+    if acc.abs() < step || last.is_some_and(|l| t >= l && t - l < STEP_ZOOM_GAP_US) {
+        return None;
+    }
+    *last = Some(t);
+    let up = *acc > 0.0;
+    *acc -= step.copysign(*acc);
+    Some(up)
+}
+
 impl InputEngine {
     pub(crate) fn gesture_deadline(&self) -> Option<u64> {
         match self.pen.gesture {
@@ -137,6 +188,9 @@ impl InputEngine {
                 ..
             } => Some(press_t.saturating_add(self.p.double_us)),
             Gesture::Waiting { deadline, .. } => Some(deadline),
+            Gesture::DoublePending { press_t, .. } => {
+                Some(press_t.saturating_add(self.p.double_us))
+            }
             _ => None,
         }
     }
@@ -152,7 +206,9 @@ impl InputEngine {
     fn defers_hold(&self) -> bool {
         let m = &self.p.map;
         !matches!(m.hold, ButtonAction::Keys | ButtonAction::None)
-            && (drag_effect(m.hold_drag_hover) || drag_effect(m.hold_drag_contact))
+            && (drag_effect(m.hold_drag_hover)
+                || drag_effect(m.hold_drag_contact)
+                || m.hold_drag_contact == ButtonAction::Pan)
     }
 
     /// Hold action fired by the release of a barrel that was held still past the
@@ -187,7 +243,12 @@ impl InputEngine {
     }
 
     fn click_button(&mut self, button: u8, t: u64, out: &mut Vec<Message>) {
-        let (x, y) = self.map(self.pen.cur.x, self.pen.cur.y);
+        self.click_button_at(button, self.cur_pos(), t, out);
+    }
+
+    /// Clicks `button` at `pos` (view px); the message carries its own position.
+    fn click_button_at(&mut self, button: u8, pos: (f32, f32), t: u64, out: &mut Vec<Message>) {
+        let (x, y) = self.map(pos.0, pos.1);
         for pressed in [true, false] {
             out.push(Message::PointerButton(PointerButton {
                 t_us: t,
@@ -251,6 +312,35 @@ impl InputEngine {
         self.set_held(Held::Keys);
     }
 
+    /// Starts the pan action at the tip touch: presses the pan combination
+    /// (once) before the contact is forwarded and keeps it until the lift.
+    fn start_pan(&mut self, t: u64, out: &mut Vec<Message>) {
+        if self.pen.keys_held.is_none() {
+            let c = self.p.keys.pan;
+            Self::press_combo(c, t, out);
+            self.pen.keys_held = Some(c);
+        }
+        self.set_held(Held::PanDrag);
+    }
+
+    /// Starts the double-hold action: presses its combination and keeps it
+    /// pressed until the barrel is released, or switches to the eraser.
+    fn resolve_double_hold(&mut self, t: u64, out: &mut Vec<Message>) {
+        match self.p.map.double_hold {
+            ButtonAction::Keys => {
+                let c = self.p.keys.double_hold;
+                Self::press_combo(c, t, out);
+                self.pen.keys_held = Some(c);
+                self.set_held(Held::Keys);
+            }
+            ButtonAction::Eraser => {
+                self.eraser_start(t, out);
+                self.set_held(Held::Done);
+            }
+            _ => self.set_held(Held::Done),
+        }
+    }
+
     /// Releases the held combination, if any (never twice).
     pub(crate) fn release_keys(&mut self, t: u64, out: &mut Vec<Message>) {
         if let Some(c) = self.pen.keys_held.take() {
@@ -276,6 +366,23 @@ impl InputEngine {
             ButtonAction::LocalZoom => self.toggle_zoom(),
             _ => {}
         }
+    }
+
+    /// One step of the step zoom: the zoom combination pressed, a left click at
+    /// the drag anchor (the app zooms around the click), the combination
+    /// released. Everything is emitted at once, so no key can stay down.
+    fn zoom_step(&mut self, up: bool, anchor: (f32, f32), t: u64, out: &mut Vec<Message>) {
+        let c = if up {
+            self.p.keys.zoom_in
+        } else {
+            self.p.keys.zoom_out
+        };
+        if c.is_empty() {
+            return;
+        }
+        Self::press_combo(c, t, out);
+        self.click_button_at(PointerButton::LEFT, anchor, t, out);
+        Self::release_combo(c, t, out);
     }
 
     /// Eraser hold: Out, then proximity with the eraser flag.
@@ -349,6 +456,12 @@ impl InputEngine {
                         self.raw_held(t, out);
                     }
                 }
+                Gesture::Waiting { .. } if self.p.map.double_hold != ButtonAction::None => {
+                    self.pen.gesture = Gesture::DoublePending {
+                        press: self.cur_pos(),
+                        press_t: t,
+                    };
+                }
                 Gesture::Waiting { .. } => match self.p.map.double_click {
                     ButtonAction::Raw => self.raw_held(t, out),
                     a => {
@@ -359,8 +472,11 @@ impl InputEngine {
                 _ => {}
             }
         } else {
-            // The held keys are released whatever the gesture state is.
-            self.release_keys(t, out);
+            // The held keys are released whatever the gesture state is, except
+            // the pan keys of a touching tip: they stay until the lift.
+            if !(g == Gesture::Held(Held::PanDrag) && self.pen.contact) {
+                self.release_keys(t, out);
+            }
             self.pen.gesture = Gesture::Idle;
             match g {
                 Gesture::Pending { past_t: true, .. } if self.defers_hold() => {
@@ -382,6 +498,13 @@ impl InputEngine {
                             deadline: t.saturating_add(self.p.double_us),
                             pos: self.cur_pos(),
                         };
+                    }
+                }
+                Gesture::DoublePending { .. } => {
+                    // Released before it resolved: a plain double click.
+                    match self.p.map.double_click {
+                        ButtonAction::Raw => self.raw_late(t, out),
+                        a => self.instant(a, Trigger::DoubleClick, t, out),
                     }
                 }
                 Gesture::Held(h) => {
@@ -446,6 +569,7 @@ impl InputEngine {
                 self.pen.gesture = Gesture::Idle;
                 self.resolve_click_at(pos, d, out);
             }
+            Gesture::DoublePending { .. } => self.resolve_double_hold(d, out),
             _ => {}
         }
     }
@@ -465,6 +589,14 @@ impl InputEngine {
         match self.pen.gesture {
             Gesture::Pending { .. } if self.p.map.hold == ButtonAction::Keys => {
                 self.start_keys_hold(t, out);
+            }
+            // Like the first press, the keys are pressed whatever the zoom is.
+            Gesture::DoublePending { .. } => self.resolve_double_hold(t, out),
+            // The keys must precede the contact, so a pan cannot wait for slop.
+            Gesture::Pending { .. } | Gesture::Held(Held::HoverDrag { .. } | Held::PanDrag)
+                if self.p.map.hold_drag_contact == ButtonAction::Pan =>
+            {
+                self.start_pan(t, out);
             }
             Gesture::Pending { past_t: true, .. }
                 if self.defers_hold() && !drag_effect(self.p.map.hold_drag_contact) =>
@@ -527,6 +659,10 @@ impl InputEngine {
     /// The tip lifted (called after the lift sample was emitted).
     pub(crate) fn on_tip_up(&mut self, t: u64, out: &mut Vec<Message>) {
         self.pen.suppress = false;
+        // The pan keys end with the touch (also when the barrel went first).
+        if self.pen.gesture != Gesture::Held(Held::Keys) {
+            self.release_keys(t, out);
+        }
         if let Gesture::Held(Held::ContactDrag {
             kind,
             anchor,
@@ -583,14 +719,32 @@ impl InputEngine {
                 }
             }
         }
+        if let Gesture::DoublePending { press, .. } = self.pen.gesture
+            && !self.pen.contact
+            && dist(cur, press) > self.p.slop
+        {
+            // A locally zoomed view pans first, as for the first press.
+            if self.view.is_zoomed() {
+                self.set_held(Held::Pan);
+            } else {
+                self.resolve_double_hold(t, out);
+            }
+        }
         let prev = self.pen.prev;
         let d = (cur.0 - prev.0, cur.1 - prev.1);
         let n = self.p.scroll_n;
         let slop = self.p.slop;
         let mut emit: Option<((f32, f32), Units)> = None;
+        let mut zoom: Option<((f32, f32), bool, bool)> = None;
+        let zstep = self.p.zoom_step;
         match &mut self.pen.gesture {
             Gesture::Held(Held::HoverDrag { kind, anchor, rem }) => {
-                emit = drag_units(*kind, n, d, rem).map(|u| (*anchor, u));
+                if matches!(*kind, DragKind::StepZoom | DragKind::WheelZoom) {
+                    zoom = step_zoom_dir(&mut rem.1, d.1, zstep, &mut self.pen.step_last, t)
+                        .map(|up| (*anchor, up, *kind == DragKind::WheelZoom));
+                } else {
+                    emit = drag_units(*kind, n, d, rem).map(|u| (*anchor, u));
+                }
             }
             Gesture::Held(Held::ContactDrag {
                 kind,
@@ -604,7 +758,12 @@ impl InputEngine {
                     *dragging = true;
                 }
                 if *dragging {
-                    emit = drag_units(*kind, n, d, rem).map(|u| (*anchor, u));
+                    if matches!(*kind, DragKind::StepZoom | DragKind::WheelZoom) {
+                        zoom = step_zoom_dir(&mut rem.1, d.1, zstep, &mut self.pen.step_last, t)
+                            .map(|up| (*anchor, up, *kind == DragKind::WheelZoom));
+                    } else {
+                        emit = drag_units(*kind, n, d, rem).map(|u| (*anchor, u));
+                    }
                 }
             }
             Gesture::Held(Held::Pan) => {
@@ -616,6 +775,21 @@ impl InputEngine {
                 .clamped(self.view_w, self.view_h);
             }
             _ => {}
+        }
+        if let Some((anchor, up, wheel)) = zoom {
+            if wheel {
+                let (x, y) = self.map(anchor.0, anchor.1);
+                out.push(Message::Scroll(Scroll {
+                    t_us: t,
+                    x,
+                    y,
+                    dx: 0,
+                    dy: if up { 120 } else { -120 },
+                    modifiers: 0,
+                }));
+            } else {
+                self.zoom_step(up, anchor, t, out);
+            }
         }
         if let Some((anchor, (dx, dy, modifiers))) = emit {
             let (x, y) = self.map(anchor.0, anchor.1);

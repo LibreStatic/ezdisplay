@@ -18,8 +18,18 @@ enum class AirActions { NotSamsung, Off, On, Unknown }
 /** A custom-profile trigger: its pref [key], [label], [default] action and the [actions] it accepts. */
 class Trigger(val key: String, val label: Int, val default: String, val actions: List<String>)
 
-/** One key-combo editor: where it is stored ([prefKey]), its [title] and the trigger that enables it. */
-class KeyEditorSpec(val prefKey: String, val title: Int, val triggerKey: String)
+/**
+ * One key-combo editor: where it is stored ([prefKey]), its [title], and the Custom [triggerKeys] that enable it
+ * when any of them is set to [action].
+ */
+class KeyEditorSpec(
+    val prefKey: String,
+    val title: Int,
+    val triggerKeys: List<String>,
+    val action: String = "keys",
+) {
+    constructor(prefKey: String, title: Int, triggerKey: String) : this(prefKey, title, listOf(triggerKey))
+}
 
 /** A profile choice: pref [value], [title] and [desc] string resources and its [icon] drawable. */
 data class ProfileSpec(val value: String, val title: Int, val desc: Int, val icon: Int)
@@ -35,6 +45,9 @@ val ActionLabels = mapOf(
     "eraser" to R.string.action_eraser,
     "scroll" to R.string.action_scroll,
     "pc_zoom" to R.string.action_pc_zoom,
+    "step_zoom" to R.string.action_step_zoom,
+    "wheel_zoom" to R.string.action_wheel_zoom,
+    "pan" to R.string.action_pan,
     "none" to R.string.action_none,
     "keys" to R.string.action_keys,
 )
@@ -54,23 +67,39 @@ val Triggers = listOf(
         listOf("right_click", "middle_click", "local_zoom", "keys", "none")),
     Trigger(InputPrefs.CUSTOM_HOLD, R.string.trigger_hold, "raw",
         listOf("raw", "right_click", "middle_click", "local_zoom", "eraser", "keys", "none")),
+    Trigger(InputPrefs.CUSTOM_DOUBLE_HOLD, R.string.trigger_double_hold, "none",
+        listOf("eraser", "keys", "none")),
     Trigger(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, R.string.trigger_hold_drag_contact, "raw",
-        listOf("raw", "scroll", "pc_zoom", "none")),
+        listOf("raw", "scroll", "pc_zoom", "step_zoom", "wheel_zoom", "pan", "none")),
     Trigger(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, R.string.trigger_hold_drag_hover, "raw",
-        listOf("raw", "scroll", "pc_zoom", "none")),
+        listOf("raw", "scroll", "pc_zoom", "step_zoom", "wheel_zoom", "none")),
 )
 
-/** In display order: click, double click, hold. */
+/** In display order: click, double click, hold, double click + hold, zoom in, zoom out, pan (the last three follow the drags). */
 val KeyEditors = listOf(
     KeyEditorSpec(InputPrefs.KEYS_CLICK, R.string.keys_title_click, InputPrefs.CUSTOM_CLICK),
     KeyEditorSpec(InputPrefs.KEYS_DOUBLE_CLICK, R.string.keys_title_double_click, InputPrefs.CUSTOM_DOUBLE_CLICK),
     KeyEditorSpec(InputPrefs.KEYS_HOLD, R.string.keys_title_hold, InputPrefs.CUSTOM_HOLD),
+    KeyEditorSpec(InputPrefs.KEYS_DOUBLE_HOLD, R.string.keys_title_double_hold, InputPrefs.CUSTOM_DOUBLE_HOLD),
+    KeyEditorSpec(
+        InputPrefs.KEYS_ZOOM_IN, R.string.keys_title_zoom_in,
+        listOf(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, InputPrefs.CUSTOM_HOLD_DRAG_HOVER), "step_zoom",
+    ),
+    KeyEditorSpec(
+        InputPrefs.KEYS_ZOOM_OUT, R.string.keys_title_zoom_out,
+        listOf(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, InputPrefs.CUSTOM_HOLD_DRAG_HOVER), "step_zoom",
+    ),
+    KeyEditorSpec(
+        InputPrefs.KEYS_PAN, R.string.keys_title_pan,
+        listOf(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT), "pan",
+    ),
 )
 
 val KeyPresets = listOf(
     KeyPreset(R.string.keys_preset_ctrl_space, KeyCombo(InputPrefs.MOD_CTRL, 0x2C)),
     KeyPreset(R.string.keys_preset_space, KeyCombo(0, 0x2C)),
     KeyPreset(R.string.keys_preset_alt_space, KeyCombo(InputPrefs.MOD_ALT, 0x2C)),
+    KeyPreset(R.string.keys_preset_ctrl_alt_space, KeyCombo(InputPrefs.MOD_CTRL or InputPrefs.MOD_ALT, 0x2C)),
     KeyPreset(R.string.keys_preset_ctrl_z, KeyCombo(InputPrefs.MOD_CTRL, 0x1D)),
     KeyPreset(R.string.keys_preset_ctrl_shift_z, KeyCombo(InputPrefs.MOD_CTRL or InputPrefs.MOD_SHIFT, 0x1D)),
 )
@@ -92,14 +121,24 @@ private fun defaultKeys(): Map<String, KeyCombo> = mapOf(
     InputPrefs.KEYS_CLICK to InputPrefs.DEFAULT_KEYS_CLICK,
     InputPrefs.KEYS_DOUBLE_CLICK to InputPrefs.DEFAULT_KEYS_DOUBLE_CLICK,
     InputPrefs.KEYS_HOLD to InputPrefs.DEFAULT_KEYS_HOLD,
+    InputPrefs.KEYS_DOUBLE_HOLD to InputPrefs.DEFAULT_KEYS_DOUBLE_HOLD,
+    InputPrefs.KEYS_ZOOM_IN to InputPrefs.DEFAULT_KEYS_ZOOM_IN,
+    InputPrefs.KEYS_ZOOM_OUT to InputPrefs.DEFAULT_KEYS_ZOOM_OUT,
+    InputPrefs.KEYS_PAN to InputPrefs.DEFAULT_KEYS_PAN,
 )
 
-/** KEYS_* pref keys whose editor is shown: graphics tablet shows hold; Custom shows those whose trigger action is `keys`. */
+/** KEYS_* pref keys whose editor is shown: graphics tablet shows hold and double click + hold; Custom shows those whose trigger action is `keys` (the zoom shortcuts: a drag set to `step_zoom`). */
 fun visibleKeyEditors(state: SettingsState): List<String> = when (state.profile) {
-    "graphics_tablet" -> listOf(InputPrefs.KEYS_HOLD)
-    "custom" -> KeyEditors.filter { state.custom[it.triggerKey] == "keys" }.map { it.prefKey }
+    "graphics_tablet" -> listOf(InputPrefs.KEYS_HOLD, InputPrefs.KEYS_DOUBLE_HOLD)
+    "custom" -> KeyEditors.filter { e ->
+        // The drag triggers are unused while hold sends keys.
+        e.triggerKeys.any { state.custom[it] == e.action && !(it in DragTriggerKeys && dragsDisabled(state)) }
+    }.map { it.prefKey }
     else -> emptyList()
 }
+
+/** The hold-drag triggers (pref keys). */
+val DragTriggerKeys = setOf(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, InputPrefs.CUSTOM_HOLD_DRAG_HOVER)
 
 /** The hold-drag triggers are unused while Custom hold sends keys. */
 fun dragsDisabled(state: SettingsState): Boolean =

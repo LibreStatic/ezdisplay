@@ -35,6 +35,19 @@ pub enum ButtonAction {
     Scroll,
     /// Zoom the host with Ctrl + wheel (drag triggers only).
     PcZoom,
+    /// Zoom a shortcut-and-click zoom in steps (drag triggers only): every
+    /// [`InputConfig::zoom_step_px`] of vertical pen travel taps
+    /// [`KeyBindings::zoom_in`] (up) or [`KeyBindings::zoom_out`] (down) with a
+    /// left click at the point where the drag started.
+    StepZoom,
+    /// Zoom the host with the plain mouse wheel in steps (drag triggers only):
+    /// every [`InputConfig::zoom_step_px`] of vertical pen travel sends one
+    /// wheel notch, up = zoom in, down = zoom out.
+    WheelZoom,
+    /// Pan the canvas of the host (contact drag only): the pan combination
+    /// ([`KeyBindings::pan`], Space by default) is kept pressed while the tip
+    /// touches, so a drag with the pen pans in many drawing apps.
+    Pan,
     /// Toggle the local zoom of the view.
     LocalZoom,
     /// Switch to the eraser while held (hold trigger only).
@@ -93,6 +106,14 @@ pub struct KeyBindings {
     pub double_click: KeyCombo,
     /// Kept pressed while the barrel button is held.
     pub hold: KeyCombo,
+    /// Kept pressed while the barrel button is held after a double click.
+    pub double_hold: KeyCombo,
+    /// Tapped with a click for every upward step of [`ButtonAction::StepZoom`].
+    pub zoom_in: KeyCombo,
+    /// Tapped with a click for every downward step of [`ButtonAction::StepZoom`].
+    pub zoom_out: KeyCombo,
+    /// Kept pressed while the tip touches during [`ButtonAction::Pan`].
+    pub pan: KeyCombo,
 }
 
 impl Default for KeyBindings {
@@ -105,6 +126,21 @@ impl Default for KeyBindings {
                 mods: KeyCombo::CTRL,
                 key: 0x2C,
             },
+            // Ctrl + Alt + Space: a common zoom-out shortcut (with a click) in drawing apps.
+            double_hold: KeyCombo {
+                mods: KeyCombo::CTRL | KeyCombo::ALT,
+                key: 0x2C,
+            },
+            zoom_in: KeyCombo {
+                mods: KeyCombo::CTRL,
+                key: 0x2C,
+            },
+            zoom_out: KeyCombo {
+                mods: KeyCombo::CTRL | KeyCombo::ALT,
+                key: 0x2C,
+            },
+            // Space: the usual pan modifier (with a drag) in drawing apps.
+            pan: KeyCombo { mods: 0, key: 0x2C },
         }
     }
 }
@@ -115,6 +151,10 @@ impl KeyBindings {
             click: self.click.sanitized(),
             double_click: self.double_click.sanitized(),
             hold: self.hold.sanitized(),
+            double_hold: self.double_hold.sanitized(),
+            zoom_in: self.zoom_in.sanitized(),
+            zoom_out: self.zoom_out.sanitized(),
+            pan: self.pan.sanitized(),
         }
     }
 }
@@ -133,6 +173,12 @@ pub struct ButtonMap {
     /// motion, tip touch or barrel release. A Keys hold takes precedence over
     /// the drags.
     pub hold: ButtonAction,
+    /// Second press held still in hover for the double-click time, or resolved
+    /// by the tip touching or the pen moving. Eraser, Keys or None. Only
+    /// reachable when the click and double click are both enabled and differ.
+    /// While it is not `None`, the double click fires at the release of the
+    /// second press instead of at the press.
+    pub double_hold: ButtonAction,
     /// Held while the tip touches and drags.
     pub hold_drag_contact: ButtonAction,
     /// Held while the pen moves in hover.
@@ -149,17 +195,18 @@ impl ButtonMap {
     /// The map of a preset profile. [`Profile::Custom`] gives the Raw map.
     pub fn for_profile(p: Profile) -> ButtonMap {
         use ButtonAction::*;
-        let (click, double_click, hold, hold_drag_contact, hold_drag_hover) = match p {
-            Profile::Raw | Profile::Custom => (Raw, LocalZoom, Raw, Raw, Raw),
-            Profile::Desktop => (RightClick, LocalZoom, None, Scroll, PcZoom),
-            Profile::Drawing => (Raw, LocalZoom, Eraser, Raw, Raw),
+        let (click, double_click, hold, double_hold, hold_drag_contact, hold_drag_hover) = match p {
+            Profile::Raw | Profile::Custom => (Raw, LocalZoom, Raw, None, Raw, Raw),
+            Profile::Desktop => (RightClick, LocalZoom, None, None, Scroll, PcZoom),
+            Profile::Drawing => (Raw, LocalZoom, Eraser, None, Raw, Raw),
             // The drag entries are unused: a Keys hold takes precedence.
-            Profile::GraphicsTablet => (RightClick, LocalZoom, Keys, Raw, Raw),
+            Profile::GraphicsTablet => (RightClick, LocalZoom, Keys, Keys, Raw, Raw),
         };
         ButtonMap {
             click,
             double_click,
             hold,
+            double_hold,
             hold_drag_contact,
             hold_drag_hover,
         }
@@ -170,7 +217,8 @@ impl ButtonMap {
     /// Allowed: `click`: Raw, RightClick, MiddleClick, LocalZoom, Keys, None;
     /// `double_click`: RightClick, MiddleClick, LocalZoom, Keys, None (Raw
     /// becomes `None`, since a raw double click is two raw clicks); `hold`: as
-    /// `click` plus Eraser; drag triggers: Raw, Scroll, PcZoom, None.
+    /// `click` plus Eraser; `double_hold`: Eraser, Keys, None; drag triggers: Raw, Scroll, PcZoom,
+    /// StepZoom, WheelZoom, None; Pan is also allowed for the contact drag only.
     fn sanitized(self) -> ButtonMap {
         use ButtonAction::*;
         let click_like = |a: ButtonAction| match a {
@@ -182,7 +230,7 @@ impl ButtonMap {
             _ => click_like(a),
         };
         let drag = |a: ButtonAction| match a {
-            Raw | Scroll | PcZoom | None => a,
+            Raw | Scroll | PcZoom | StepZoom | WheelZoom | None => a,
             _ => None,
         };
         ButtonMap {
@@ -193,7 +241,14 @@ impl ButtonMap {
                 a => click_like(a),
             },
             hold: hold(self.hold),
-            hold_drag_contact: drag(self.hold_drag_contact),
+            double_hold: match self.double_hold {
+                Eraser | Keys => self.double_hold,
+                _ => None,
+            },
+            hold_drag_contact: match self.hold_drag_contact {
+                Pan => Pan,
+                a => drag(a),
+            },
             hold_drag_hover: drag(self.hold_drag_hover),
         }
     }
@@ -215,6 +270,9 @@ pub struct InputConfig {
     pub double_click_ms: u32,
     /// Movement tolerance in view pixels.
     pub slop_px: f32,
+    /// View pixels of vertical pen travel per [`ButtonAction::StepZoom`] step,
+    /// clamped to 20..=400 on use.
+    pub zoom_step_px: f32,
     /// View pixels of pen travel per scroll notch (120 units).
     pub scroll_px_per_notch: f32,
     /// Reject fingers while the pen is near.
@@ -234,6 +292,7 @@ impl Default for InputConfig {
             zoom_factor: 2.0,
             double_click_ms: 300,
             slop_px: 24.0,
+            zoom_step_px: 80.0,
             scroll_px_per_notch: 48.0,
             palm_rejection: true,
             palm_grace_ms: 300,
@@ -261,10 +320,23 @@ impl InputConfig {
             (&mut m.click, k.click),
             (&mut m.double_click, k.double_click),
             (&mut m.hold, k.hold),
+            (&mut m.double_hold, k.double_hold),
         ] {
             if *a == ButtonAction::Keys && combo.is_empty() {
                 *a = ButtonAction::None;
             }
+        }
+        // A step zoom needs at least one direction to press.
+        if k.zoom_in.is_empty() && k.zoom_out.is_empty() {
+            for a in [&mut m.hold_drag_contact, &mut m.hold_drag_hover] {
+                if *a == ButtonAction::StepZoom {
+                    *a = ButtonAction::None;
+                }
+            }
+        }
+        // A pan needs a combination to press.
+        if k.pan.is_empty() && m.hold_drag_contact == ButtonAction::Pan {
+            m.hold_drag_contact = ButtonAction::None;
         }
         m
     }
@@ -278,6 +350,7 @@ pub(crate) struct Params {
     pub double_us: u64,
     pub slop: f32,
     pub zoom: f32,
+    pub zoom_step: f32,
     pub scroll_n: f32,
     pub palm: bool,
     pub grace_us: u64,
@@ -293,6 +366,7 @@ impl Params {
             double_us: u64::from(c.double_click_ms.clamp(150, 800)) * 1000,
             slop: fin(c.slop_px, 24.0).max(0.0),
             zoom: fin(c.zoom_factor, 2.0).clamp(1.25, 4.0),
+            zoom_step: fin(c.zoom_step_px, 80.0).clamp(20.0, 400.0),
             scroll_n: {
                 let n = fin(c.scroll_px_per_notch, 48.0);
                 if n > 0.0 { n } else { 48.0 }

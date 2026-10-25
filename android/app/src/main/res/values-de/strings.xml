@@ -25,6 +25,7 @@
     <string name="trigger_click">Klick</string>
     <string name="trigger_double_click">Doppelklick</string>
     <string name="trigger_hold">Halten</string>
+    <string name="trigger_double_hold">Doppelklick + Halten</string>
     <string name="trigger_hold_drag_contact">Halten + Ziehen mit Berührung</string>
     <string name="trigger_hold_drag_hover">Halten + Bewegen in der Luft</string>
     <string name="action_raw">Direkte Taste</string>
@@ -34,19 +35,27 @@
     <string name="action_eraser">Radierer</string>
     <string name="action_scroll">Scrollen</string>
     <string name="action_pc_zoom">Zoom am PC</string>
+    <string name="action_step_zoom">Zoom in Stufen</string>
+    <string name="action_wheel_zoom">Zoom mit dem Mausrad, in Stufen</string>
+    <string name="action_pan">Arbeitsfläche verschieben</string>
     <string name="action_none">Keine</string>
     <string name="settings_zoom_factor">Zoomstufe</string>
     <string name="settings_air_actions_on">Die Air-Aktionen von Samsung sind aktiviert. Sie können auf Tastendrücke reagieren, die bei aufgesetzter Stiftspitze beginnen. Deaktiviere sie unter Einstellungen → Erweiterte Funktionen → S Pen → Air-Aktionen.</string>
     <string name="settings_air_actions_unknown">Wenn die Stifttaste die Air-Aktionen von Samsung auslöst, deaktiviere sie unter Einstellungen → Erweiterte Funktionen → S Pen → Air-Aktionen.</string>
     <string name="profile_graphics_tablet">Grafiktablett</string>
-    <string name="profile_graphics_tablet_desc">Das Halten der Taste drückt ein Tastenkürzel (standardmäßig Strg+Leertaste), wie die Taste am Stift eines Grafiktabletts; Klick = Rechtsklick; Doppelklick = lokaler Zoom.</string>
+    <string name="profile_graphics_tablet_desc">Das Halten der Taste drückt ein Tastenkürzel (standardmäßig Strg+Leertaste), wie die Taste am Stift eines Grafiktabletts; Klick = Rechtsklick; Doppelklick = lokaler Zoom. Doppelklick + Halten drückt ein zweites Tastenkürzel (standardmäßig Strg+Alt+Leertaste).</string>
     <string name="action_keys">Tastenkürzel</string>
     <string name="keys_title_hold">Kürzel beim Halten</string>
+    <string name="keys_title_double_hold">Kürzel bei Doppelklick + Halten</string>
+    <string name="keys_title_zoom_in">Kürzel zum Vergrößern</string>
+    <string name="keys_title_zoom_out">Kürzel zum Verkleinern</string>
+    <string name="keys_title_pan">Kürzel zum Verschieben der Arbeitsfläche</string>
     <string name="keys_title_click">Kürzel beim Klicken</string>
     <string name="keys_title_double_click">Kürzel beim Doppelklick</string>
     <string name="keys_preset_ctrl_space">Strg + Leertaste</string>
     <string name="keys_preset_space">Leertaste</string>
     <string name="keys_preset_alt_space">Alt + Leertaste</string>
+    <string name="keys_preset_ctrl_alt_space">Strg + Alt + Leertaste</string>
     <string name="keys_preset_ctrl_z">Strg + Z</string>
     <string name="keys_preset_ctrl_shift_z">Strg + Umschalt + Z</string>
     <string name="keys_mod_ctrl">Strg</string>
