@@ -87,6 +87,11 @@
     <string name="cd_choose_action">Elegir acción</string>
     <string name="status_wifi_connecting">Conectando por Wi-Fi a %1$s…</string>
     <string name="status_wifi_handshake">Conectado por Wi-Fi a %1$s, negociando…</string>
+    <string name="status_usb_connecting">Conectando por USB (accesorio)…</string>
+    <string name="status_usb_handshake">Conectado por USB (accesorio), negociando…</string>
+    <string name="status_ended_usb">Desconectado (%1$s). Reconectando por USB (accesorio)…</string>
+    <string name="status_usb_permission">Permití el acceso USB para conectarte a la PC.</string>
+    <string name="status_usb_open_failed">No se pudo abrir el accesorio USB. Reintentando…</string>
     <string name="status_wifi_latency">El Wi-Fi agrega latencia; el USB es lo mejor para dibujar.</string>
     <string name="section_connection">Conexión</string>
     <string name="connection_summary_usb">Solo USB</string>

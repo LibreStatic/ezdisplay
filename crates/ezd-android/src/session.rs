@@ -9,16 +9,20 @@ use ezd_client_core::{
     ClientConfig, ClientEnd, ClientHandle, ClientHandler, CursorSnapshot, Flow, HandlerResult,
     run_client,
 };
-use ezd_link::Link;
+use ezd_link::{BlockingOptions, Link};
 use ezd_proto::pair::Fingerprint;
 use ezd_proto::{CursorShape, StreamColor, StreamConfig, VideoFrame};
+use std::fs::File;
 use std::net::SocketAddr;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// The accessory gadget driver moves 16 KiB per transfer; smaller reads can fail or truncate.
+const ACCESSORY_BUF: usize = 16 * 1024;
 /// Wi-Fi sessions retry while the host is busy or not reachable yet, up to this long.
 const WIFI_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -41,6 +45,11 @@ pub enum Target {
         /// Directory with this device's identity and the paired hosts.
         state_dir: PathBuf,
     },
+    /// The USB accessory file descriptor (Android Open Accessory). Owned: closed when the session ends.
+    Accessory {
+        /// Descriptor detached from the `ParcelFileDescriptor`.
+        fd: Arc<OwnedFd>,
+    },
 }
 
 impl Target {
@@ -48,6 +57,7 @@ impl Target {
         match self {
             Target::Tcp { host, port } => format!("{host}:{port}"),
             Target::Wifi { addr, .. } => addr.to_string(),
+            Target::Accessory { .. } => "usb-accessory".to_string(),
         }
     }
 }
@@ -231,6 +241,29 @@ async fn connect(target: &Target) -> Result<Link, ConnectError> {
                 detail: format!("connect {addr}: {e}"),
                 code: Some(error_code(&e)),
             }),
+        Target::Accessory { fd } => {
+            let io = |what: &str, e: std::io::Error| ConnectError::from(format!("{what}: {e}"));
+            let reader = fd
+                .try_clone()
+                .map(File::from)
+                .map_err(|e| io("accessory fd", e))?;
+            let writer = fd
+                .try_clone()
+                .map(File::from)
+                .map_err(|e| io("accessory fd", e))?;
+            Link::from_blocking(
+                reader,
+                writer,
+                "usb-accessory",
+                BlockingOptions {
+                    read_buf: ACCESSORY_BUF,
+                    write_buf: ACCESSORY_BUF,
+                    thread_name: "ezd-acc".into(),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| io("accessory link", e))
+        }
     }
 }
 

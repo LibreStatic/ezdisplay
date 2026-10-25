@@ -6,6 +6,10 @@
     <!-- Wi-Fi discovery (NsdManager) and the multicast lock that keeps mDNS replies coming in. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- USB accessory (AOA) transport: optional, the app also works over adb and Wi-Fi without it. -->
+    <uses-feature
+        android:name="android.hardware.usb.accessory"
+        android:required="false" />
     <!--
       Raising targetSdk to 37 will need android.permission.ACCESS_LOCAL_NETWORK (a runtime permission for
       reaching LAN hosts and for mDNS discovery). Not requested while targetSdk is 36.
@@ -21,11 +25,19 @@
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density"
             android:exported="true"
+            android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- The PC host switched the tablet into accessory mode; a running instance gets it in onNewIntent. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
+                android:resource="@xml/accessory_filter" />
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />

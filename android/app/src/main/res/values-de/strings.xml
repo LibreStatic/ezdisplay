@@ -87,6 +87,11 @@
     <string name="cd_choose_action">Aktion auswählen</string>
     <string name="status_wifi_connecting">Verbinde über WLAN mit %1$s…</string>
     <string name="status_wifi_handshake">Über WLAN mit %1$s verbunden, Verhandlung läuft…</string>
+    <string name="status_usb_connecting">Verbinde über USB (Zubehör)…</string>
+    <string name="status_usb_handshake">Über USB (Zubehör) verbunden, Verhandlung läuft…</string>
+    <string name="status_ended_usb">Verbindung getrennt (%1$s). Verbinde erneut über USB (Zubehör)…</string>
+    <string name="status_usb_permission">Erlaube den USB-Zugriff, um dich mit dem PC zu verbinden.</string>
+    <string name="status_usb_open_failed">Das USB-Zubehör konnte nicht geöffnet werden. Neuer Versuch…</string>
     <string name="status_wifi_latency">WLAN erhöht die Latenz; USB ist am besten zum Zeichnen.</string>
     <string name="section_connection">Verbindung</string>
     <string name="connection_summary_usb">Nur USB</string>

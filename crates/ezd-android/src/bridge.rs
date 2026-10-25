@@ -17,6 +17,7 @@ use jni::objects::{JByteArray, JClass, JFloatArray, JIntArray, JLongArray, JObje
 use jni::sys::{jboolean, jint};
 use ndk::native_window::NativeWindow;
 use std::cell::RefCell;
+use std::os::fd::FromRawFd;
 use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -196,6 +197,44 @@ pub extern "system" fn startWifi<'local>(
             state_dir: state_dir.into(),
         };
         start_session(window, target, caps);
+        Ok(JString::null())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `external fun startFd(surface: Surface?, fd: Int, capsJson: String): String?`
+/// Streams over the USB accessory file descriptor. Takes ownership of `fd` (Kotlin detached it
+/// from its `ParcelFileDescriptor`): it is closed exactly once, when the session ends. Returns
+/// null on success or an error message.
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
+pub extern "system" fn startFd<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    surface: JObject<'local>,
+    fd: jint,
+    caps_json: JString<'local>,
+) -> JString<'local> {
+    init_logging();
+    env.with_env(|env| -> jni::errors::Result<JString<'local>> {
+        let caps_json = caps_json.try_to_string(env)?;
+        let mut err = |m: String| env.new_string(m);
+        if fd < 0 {
+            return err(format!("bad accessory fd {fd}"));
+        }
+        // SAFETY: Kotlin detached `fd` and hands over its only owner; nothing else closes it.
+        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        let caps = match parse_caps(&caps_json) {
+            Ok(c) => c,
+            Err(e) => return err(e),
+        };
+        let window = window_from(env, &surface);
+        start_session(
+            window,
+            Target::Accessory {
+                fd: std::sync::Arc::new(fd),
+            },
+            caps,
+        );
         Ok(JString::null())
     })
     .resolve::<ThrowRuntimeExAndDefault>()
