@@ -28,6 +28,7 @@ class SettingsPhoneTest : SettingsUiTestBase() {
         rule.onNodeWithText(str(R.string.settings_screen_title)).assertExists()
         rule.onNodeWithText(str(R.string.profile_desktop)).assertExists()
         tag("shortcut_keys_hold").assertExists()
+        tag("shortcut_keys_double_hold").assertExists()
         tag("section_Pen").assertDoesNotExist()
         tag("editor_pane").assertDoesNotExist()
         rule.onNodeWithText(str(R.string.section_zoom)).assertExists()

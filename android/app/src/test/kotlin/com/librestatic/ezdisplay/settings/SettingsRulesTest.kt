@@ -8,12 +8,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SettingsRulesTest {
-    private fun custom(click: String = "raw", dbl: String = "local_zoom", hold: String = "raw") = SettingsState(
+    private fun custom(
+        click: String = "raw",
+        dbl: String = "local_zoom",
+        hold: String = "raw",
+        dblHold: String = "none",
+        contact: String = "raw",
+        hover: String = "raw",
+    ) = SettingsState(
         profile = "custom",
         custom = SettingsState().custom + mapOf(
             InputPrefs.CUSTOM_CLICK to click,
             InputPrefs.CUSTOM_DOUBLE_CLICK to dbl,
             InputPrefs.CUSTOM_HOLD to hold,
+            InputPrefs.CUSTOM_DOUBLE_HOLD to dblHold,
+            InputPrefs.CUSTOM_HOLD_DRAG_CONTACT to contact,
+            InputPrefs.CUSTOM_HOLD_DRAG_HOVER to hover,
         ),
     )
 
@@ -23,8 +33,11 @@ class SettingsRulesTest {
         }
     }
 
-    @Test fun graphicsTabletShowsOnlyHold() {
-        assertEquals(listOf(InputPrefs.KEYS_HOLD), visibleKeyEditors(SettingsState(profile = "graphics_tablet")))
+    @Test fun graphicsTabletShowsHoldAndDoubleHold() {
+        assertEquals(
+            listOf(InputPrefs.KEYS_HOLD, InputPrefs.KEYS_DOUBLE_HOLD),
+            visibleKeyEditors(SettingsState(profile = "graphics_tablet")),
+        )
     }
 
     @Test fun customWithoutKeysShowsNone() {
@@ -33,9 +46,13 @@ class SettingsRulesTest {
 
     @Test fun customShowsEditorsInOrder() {
         assertEquals(
-            listOf(InputPrefs.KEYS_CLICK, InputPrefs.KEYS_DOUBLE_CLICK, InputPrefs.KEYS_HOLD),
-            visibleKeyEditors(custom("keys", "keys", "keys")),
+            listOf(
+                InputPrefs.KEYS_CLICK, InputPrefs.KEYS_DOUBLE_CLICK, InputPrefs.KEYS_HOLD, InputPrefs.KEYS_DOUBLE_HOLD,
+            ),
+            visibleKeyEditors(custom("keys", "keys", "keys", "keys")),
         )
+        assertEquals(listOf(InputPrefs.KEYS_DOUBLE_HOLD), visibleKeyEditors(custom(dblHold = "keys")))
+        assertEquals(emptyList<String>(), visibleKeyEditors(custom(dblHold = "eraser")))
         assertEquals(listOf(InputPrefs.KEYS_CLICK), visibleKeyEditors(custom(click = "keys")))
         assertEquals(listOf(InputPrefs.KEYS_DOUBLE_CLICK), visibleKeyEditors(custom(dbl = "keys")))
         assertEquals(listOf(InputPrefs.KEYS_HOLD), visibleKeyEditors(custom(hold = "keys")))
@@ -43,6 +60,29 @@ class SettingsRulesTest {
             listOf(InputPrefs.KEYS_CLICK, InputPrefs.KEYS_HOLD),
             visibleKeyEditors(custom(click = "keys", hold = "keys")),
         )
+    }
+
+    @Test fun stepZoomOnEitherDragShowsBothZoomEditors() {
+        val both = listOf(InputPrefs.KEYS_ZOOM_IN, InputPrefs.KEYS_ZOOM_OUT)
+        assertEquals(both, visibleKeyEditors(custom(contact = "step_zoom")))
+        assertEquals(both, visibleKeyEditors(custom(hover = "step_zoom")))
+        assertEquals(
+            listOf(InputPrefs.KEYS_CLICK) + both,
+            visibleKeyEditors(custom(click = "keys", contact = "step_zoom", hover = "step_zoom")),
+        )
+        assertEquals(emptyList<String>(), visibleKeyEditors(custom(contact = "scroll")))
+    }
+
+    @Test fun panOnTheContactDragShowsThePanEditor() {
+        assertEquals(listOf(InputPrefs.KEYS_PAN), visibleKeyEditors(custom(contact = "pan")))
+        assertEquals(emptyList<String>(), visibleKeyEditors(custom(hover = "pan")))
+        assertEquals(emptyList<String>(), visibleKeyEditors(custom(contact = "wheel_zoom", hover = "wheel_zoom")))
+        assertEquals(listOf(InputPrefs.KEYS_HOLD), visibleKeyEditors(custom(hold = "keys", contact = "pan")))
+    }
+
+    @Test fun zoomEditorsAreHiddenWhileHoldSendsKeys() {
+        assertEquals(listOf(InputPrefs.KEYS_HOLD), visibleKeyEditors(custom(hold = "keys", contact = "step_zoom")))
+        assertEquals(emptyList<String>(), visibleKeyEditors(SettingsState(profile = "desktop")))
     }
 
     @Test fun nonCustomIgnoresKeysActions() {

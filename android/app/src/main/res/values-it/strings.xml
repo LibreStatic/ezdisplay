@@ -25,6 +25,7 @@
     <string name="trigger_click">Clic</string>
     <string name="trigger_double_click">Doppio clic</string>
     <string name="trigger_hold">Tieni premuto</string>
+    <string name="trigger_double_hold">Doppio clic + pressione prolungata</string>
     <string name="trigger_hold_drag_contact">Tieni premuto + trascina toccando</string>
     <string name="trigger_hold_drag_hover">Tieni premuto + muovi in aria</string>
     <string name="action_raw">Pulsante diretto</string>
@@ -34,19 +35,27 @@
     <string name="action_eraser">Gomma</string>
     <string name="action_scroll">Scorrimento</string>
     <string name="action_pc_zoom">Zoom sul PC</string>
+    <string name="action_step_zoom">Zoom a scatti</string>
+    <string name="action_wheel_zoom">Zoom con la rotellina, a scatti</string>
+    <string name="action_pan">Sposta la tela</string>
     <string name="action_none">Nessuna</string>
     <string name="settings_zoom_factor">Livello di zoom</string>
     <string name="settings_air_actions_on">Le azioni aeree di Samsung sono attive. Possono reagire alle pressioni del pulsante che iniziano con la punta appoggiata. Disattivale in Impostazioni → Funzioni avanzate → S Pen → Azioni aeree.</string>
     <string name="settings_air_actions_unknown">Se il pulsante della penna attiva le azioni aeree di Samsung, disattivale in Impostazioni → Funzioni avanzate → S Pen → Azioni aeree.</string>
     <string name="profile_graphics_tablet">Tavoletta grafica</string>
-    <string name="profile_graphics_tablet_desc">Tenere premuto il pulsante preme una scorciatoia da tastiera (Ctrl+Spazio per impostazione predefinita), come il pulsante della penna di una tavoletta grafica; clic = clic destro; doppio clic = zoom locale.</string>
+    <string name="profile_graphics_tablet_desc">Tenere premuto il pulsante preme una scorciatoia da tastiera (Ctrl+Spazio per impostazione predefinita), come il pulsante della penna di una tavoletta grafica; clic = clic destro; doppio clic = zoom locale. Doppio clic + pressione prolungata preme una seconda scorciatoia (Ctrl+Alt+Spazio per impostazione predefinita).</string>
     <string name="action_keys">Scorciatoia da tastiera</string>
     <string name="keys_title_hold">Scorciatoia alla pressione prolungata</string>
+    <string name="keys_title_double_hold">Scorciatoia al doppio clic + pressione prolungata</string>
+    <string name="keys_title_zoom_in">Scorciatoia per ingrandire</string>
+    <string name="keys_title_zoom_out">Scorciatoia per rimpicciolire</string>
+    <string name="keys_title_pan">Scorciatoia per spostare la tela</string>
     <string name="keys_title_click">Scorciatoia al clic</string>
     <string name="keys_title_double_click">Scorciatoia al doppio clic</string>
     <string name="keys_preset_ctrl_space">Ctrl + Spazio</string>
     <string name="keys_preset_space">Spazio</string>
     <string name="keys_preset_alt_space">Alt + Spazio</string>
+    <string name="keys_preset_ctrl_alt_space">Ctrl + Alt + Spazio</string>
     <string name="keys_preset_ctrl_z">Ctrl + Z</string>
     <string name="keys_preset_ctrl_shift_z">Ctrl + Maiusc + Z</string>
     <string name="keys_mod_ctrl">Ctrl</string>

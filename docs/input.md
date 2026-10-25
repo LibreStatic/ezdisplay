@@ -22,12 +22,48 @@ Like a graphics-tablet driver, the tablet can send a key combination from the S 
   like on a graphics tablet. A quick click in the air is a right click and a double click toggles the local
   zoom. Ctrl + Space is a common drag-zoom shortcut in drawing apps; the combination can be changed in
   the app.
+  Double click + hold (a second press within the double-click time, kept down) keeps a second
+  combination pressed, Ctrl + Alt + Space by default, a common zoom-out shortcut in drawing apps. A quick
+  double click keeps its action (local zoom), now fired when the button is released.
 - **Custom profile.** Click, double click and hold can each tap or hold their own combination.
-  With hold = shortcut, the two drag triggers are ignored.
+  With hold = shortcut, the two drag triggers are ignored. Double click + hold (off by default) can hold
+  its own combination or switch to the eraser; it only applies when click and double click are both set.
 
-The hold is resolved at the first of: the hold time, the tip touching, or the pen moving in hover.
+The hold, and the second press of a double click + hold, are resolved at the first of: the hold time,
+the tip touching, or the pen moving in hover (a release before that is a plain click or double click).
 The keys are released when the button is released, when the pen leaves range and when the session
 ends, so a key cannot stay stuck on the PC.
+
+### Zoom in steps
+
+Some drawing apps have no wheel or continuous zoom: their zoom is a shortcut plus a click (for example Ctrl + Space
+and a click zooms in, Ctrl + Alt + Space and a click zooms out). In the Custom profile, set "Zoom in steps" on
+"Hold + drag touching" and/or "Hold + move in the air": hold the button, then drag up to zoom in or down to zoom
+out. For every 80 view pixels of vertical travel (horizontal travel is ignored) the tablet taps the zoom shortcut
+and clicks the left button, then releases the shortcut, all at the point where the drag started, because these
+apps zoom around the click. Steps are at least 60 ms apart and at most three are queued, so a long fast drag
+stays bounded. While the drag lasts the tip touch reaches the PC as hover, so nothing is drawn. The two shortcuts
+(Ctrl + Space and Ctrl + Alt + Space by default) are edited in the app; with one of them empty, steps in that
+direction do nothing. If hold is set to a shortcut, the drags are ignored as usual.
+
+### Zoom with the wheel, in steps
+
+Some drawing apps zoom one level per mouse wheel message, whatever its size, so the continuous scroll zoom is
+far too fast. In the Custom profile, set "Zoom with the wheel, in steps" on "Hold + drag touching" and/or
+"Hold + move in the air": hold the button, then drag up to zoom in or down to zoom out. For every 80 view pixels
+of vertical travel (the same step distance, 60 ms gap and queue of three as "Zoom in steps") the tablet sends
+exactly one wheel notch, up or down, at the point where the drag started. No keys or clicks are sent. While the
+drag lasts the tip touch reaches the PC as hover.
+
+### Pan the canvas
+
+Many drawing apps pan the canvas with Space and a drag. In the Custom profile, set "Pan the canvas" on
+"Hold + drag touching" (it is not available in the air): hold the button and touch with the tip. The pan
+shortcut (Space by default, edited in the app) is pressed before the contact reaches the PC, then the pen is
+forwarded as usual, so the app sees the shortcut plus a drag. The shortcut is released after the tip lifts; if
+the button is released first, the shortcut stays down until the lift. It is also released when the pen leaves
+range, on cancel and when the session ends. The pan starts at the touch, without waiting for the drag
+distance. If hold is set to a shortcut, the drags are ignored as usual.
 
 Keys are physical positions (USB HID usages of a US keyboard); the PC applies its own layout, as
 with a real USB keyboard. The host announces the `KEYS` capability; an older host does not, and

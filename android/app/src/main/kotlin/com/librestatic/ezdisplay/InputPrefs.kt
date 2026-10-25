@@ -11,6 +11,7 @@ object InputPrefs {
     const val CUSTOM_CLICK = "custom_click"
     const val CUSTOM_DOUBLE_CLICK = "custom_double_click"
     const val CUSTOM_HOLD = "custom_hold"
+    const val CUSTOM_DOUBLE_HOLD = "custom_double_hold"
     const val CUSTOM_HOLD_DRAG_CONTACT = "custom_hold_drag_contact"
     const val CUSTOM_HOLD_DRAG_HOVER = "custom_hold_drag_hover"
     const val ZOOM_FACTOR = "zoom_factor"
@@ -19,6 +20,10 @@ object InputPrefs {
     const val KEYS_CLICK = "keys_click"
     const val KEYS_DOUBLE_CLICK = "keys_double_click"
     const val KEYS_HOLD = "keys_hold"
+    const val KEYS_DOUBLE_HOLD = "keys_double_hold"
+    const val KEYS_ZOOM_IN = "keys_zoom_in"
+    const val KEYS_ZOOM_OUT = "keys_zoom_out"
+    const val KEYS_PAN = "keys_pan"
 
     const val MOD_CTRL = 1
     const val MOD_SHIFT = 2
@@ -66,6 +71,10 @@ object InputPrefs {
     val DEFAULT_KEYS_CLICK = KeyCombo(MOD_CTRL, 0x1D)
     val DEFAULT_KEYS_DOUBLE_CLICK = KeyCombo(MOD_CTRL or MOD_SHIFT, 0x1D)
     val DEFAULT_KEYS_HOLD = KeyCombo(MOD_CTRL, 0x2C)
+    val DEFAULT_KEYS_DOUBLE_HOLD = KeyCombo(MOD_CTRL or MOD_ALT, 0x2C)
+    val DEFAULT_KEYS_ZOOM_IN = KeyCombo(MOD_CTRL, 0x2C)
+    val DEFAULT_KEYS_ZOOM_OUT = KeyCombo(MOD_CTRL or MOD_ALT, 0x2C)
+    val DEFAULT_KEYS_PAN = KeyCombo(0, 0x2C)
 
     /** Selectable keys in spinner order (HID usage ids). */
     val KEY_USAGES: List<Int> = buildList {
@@ -102,6 +111,10 @@ object InputPrefs {
         when (key) {
             KEYS_CLICK -> DEFAULT_KEYS_CLICK
             KEYS_DOUBLE_CLICK -> DEFAULT_KEYS_DOUBLE_CLICK
+            KEYS_DOUBLE_HOLD -> DEFAULT_KEYS_DOUBLE_HOLD
+            KEYS_ZOOM_IN -> DEFAULT_KEYS_ZOOM_IN
+            KEYS_ZOOM_OUT -> DEFAULT_KEYS_ZOOM_OUT
+            KEYS_PAN -> DEFAULT_KEYS_PAN
             else -> DEFAULT_KEYS_HOLD
         },
     )
@@ -113,7 +126,11 @@ object InputPrefs {
             "graphics_tablet" -> true
             "custom" -> p.getString(CUSTOM_CLICK, "raw") == "keys" ||
                 p.getString(CUSTOM_DOUBLE_CLICK, "local_zoom") == "keys" ||
-                p.getString(CUSTOM_HOLD, "raw") == "keys"
+                p.getString(CUSTOM_HOLD, "raw") == "keys" ||
+                p.getString(CUSTOM_DOUBLE_HOLD, "none") == "keys" ||
+                p.getString(CUSTOM_HOLD_DRAG_CONTACT, "raw") == "step_zoom" ||
+                p.getString(CUSTOM_HOLD_DRAG_HOVER, "raw") == "step_zoom" ||
+                p.getString(CUSTOM_HOLD_DRAG_CONTACT, "raw") == "pan"
             else -> false
         }
     }
@@ -128,6 +145,7 @@ object InputPrefs {
             .put("click", p.getString(CUSTOM_CLICK, "raw"))
             .put("double_click", p.getString(CUSTOM_DOUBLE_CLICK, "local_zoom"))
             .put("hold", p.getString(CUSTOM_HOLD, "raw"))
+            .put("double_hold", p.getString(CUSTOM_DOUBLE_HOLD, "none"))
             .put("hold_drag_contact", p.getString(CUSTOM_HOLD_DRAG_CONTACT, "raw"))
             .put("hold_drag_hover", p.getString(CUSTOM_HOLD_DRAG_HOVER, "raw"))
         fun combo(key: String) = keyCombo(context, key).let {
@@ -137,6 +155,10 @@ object InputPrefs {
             .put("click", combo(KEYS_CLICK))
             .put("double_click", combo(KEYS_DOUBLE_CLICK))
             .put("hold", combo(KEYS_HOLD))
+            .put("double_hold", combo(KEYS_DOUBLE_HOLD))
+            .put("zoom_in", combo(KEYS_ZOOM_IN))
+            .put("zoom_out", combo(KEYS_ZOOM_OUT))
+            .put("pan", combo(KEYS_PAN))
         return JSONObject()
             .put("profile", profile(p))
             .put("custom", custom)

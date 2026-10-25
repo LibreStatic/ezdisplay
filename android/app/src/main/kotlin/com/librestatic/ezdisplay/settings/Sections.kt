@@ -328,8 +328,6 @@ private sealed interface GestureEntry {
     class Shortcut(val prefKey: String) : GestureEntry
 }
 
-private val DragTriggers = setOf(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, InputPrefs.CUSTOM_HOLD_DRAG_HOVER)
-
 /** The Custom profile's gesture list; trigger rows open an action menu and `keys` actions add a shortcut line. */
 @Composable
 fun CustomGestures(
@@ -343,13 +341,16 @@ fun CustomGestures(
     val visible = visibleKeyEditors(state)
     val disabled = dragsDisabled(state)
     val first = buildList<GestureEntry> {
-        for (t in Triggers.filter { it.key !in DragTriggers }) {
+        for (t in Triggers.filter { it.key !in DragTriggerKeys }) {
             add(GestureEntry.Gesture(t))
-            KeyEditors.firstOrNull { it.triggerKey == t.key && it.prefKey in visible }
+            KeyEditors.firstOrNull { it.triggerKeys == listOf(t.key) && it.prefKey in visible }
                 ?.let { add(GestureEntry.Shortcut(it.prefKey)) }
         }
     }
-    val drags = Triggers.filter { it.key in DragTriggers }.map { GestureEntry.Gesture(it) }
+    // The step zoom shortcuts follow both drag triggers.
+    val drags = Triggers.filter { it.key in DragTriggerKeys }.map<Trigger, GestureEntry> { GestureEntry.Gesture(it) } +
+        KeyEditors.filter { e -> e.triggerKeys.any { it in DragTriggerKeys } && e.prefKey in visible }
+            .map { GestureEntry.Shortcut(it.prefKey) }
     Column(modifier.fillMaxWidth()) {
         GestureGroup(first, state, actions, onOpenEditor, selectedEditor, shortcutMinHeight, enabled = true)
         Spacer(Modifier.height(8.dp))
