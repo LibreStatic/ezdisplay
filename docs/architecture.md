@@ -8,7 +8,7 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 
 ## Core principles
 
-1. **Same GPU for everything.** The virtual display is rendered, captured and encoded on one adapter, with no CPU or cross-GPU copies. By default this is the adapter that drives the primary display. The user can override it with "prefer dGPU". The host verifies the real adapter (LUID on Windows) and warns when it does not match.
+1. **Same GPU for everything.** The virtual display is rendered, captured and encoded on one adapter, with no CPU or cross-GPU copies. By default this is the adapter that drives the primary display, except on Windows hybrid laptops, where the discrete GPU is used when it has a hardware encoder (its encoder reads the captured texture without a copy). The user can force the discrete GPU with "prefer dGPU" or pick any adapter explicitly. The host verifies the real adapter (LUID on Windows) and warns when it does not match.
 2. **The cursor is drawn locally.** The cursor shape and position travel on their own channel and are drawn by the tablet on top of the video.
 3. **Never queue video.** The link has a credit of one video frame. The host captures and encodes only when the previous frame has left. When the link is busy, frames are coalesced before encoding, never dropped after it.
 4. **Low-latency codec settings at both ends.** No B-frames, CBR with a VBV of about one frame, an infinite GOP with keyframes on request, and decoder low-latency keys on Android (`KEY_LOW_LATENCY` plus vendor keys).

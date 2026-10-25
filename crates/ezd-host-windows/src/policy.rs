@@ -6,8 +6,11 @@
 //! Decision order (first that applies wins):
 //! 1. `--adapter`: a name substring or a LUID (`0x<hex>` or `<high>:<low>` in hex).
 //! 2. `--prefer-dgpu`: the DXGI high-performance adapter.
-//! 3. The adapter that owns the primary display (what the desktop already runs on;
-//!    in a MUX discrete-only mode that is the NVIDIA GPU, in hybrid mode the iGPU).
+//! 3. Hybrid laptops: when another GPU ranks above the one that owns the primary
+//!    display (the iGPU) and has a hardware encoder, that discrete GPU. Its encoder
+//!    takes the captured texture without a copy, unlike the iGPU path.
+//! 4. The adapter that owns the primary display (what the desktop already runs on;
+//!    in a MUX discrete-only mode that is the NVIDIA GPU).
 //!
 //! The same adapter is used for the VDD, DDA capture and the encoder, so frames
 //! never cross the PCIe bus.
@@ -125,6 +128,8 @@ pub enum Reason {
     Explicit,
     /// `--prefer-dgpu`: the high-performance adapter.
     PreferDgpu,
+    /// Hybrid mode: the discrete GPU instead of the iGPU that drives the panel.
+    HybridDiscrete,
     /// The adapter that drives the primary display.
     PrimaryDisplay,
     /// No primary display found: the high-performance adapter.
@@ -137,6 +142,9 @@ impl Reason {
         match self {
             Reason::Explicit => "explicit --adapter",
             Reason::PreferDgpu => "--prefer-dgpu (high-performance adapter)",
+            Reason::HybridDiscrete => {
+                "hybrid mode: discrete GPU instead of the iGPU that drives the panel"
+            }
             Reason::PrimaryDisplay => "adapter that drives the primary display",
             Reason::HighPerformanceFallback => {
                 "no primary display adapter found; high-performance adapter"
@@ -273,7 +281,12 @@ pub fn decide(adapters: &[AdapterInfo], opts: &PlatformOptions) -> Result<Decisi
             Reason::PreferDgpu,
         )
     } else if let Some(a) = hw.iter().copied().find(|a| a.owns_primary) {
-        (a, Reason::PrimaryDisplay)
+        match high_performance(&hw) {
+            Some(hp) if hp.luid != a.luid && hw_encoder_for_vendor(hp.vendor_id).is_some() => {
+                (hp, Reason::HybridDiscrete)
+            }
+            _ => (a, Reason::PrimaryDisplay),
+        }
     } else {
         (
             high_performance(&hw).ok_or(PolicyError::NoAdapters)?,
@@ -404,20 +417,39 @@ mod tests {
                 want_chain: &["h264_nvenc", "libx264"],
             },
             Case {
-                label: "hybrid Intel+NVIDIA: iGPU owns the panel",
+                label: "hybrid Intel+NVIDIA: the discrete GPU, not the panel's iGPU",
                 adapters: vec![nvidia(false), intel(true), warp()],
+                opts: opts(None, false),
+                want_name: "NVIDIA GeForce RTX 3050 Laptop GPU",
+                want_reason: Reason::HybridDiscrete,
+                want_chain: &["h264_nvenc", "libx264"],
+            },
+            Case {
+                label: "hybrid AMD+NVIDIA: the discrete GPU, not the panel's iGPU",
+                adapters: vec![nvidia(false), amd(true)],
+                opts: opts(None, false),
+                want_name: "NVIDIA GeForce RTX 3050 Laptop GPU",
+                want_reason: Reason::HybridDiscrete,
+                want_chain: &["h264_nvenc", "libx264"],
+            },
+            Case {
+                label: "hybrid with a discrete GPU of unknown vendor: the panel's iGPU",
+                adapters: vec![
+                    gpu("Mystery GPU", 0xABCD, 5, 4096, 0, 1, false),
+                    intel(true),
+                ],
                 opts: opts(None, false),
                 want_name: "Intel(R) UHD Graphics",
                 want_reason: Reason::PrimaryDisplay,
                 want_chain: &["h264_qsv", "libx264"],
             },
             Case {
-                label: "hybrid AMD+NVIDIA: iGPU owns the panel",
-                adapters: vec![nvidia(false), amd(true)],
+                label: "single iGPU that owns the panel",
+                adapters: vec![intel(true), warp()],
                 opts: opts(None, false),
-                want_name: "AMD Radeon(TM) Graphics",
+                want_name: "Intel(R) UHD Graphics",
                 want_reason: Reason::PrimaryDisplay,
-                want_chain: &["h264_amf", "libx264"],
+                want_chain: &["h264_qsv", "libx264"],
             },
             Case {
                 label: "prefer_dgpu in hybrid Intel+NVIDIA",
