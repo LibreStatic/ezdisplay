@@ -5,8 +5,10 @@
 //!   |-- Hello ------------------->|     (both directions, any order)
 //!   |<------------------- Hello --|
 //!   |-- ClientCaps -------------->|
+//!   |-- ClientHdr (minor >= 5) --->|     the host waits for it when the client speaks minor >= 5
 //!   |<--------------- HostCaps ---|
-//!   |<------------- StreamConfig -|     negotiate(ClientCaps, HostCaps, Prefs)
+//!   |<------------ StreamColor ---|     minor >= 5 only
+//!   |<------------- StreamConfig -|     negotiate_hdr(ClientCaps, HostCaps, Prefs, ..)
 //!   |-- ConfigAck (decoder ready)>|
 //!   |<== CODEC_CONFIG, keyframe ==|     source.start() runs after the ack
 //!   |<==== video / cursor ========|     Ping every 500 ms, RequestKeyframe on demand
@@ -19,13 +21,13 @@ use crate::input::{
     InputBackend, InputCmd, InputContext, InputStats, LiveLatency, PenMode, SharedOffset,
     input_thread,
 };
-use crate::source::{CursorSink, SourceError, VideoSource};
+use crate::source::{CursorSink, SourceError, SourceHdr, VideoSource};
 use crate::time::now_us;
 use ezd_link::{Link, MuxClosed, MuxError, MuxOptions, MuxReceiver, MuxSender, VideoCredit};
 use ezd_proto::{
-    Bye, ClientCaps, ClientOptions, ClientStats, ClockSync, DEFAULT_CHUNK_LEN, Hello, HostCaps,
-    InputStatus, Message, Ping, Pong, Prefs, ProtoError, Reject, Role, StreamConfig, VideoFrame,
-    negotiate,
+    Bye, ClientCaps, ClientHdr, ClientOptions, ClientStats, ClockSync, Codec, DEFAULT_CHUNK_LEN,
+    DynamicRange, Hello, HostCaps, InputStatus, Message, Ping, Pong, Prefs, ProtoError, Reject,
+    Role, StreamColor, StreamConfig, VideoFrame, negotiate_hdr,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -76,6 +78,10 @@ pub enum SessionEvent {
         client_hello: Hello,
         /// Negotiated stream configuration.
         stream: StreamConfig,
+        /// Colour description sent to the client.
+        color: StreamColor,
+        /// Dynamic range decision (HDR10, tone-mapped SDR with the reason, or SDR).
+        dynamic_range: DynamicRange,
     },
     /// Measurements of the last window, once per second.
     Stats(LiveStats),
@@ -151,6 +157,10 @@ pub struct SessionSummary {
     pub client_hello: Hello,
     /// Negotiated stream configuration.
     pub stream: StreamConfig,
+    /// Colour description of the stream.
+    pub color: StreamColor,
+    /// Dynamic range decision of the session.
+    pub dynamic_range: DynamicRange,
     /// Why the session ended.
     pub end: EndReason,
     /// Wall time from handshake start to the end.
@@ -269,8 +279,18 @@ pub async fn run_host_session_with(
         gpu: source.gpu_description(),
         encoders: source.encoders(),
     };
-    let setup = handshake(&tx, &mut rx, &host_caps, &prefs, &opts).await;
-    let (client_hello, client_caps, cfg) = match setup {
+    let hdr_in = HostHdrInputs {
+        source_hdr: source.source_hdr(),
+        main10: source.main10_codecs(),
+    };
+    let setup = handshake(&tx, &mut rx, &host_caps, &prefs, &opts, &hdr_in).await;
+    let Negotiated {
+        hello: client_hello,
+        caps: client_caps,
+        cfg,
+        color,
+        range: dynamic_range,
+    } = match setup {
         Ok(v) => v,
         Err(e) => {
             tx.close();
@@ -278,12 +298,14 @@ pub async fn run_host_session_with(
             return Err(e);
         }
     };
-    tracing::info!(?cfg, client = %client_hello.device_name, "stream configured");
+    tracing::info!(?cfg, ?dynamic_range, client = %client_hello.device_name, "stream configured");
     emit(
         &opts.events,
         SessionEvent::Configured {
             client_hello: client_hello.clone(),
             stream: cfg.clone(),
+            color,
+            dynamic_range,
         },
     );
 
@@ -342,6 +364,7 @@ pub async fn run_host_session_with(
             .name("ezd-video".into())
             .spawn(move || {
                 let mut source = source;
+                source.set_dynamic_range(dynamic_range, &color);
                 let cursor = CursorSink::new(tx.clone());
                 let r = match source.start(&cfg, cursor) {
                     Ok(()) => {
@@ -578,6 +601,8 @@ pub async fn run_host_session_with(
     Ok(SessionSummary {
         client_hello,
         stream: cfg,
+        color,
+        dynamic_range,
         end,
         duration: started.elapsed(),
         frames_sent: shared.frames.load(Ordering::Relaxed),
@@ -674,13 +699,29 @@ async fn expect<T>(
     }
 }
 
+/// What the video source offers for HDR10, queried before the handshake.
+struct HostHdrInputs {
+    source_hdr: Option<SourceHdr>,
+    main10: Vec<Codec>,
+}
+
+/// Outcome of a successful handshake.
+struct Negotiated {
+    hello: Hello,
+    caps: ClientCaps,
+    cfg: StreamConfig,
+    color: StreamColor,
+    range: DynamicRange,
+}
+
 async fn handshake(
     tx: &MuxSender,
     rx: &mut MuxReceiver,
     host_caps: &HostCaps,
     prefs: &Prefs,
     opts: &SessionOptions,
-) -> Result<(Hello, ClientCaps, StreamConfig), SessionError> {
+    hdr_in: &HostHdrInputs,
+) -> Result<Negotiated, SessionError> {
     let wait = opts.handshake_timeout;
     tx.send_control(Message::Hello(Hello::new(
         Role::Host,
@@ -701,21 +742,54 @@ async fn handshake(
         o => Err(o),
     })
     .await?;
+    // A client with minor >= 5 answers the host `Hello` with `ClientHdr` (always, see the client
+    // session); an older client sends none and is treated as not HDR capable.
+    let client_hdr: Option<ClientHdr> = if hello.supports_hdr() {
+        Some(
+            expect(rx, tx, "ClientHdr", wait, |m| match m {
+                Message::ClientHdr(h) => Ok(h),
+                o => Err(o),
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
     tx.send_control(Message::HostCaps(host_caps.clone()))?;
-    let cfg = match negotiate(&caps, host_caps, prefs) {
+    let (cfg, range) = match negotiate_hdr(
+        &caps,
+        host_caps,
+        prefs,
+        hdr_in.source_hdr.is_some(),
+        client_hdr.as_ref(),
+        &hdr_in.main10,
+    ) {
         Ok(c) => c,
         Err(e) => {
             reject(tx, e.to_string());
             return Err(e.into());
         }
     };
+    let color = match (range, hdr_in.source_hdr) {
+        (DynamicRange::Hdr10 { .. }, Some(src)) => src.stream_color(),
+        _ => StreamColor::sdr_bt709(),
+    };
+    if hello.supports_hdr() {
+        tx.send_control(Message::StreamColor(color))?;
+    }
     tx.send_control(Message::StreamConfig(cfg.clone()))?;
     expect(rx, tx, "ConfigAck", wait, |m| match m {
         Message::ConfigAck => Ok(()),
         o => Err(o),
     })
     .await?;
-    Ok((hello, caps, cfg))
+    Ok(Negotiated {
+        hello,
+        caps,
+        cfg,
+        color,
+        range,
+    })
 }
 
 fn reject(tx: &MuxSender, reason: String) {
@@ -868,8 +942,14 @@ mod tests {
         tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "client")))
             .unwrap();
         tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
         assert!(matches!(recv(&mut rx).await, Message::Hello(h) if h.role == Role::Host));
         assert!(matches!(recv(&mut rx).await, Message::HostCaps(_)));
+        assert_eq!(
+            recv(&mut rx).await,
+            Message::StreamColor(StreamColor::sdr_bt709())
+        );
         let cfg = match recv(&mut rx).await {
             Message::StreamConfig(c) => c,
             m => panic!("{m:?}"),
@@ -1007,6 +1087,8 @@ mod tests {
         tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "c")))
             .unwrap();
         tx.send_control(Message::ClientCaps(c)).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
         assert!(matches!(recv(&mut rx).await, Message::Hello(_)));
         assert!(matches!(recv(&mut rx).await, Message::HostCaps(_)));
         assert!(matches!(recv(&mut rx).await, Message::Reject(_)));
@@ -1014,6 +1096,144 @@ mod tests {
             host.await.unwrap(),
             Err(SessionError::Negotiation(ProtoError::NoCommonCodec))
         ));
+    }
+
+    /// A source that reports an HDR output and records the dynamic range it is told to use.
+    struct HdrSource {
+        inner: ScriptedSource,
+        told: Arc<std::sync::Mutex<Option<(DynamicRange, StreamColor)>>>,
+    }
+
+    impl VideoSource for HdrSource {
+        fn encoders(&self) -> Vec<ezd_proto::EncoderCaps> {
+            vec![
+                ezd_proto::EncoderCaps {
+                    codec: Codec::H264,
+                    name: "h264".into(),
+                    hardware: true,
+                },
+                ezd_proto::EncoderCaps {
+                    codec: Codec::Hevc,
+                    name: "hevc".into(),
+                    hardware: true,
+                },
+            ]
+        }
+        fn source_hdr(&self) -> Option<SourceHdr> {
+            Some(SourceHdr {
+                mastering: None,
+                max_cll: 1000,
+                max_fall: 400,
+            })
+        }
+        fn main10_codecs(&self) -> Vec<Codec> {
+            vec![Codec::Hevc]
+        }
+        fn set_dynamic_range(&mut self, range: DynamicRange, color: &StreamColor) {
+            *self.told.lock().unwrap() = Some((range, *color));
+        }
+        fn start(&mut self, cfg: &StreamConfig, cursor: CursorSink) -> Result<(), SourceError> {
+            self.inner.start(cfg, cursor)
+        }
+        fn next_frame(&mut self, t: Duration) -> Result<Option<EncodedFrame>, SourceError> {
+            self.inner.next_frame(t)
+        }
+        fn request_keyframe(&mut self) {
+            self.inner.request_keyframe()
+        }
+        fn stop(&mut self) {
+            self.inner.stop()
+        }
+    }
+
+    /// Runs a handshake against an HDR source and returns what the client saw plus what the
+    /// source was told.
+    async fn hdr_handshake(
+        minor: u16,
+        client_hdr: Option<ClientHdr>,
+    ) -> (Vec<Message>, Option<(DynamicRange, StreamColor)>) {
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let told = Arc::new(std::sync::Mutex::new(None));
+        let src = HdrSource {
+            inner: ScriptedSource::new(Duration::from_millis(5), 3000),
+            told: told.clone(),
+        };
+        let host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(src),
+            Prefs::default(),
+            fast_opts(),
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(DEFAULT_CHUNK_LEN);
+        let mut hello = Hello::new(Role::Client, "t", "client");
+        hello.proto_minor = minor;
+        tx.send_control(Message::Hello(hello)).unwrap();
+        let mut c = caps();
+        c.decoders.push(DecoderCaps {
+            codec: Codec::Hevc,
+            ..c.decoders[0].clone()
+        });
+        tx.send_control(Message::ClientCaps(c)).unwrap();
+        if let Some(h) = client_hdr {
+            tx.send_control(Message::ClientHdr(h)).unwrap();
+        }
+        let mut seen = Vec::new();
+        loop {
+            let m = recv(&mut rx).await;
+            let done = matches!(m, Message::StreamConfig(_));
+            seen.push(m);
+            if done {
+                break;
+            }
+        }
+        tx.send_control(Message::ConfigAck).unwrap();
+        while told.lock().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tx.send_control(Message::Bye(Bye { reason: "t".into() }))
+            .unwrap();
+        let _ = timeout(Duration::from_secs(10), host).await;
+        let told = *told.lock().unwrap();
+        (seen, told)
+    }
+
+    #[tokio::test]
+    async fn hdr10_is_negotiated_with_a_capable_client() {
+        let hdr = ClientHdr::new(true, 1000, 600, 50, &[Codec::Hevc]);
+        let (seen, told) = hdr_handshake(ezd_proto::PROTOCOL_MINOR, Some(hdr)).await;
+        let want = StreamColor::hdr10(None, 1000, 400);
+        assert!(matches!(seen[1], Message::HostCaps(_)));
+        assert_eq!(seen[2], Message::StreamColor(want));
+        assert!(matches!(&seen[3], Message::StreamConfig(c) if c.codec == Codec::Hevc));
+        assert_eq!(
+            told,
+            Some((DynamicRange::Hdr10 { codec: Codec::Hevc }, want))
+        );
+    }
+
+    #[tokio::test]
+    async fn sdr_display_gets_sdr_color_and_the_reason() {
+        let (seen, told) = hdr_handshake(ezd_proto::PROTOCOL_MINOR, Some(ClientHdr::none())).await;
+        assert_eq!(seen[2], Message::StreamColor(StreamColor::sdr_bt709()));
+        assert!(matches!(&seen[3], Message::StreamConfig(c) if c.codec == Codec::H264));
+        assert_eq!(
+            told,
+            Some((
+                DynamicRange::SdrToneMapped(ezd_proto::SdrReason::DisplayNotHdr),
+                StreamColor::sdr_bt709()
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn old_client_gets_neither_color_nor_waits_for_hdr() {
+        let (seen, told) = hdr_handshake(ezd_proto::MINOR_HDR - 1, None).await;
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(matches!(seen[2], Message::StreamConfig(_)));
+        assert_eq!(
+            told.map(|t| t.0),
+            Some(DynamicRange::SdrToneMapped(ezd_proto::SdrReason::OldClient))
+        );
     }
 
     #[tokio::test]
@@ -1073,6 +1293,8 @@ mod tests {
         tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "c")))
             .unwrap();
         tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
         for _ in 0..3 {
             recv(&mut rx).await;
         }
@@ -1115,6 +1337,8 @@ mod tests {
         tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "c")))
             .unwrap();
         tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
         for _ in 0..3 {
             recv(&mut rx).await;
         }
@@ -1156,6 +1380,8 @@ mod tests {
         tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "tablet")))
             .unwrap();
         tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
         for _ in 0..3 {
             recv(&mut rx).await;
         }
@@ -1192,7 +1418,11 @@ mod tests {
             SessionEvent::Configured {
                 client_hello,
                 stream,
+                color,
+                dynamic_range,
             } => {
+                assert_eq!(color, StreamColor::sdr_bt709());
+                assert_eq!(dynamic_range, DynamicRange::Sdr);
                 assert_eq!(client_hello.device_name, "tablet");
                 assert_eq!(stream.width, 1280);
             }

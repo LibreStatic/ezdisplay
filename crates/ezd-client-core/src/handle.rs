@@ -4,6 +4,7 @@ use crate::percentile;
 use ezd_link::MuxSender;
 use ezd_proto::{
     ClientOptions, ClientStats, ClockSync, CursorShape, CursorState, InputStatus, Message,
+    StreamColor,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,6 +66,8 @@ pub struct ClientSnapshot {
     pub client_options: Option<ClientOptions>,
     /// Input messages handed to the link by [`ClientHandle::send_input`].
     pub inputs_sent: u64,
+    /// Colour description of the stream (protocol 0.5); BT.709 SDR until the host sends one.
+    pub stream_color: StreamColor,
 }
 
 pub(crate) struct Inner {
@@ -230,8 +233,18 @@ impl ClientHandle {
         lock(&self.0.snapshot).client_options
     }
 
+    /// Colour description of the current stream; set before the decoder is created, BT.709 8-bit
+    /// when the host sent no `StreamColor`.
+    pub fn stream_color(&self) -> StreamColor {
+        lock(&self.0.snapshot).stream_color
+    }
+
     pub(crate) fn set_input_sender(&self, tx: Option<MuxSender>) {
         *lock(&self.0.input_tx) = tx;
+    }
+
+    pub(crate) fn store_stream_color(&self, c: StreamColor) {
+        lock(&self.0.snapshot).stream_color = c;
     }
 
     pub(crate) fn store_input_status(&self, st: InputStatus) {

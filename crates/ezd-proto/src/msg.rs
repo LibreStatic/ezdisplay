@@ -26,6 +26,28 @@ pub enum Codec {
     Av1,
 }
 
+impl Codec {
+    /// Stable wire code (used where a message carries codecs as plain bytes so that a codec
+    /// added by a newer peer does not break decoding).
+    pub fn code(self) -> u8 {
+        match self {
+            Codec::H264 => 1,
+            Codec::Hevc => 2,
+            Codec::Av1 => 3,
+        }
+    }
+
+    /// Inverse of [`code`](Self::code); `None` for codes this version does not know.
+    pub fn from_code(code: u8) -> Option<Codec> {
+        match code {
+            1 => Some(Codec::H264),
+            2 => Some(Codec::Hevc),
+            3 => Some(Codec::Av1),
+            _ => None,
+        }
+    }
+}
+
 /// First message in each direction. Handshake fails on a major version mismatch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
@@ -60,6 +82,12 @@ impl Hello {
     /// (input messages, `InputStatus`, `ClientOptions`).
     pub fn supports_input(&self) -> bool {
         self.proto_minor >= crate::MINOR_INPUT
+    }
+
+    /// True if the peer speaks at least protocol minor [`MINOR_HDR`](crate::MINOR_HDR)
+    /// (`ClientHdr`, `StreamColor`).
+    pub fn supports_hdr(&self) -> bool {
+        self.proto_minor >= crate::MINOR_HDR
     }
 
     /// Fails with [`ProtoError::VersionMismatch`] if the peer's major differs from ours.
@@ -505,8 +533,152 @@ impl ClientOptions {
     pub const TELEMETRY: u32 = 1;
 }
 
+/// H.273 code points of BT.709 (primaries, transfer, matrix are all 1).
+pub const H273_BT709: u8 = 1;
+/// H.273 colour primaries code of BT.2020.
+pub const H273_PRIMARIES_BT2020: u8 = 9;
+/// H.273 transfer characteristics code of SMPTE ST 2084 (PQ).
+pub const H273_TRANSFER_PQ: u8 = 16;
+/// H.273 matrix coefficients code of BT.2020 non-constant luminance.
+pub const H273_MATRIX_BT2020_NCL: u8 = 9;
+
+/// What the client display and decoders can do with HDR10 (client to host, protocol 0.5).
+///
+/// Sent right after `ClientCaps` when the host `Hello` has minor >= [`MINOR_HDR`](crate::MINOR_HDR).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientHdr {
+    /// The display shows HDR10 (BT.2020 PQ) content.
+    pub display_hdr10: bool,
+    /// Peak luminance of the display in cd/m2 (0 = unknown).
+    pub max_nits: u16,
+    /// Maximum average (full frame) luminance in cd/m2 (0 = unknown).
+    pub max_avg_nits: u16,
+    /// Minimum luminance in thousandths of cd/m2 (0 = unknown).
+    pub min_millinits: u16,
+    /// [`Codec::code`] of every codec with a 10-bit HDR10-capable decoder. Plain bytes so a
+    /// codec unknown to this version is tolerated; read it with [`main10_codecs`](Self::main10_codecs).
+    pub main10: Vec<u8>,
+}
+
+impl ClientHdr {
+    /// A client without HDR10 support.
+    pub fn none() -> Self {
+        ClientHdr {
+            display_hdr10: false,
+            max_nits: 0,
+            max_avg_nits: 0,
+            min_millinits: 0,
+            main10: Vec::new(),
+        }
+    }
+
+    /// Builds the message from a codec list.
+    pub fn new(
+        display_hdr10: bool,
+        max_nits: u16,
+        max_avg_nits: u16,
+        min_millinits: u16,
+        main10: &[Codec],
+    ) -> Self {
+        ClientHdr {
+            display_hdr10,
+            max_nits,
+            max_avg_nits,
+            min_millinits,
+            main10: main10.iter().map(|c| c.code()).collect(),
+        }
+    }
+
+    /// Codecs with an HDR10 decoder, skipping codes unknown to this version.
+    pub fn main10_codecs(&self) -> Vec<Codec> {
+        self.main10
+            .iter()
+            .filter_map(|&c| Codec::from_code(c))
+            .collect()
+    }
+}
+
+/// SMPTE ST 2086 mastering display colour volume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mastering {
+    /// Red, green and blue chromaticities `[x, y]` in units of 0.00002.
+    pub primaries: [[u16; 2]; 3],
+    /// White point `[x, y]` in units of 0.00002.
+    pub white: [u16; 2],
+    /// Maximum luminance in units of 0.0001 cd/m2.
+    pub max_luminance: u32,
+    /// Minimum luminance in units of 0.0001 cd/m2.
+    pub min_luminance: u32,
+}
+
+/// Colour description of the video stream (host to client, protocol 0.5), sent right before
+/// `StreamConfig` when the client `Hello` has minor >= [`MINOR_HDR`](crate::MINOR_HDR). A client
+/// that did not receive it assumes [`StreamColor::sdr_bt709`].
+///
+/// Codes are the ITU-T H.273 ones, as plain bytes so unknown values are tolerated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamColor {
+    /// Bits per sample (8 or 10).
+    pub bit_depth: u8,
+    /// H.273 colour primaries (1 = BT.709, 9 = BT.2020).
+    pub primaries: u8,
+    /// H.273 transfer characteristics (1 = BT.709, 16 = PQ).
+    pub transfer: u8,
+    /// H.273 matrix coefficients (1 = BT.709, 9 = BT.2020 NCL).
+    pub matrix: u8,
+    /// Full range (true) or limited range (false) samples.
+    pub full_range: bool,
+    /// Mastering display colour volume, if known.
+    pub mastering: Option<Mastering>,
+    /// Maximum content light level in cd/m2 (0 = unknown).
+    pub max_cll: u16,
+    /// Maximum frame-average light level in cd/m2 (0 = unknown).
+    pub max_fall: u16,
+}
+
+impl StreamColor {
+    /// 8-bit limited-range BT.709, what streams used before protocol 0.5.
+    pub fn sdr_bt709() -> Self {
+        StreamColor {
+            bit_depth: 8,
+            primaries: H273_BT709,
+            transfer: H273_BT709,
+            matrix: H273_BT709,
+            full_range: false,
+            mastering: None,
+            max_cll: 0,
+            max_fall: 0,
+        }
+    }
+
+    /// 10-bit limited-range HDR10 (BT.2020 primaries, PQ, BT.2020 NCL matrix).
+    pub fn hdr10(mastering: Option<Mastering>, max_cll: u16, max_fall: u16) -> Self {
+        StreamColor {
+            bit_depth: 10,
+            primaries: H273_PRIMARIES_BT2020,
+            transfer: H273_TRANSFER_PQ,
+            matrix: H273_MATRIX_BT2020_NCL,
+            full_range: false,
+            mastering,
+            max_cll,
+            max_fall,
+        }
+    }
+
+    /// True for PQ (or HLG, 18) transfer, i.e. content that needs an HDR pipeline.
+    pub fn is_hdr(&self) -> bool {
+        matches!(self.transfer, 16 | 18)
+    }
+}
+
+impl Default for StreamColor {
+    fn default() -> Self {
+        StreamColor::sdr_bt709()
+    }
+}
+
 /// Any message of protocol 0.x (0.2 added `FrameAck`, 0.3 the input messages,
-/// `InputStatus` and `ClientOptions`).
+/// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
@@ -538,6 +710,10 @@ pub enum Message {
     InputStatus(InputStatus),
     /// Control/14 (0.3), host to client.
     ClientOptions(ClientOptions),
+    /// Control/15 (0.5), client to host.
+    ClientHdr(ClientHdr),
+    /// Control/16 (0.5), host to client.
+    StreamColor(StreamColor),
     /// Input/1 (0.3), client to host.
     Pen(PenSample),
     /// Input/2 (0.3), client to host.
@@ -588,6 +764,8 @@ impl Message {
             Message::FrameAck(_) => 12,
             Message::InputStatus(_) => 13,
             Message::ClientOptions(_) => 14,
+            Message::ClientHdr(_) => 15,
+            Message::StreamColor(_) => 16,
             Message::Pen(_) => 1,
             Message::Touch(_) => 2,
             Message::PointerButton(_) => 3,
@@ -621,6 +799,8 @@ pub fn encode_message(msg: &Message) -> Result<(Channel, u8, Vec<u8>)> {
         Message::FrameAck(m) => enc(m)?,
         Message::InputStatus(m) => enc(m)?,
         Message::ClientOptions(m) => enc(m)?,
+        Message::ClientHdr(m) => enc(m)?,
+        Message::StreamColor(m) => enc(m)?,
         Message::Pen(m) => enc(m)?,
         Message::Touch(m) => enc(m)?,
         Message::PointerButton(m) => enc(m)?,
@@ -664,6 +844,8 @@ pub fn decode_message(channel: u8, kind: u8, payload: &[u8]) -> Result<Option<Me
         (Channel::Control, 12) => Message::FrameAck(dec(c, k, payload)?),
         (Channel::Control, 13) => Message::InputStatus(dec(c, k, payload)?),
         (Channel::Control, 14) => Message::ClientOptions(dec(c, k, payload)?),
+        (Channel::Control, 15) => Message::ClientHdr(dec(c, k, payload)?),
+        (Channel::Control, 16) => Message::StreamColor(dec(c, k, payload)?),
         (Channel::Input, 1) => Message::Pen(dec(c, k, payload)?),
         (Channel::Input, 2) => Message::Touch(dec(c, k, payload)?),
         (Channel::Input, 3) => Message::PointerButton(dec(c, k, payload)?),
@@ -764,6 +946,23 @@ mod tests {
             Message::ClientOptions(ClientOptions {
                 flags: ClientOptions::TELEMETRY,
             }),
+            Message::ClientHdr(ClientHdr::new(
+                true,
+                1000,
+                600,
+                50,
+                &[Codec::Hevc, Codec::Av1],
+            )),
+            Message::StreamColor(StreamColor::hdr10(
+                Some(Mastering {
+                    primaries: [[34000, 16000], [13250, 34500], [7500, 3000]],
+                    white: [15635, 16450],
+                    max_luminance: 10_000_000,
+                    min_luminance: 1,
+                }),
+                1000,
+                400,
+            )),
             Message::Pen(PenSample {
                 t_us: 1 << 40,
                 x: 65535,
@@ -942,6 +1141,51 @@ mod tests {
         assert!(h.supports_input());
         h.proto_minor = crate::MINOR_INPUT - 1;
         assert!(!h.supports_input());
+    }
+
+    #[test]
+    fn hdr_support_by_minor() {
+        let mut h = Hello::new(Role::Client, "x", "y");
+        assert!(h.supports_hdr());
+        h.proto_minor = crate::MINOR_HDR - 1;
+        assert!(!h.supports_hdr());
+        assert!(h.supports_input());
+    }
+
+    #[test]
+    fn stream_color_presets() {
+        let sdr = StreamColor::sdr_bt709();
+        assert_eq!(
+            (sdr.bit_depth, sdr.primaries, sdr.transfer, sdr.matrix),
+            (8, 1, 1, 1)
+        );
+        assert!(!sdr.is_hdr() && !sdr.full_range);
+        let hdr = StreamColor::hdr10(None, 0, 0);
+        assert_eq!(
+            (hdr.bit_depth, hdr.primaries, hdr.transfer, hdr.matrix),
+            (10, 9, 16, 9)
+        );
+        assert!(hdr.is_hdr());
+        assert_eq!(StreamColor::default(), sdr);
+        let (ch, kind, p) = encode_message(&Message::StreamColor(sdr)).unwrap();
+        assert_eq!(
+            decode_message(ch as u8, kind, &p).unwrap(),
+            Some(Message::StreamColor(sdr))
+        );
+    }
+
+    #[test]
+    fn client_hdr_tolerates_unknown_codecs() {
+        let mut h = ClientHdr::new(true, 1, 2, 3, &[Codec::Hevc]);
+        h.main10.push(200);
+        let (ch, kind, payload) = encode_message(&Message::ClientHdr(h.clone())).unwrap();
+        let Some(Message::ClientHdr(back)) = decode_message(ch as u8, kind, &payload).unwrap()
+        else {
+            panic!("not a ClientHdr");
+        };
+        assert_eq!(back, h);
+        assert_eq!(back.main10_codecs(), vec![Codec::Hevc]);
+        assert!(!ClientHdr::none().display_hdr10);
     }
 
     #[test]

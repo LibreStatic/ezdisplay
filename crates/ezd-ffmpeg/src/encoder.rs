@@ -1,9 +1,13 @@
+use crate::color::{ColorInfo, HdrMeta, tag_frame};
 use crate::error::{EAGAIN, FfmpegError, averror_eof, init_logging};
 use crate::hw::HwDevice;
-use crate::options::option_sets;
+use crate::options::option_sets_for;
 use ffmpeg_sys_next as ffi;
 use std::ffi::{CStr, CString};
 use std::ptr;
+
+/// `AVERROR(ENOMEM)`.
+const AVERROR_ENOMEM: i32 = -12;
 
 /// Layout of the raw frames handed to [`Encoder::encode`] (tightly packed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,13 +16,27 @@ pub enum RawPixelFormat {
     I420,
     /// Semi-planar YUV 4:2:0 (`nv12`).
     Nv12,
+    /// Semi-planar YUV 4:2:0 with 10-bit samples in 16-bit little-endian words (`p010le`);
+    /// used for HDR10 (HEVC Main10).
+    P010,
 }
 
 impl RawPixelFormat {
-    fn av(self) -> ffi::AVPixelFormat {
+    /// Size in bytes of a tightly packed frame of `width` x `height` pixels.
+    pub fn frame_len(self, width: u32, height: u32) -> usize {
+        let px = width as usize * height as usize;
+        match self {
+            RawPixelFormat::I420 | RawPixelFormat::Nv12 => px * 3 / 2,
+            RawPixelFormat::P010 => px * 3,
+        }
+    }
+
+    /// The FFmpeg pixel format.
+    pub fn av(self) -> ffi::AVPixelFormat {
         match self {
             RawPixelFormat::I420 => ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
             RawPixelFormat::Nv12 => ffi::AVPixelFormat::AV_PIX_FMT_NV12,
+            RawPixelFormat::P010 => ffi::AVPixelFormat::AV_PIX_FMT_P010LE,
         }
     }
 }
@@ -39,8 +57,14 @@ pub struct EncoderConfig {
     /// Layout of the frames passed to `encode`.
     pub pix_fmt: RawPixelFormat,
     /// If set, software frames are uploaded to this device and encoded from
-    /// hardware surfaces (VAAPI, QSV, CUDA, D3D11). NV12 is used on the device.
+    /// hardware surfaces (VAAPI, QSV, CUDA, D3D11). The device surfaces are P010 when `pix_fmt`
+    /// is [`RawPixelFormat::P010`], NV12 otherwise.
     pub hw: Option<HwDevice>,
+    /// Colour signalling written to the stream and to every frame sent
+    /// (default [`ColorInfo::BT709_LIMITED`]).
+    pub color: ColorInfo,
+    /// HDR10 static metadata attached to the context and to every frame sent.
+    pub hdr: Option<HdrMeta>,
     /// Extra AVOptions applied on top of the preset (override it).
     pub extra_options: Vec<(String, String)>,
 }
@@ -62,6 +86,8 @@ impl EncoderConfig {
             bitrate_kbps,
             pix_fmt: RawPixelFormat::I420,
             hw: None,
+            color: ColorInfo::default(),
+            hdr: None,
             extra_options: Vec::new(),
         }
     }
@@ -131,7 +157,7 @@ impl Encoder {
             )));
         }
         let mut last = FfmpegError::msg("no option set");
-        for set in option_sets(&cfg.name) {
+        for set in option_sets_for(&cfg.name, cfg.pix_fmt == RawPixelFormat::P010) {
             match Self::try_open(codec, cfg.clone(), &set) {
                 Ok(e) => return Ok(e),
                 Err(e) => {
@@ -154,7 +180,12 @@ impl Encoder {
             return Err(FfmpegError::msg("avcodec_alloc_context3 failed"));
         }
         let sw_fmt = if cfg.hw.is_some() {
-            RawPixelFormat::Nv12
+            // 10-bit input is uploaded as P010, everything else as NV12.
+            if cfg.pix_fmt == RawPixelFormat::P010 {
+                RawPixelFormat::P010
+            } else {
+                RawPixelFormat::Nv12
+            }
         } else {
             cfg.pix_fmt
         };
@@ -198,14 +229,19 @@ impl Encoder {
             // only a few frames per second at tablet resolutions. Its sliced threads (see
             // `option_sets`) split each frame, so they add no latency.
             c.thread_count = if cfg.name == "libx264" { 0 } else { 1 };
-            c.colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
-            c.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-            c.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
-            c.color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
+            c.colorspace = cfg.color.av_matrix();
+            c.color_primaries = cfg.color.av_primaries();
+            c.color_trc = cfg.color.av_transfer();
+            c.color_range = cfg.color.av_range();
             c.flags |= (ffi::AV_CODEC_FLAG_GLOBAL_HEADER | ffi::AV_CODEC_FLAG_LOW_DELAY) as i32;
         }
+        #[cfg(ffmpeg_7_1)]
+        if let Some(h) = &enc.cfg.hdr {
+            // SAFETY: ctx is valid and not opened yet.
+            unsafe { crate::color::tag_context(ctx, h)? };
+        }
         if let Some(dev) = enc.cfg.hw.clone() {
-            enc.init_hw_frames(&dev)?;
+            enc.init_hw_frames(&dev, enc.sw_fmt.av())?;
         }
 
         let mut dict: *mut ffi::AVDictionary = ptr::null_mut();
@@ -265,11 +301,17 @@ impl Encoder {
             if r < 0 {
                 return Err(FfmpegError::av("av_frame_get_buffer", r));
             }
+            // The frame is reused: tag it once, `fill_sw_frame` only rewrites the pixels.
+            tag_frame(enc.sw_frame, enc.cfg.color, enc.cfg.hdr.as_ref())?;
         }
         Ok(enc)
     }
 
-    fn init_hw_frames(&mut self, dev: &HwDevice) -> Result<(), FfmpegError> {
+    fn init_hw_frames(
+        &mut self,
+        dev: &HwDevice,
+        sw_format: ffi::AVPixelFormat,
+    ) -> Result<(), FfmpegError> {
         // SAFETY: ctx is valid; dev.buf is a valid device ref. We take our own references for the
         // codec context, and the frames context ref is released after being stored in the context.
         unsafe {
@@ -280,7 +322,7 @@ impl Encoder {
             }
             let fc = &mut *((*frames).data as *mut ffi::AVHWFramesContext);
             fc.format = dev.kind.pix_fmt();
-            fc.sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+            fc.sw_format = sw_format;
             fc.width = self.cfg.width as i32;
             fc.height = self.cfg.height as i32;
             fc.initial_pool_size = 4;
@@ -308,7 +350,7 @@ impl Encoder {
 
     fn fill_sw_frame(&mut self, raw: &[u8], force_keyframe: bool) -> Result<(), FfmpegError> {
         let (w, h) = (self.cfg.width as usize, self.cfg.height as usize);
-        let need = w * h * 3 / 2;
+        let need = self.cfg.pix_fmt.frame_len(self.cfg.width, self.cfg.height);
         if raw.len() != need {
             return Err(FfmpegError::msg(format!(
                 "raw frame is {} bytes, expected {need}",
@@ -333,8 +375,13 @@ impl Encoder {
                         );
                     }
                 };
-            let (y_src, uv_src) = raw.split_at(w * h);
-            copy_plane(f.data[0], f.linesize[0], y_src, w, h);
+            let bytes = if self.cfg.pix_fmt == RawPixelFormat::P010 {
+                2
+            } else {
+                1
+            };
+            let (y_src, uv_src) = raw.split_at(w * h * bytes);
+            copy_plane(f.data[0], f.linesize[0], y_src, w * bytes, h);
             match (self.cfg.pix_fmt, self.sw_fmt) {
                 (RawPixelFormat::I420, RawPixelFormat::I420) => {
                     let (u, v) = uv_src.split_at(w * h / 4);
@@ -355,7 +402,12 @@ impl Encoder {
                         }
                     }
                 }
-                (RawPixelFormat::Nv12, RawPixelFormat::I420) => {
+                (RawPixelFormat::P010, RawPixelFormat::P010) => {
+                    copy_plane(f.data[1], f.linesize[1], uv_src, w * 2, h / 2);
+                }
+                (RawPixelFormat::Nv12, RawPixelFormat::I420)
+                | (RawPixelFormat::P010, _)
+                | (_, RawPixelFormat::P010) => {
                     return Err(FfmpegError::msg("unsupported conversion"));
                 }
             }
@@ -389,6 +441,12 @@ impl Encoder {
                 let mut r = ffi::av_hwframe_get_buffer((*self.ctx).hw_frames_ctx, hw, 0);
                 if r >= 0 {
                     r = ffi::av_hwframe_transfer_data(hw, self.sw_frame, 0);
+                }
+                if r >= 0 {
+                    r = match tag_frame(hw, self.cfg.color, self.cfg.hdr.as_ref()) {
+                        Ok(()) => 0,
+                        Err(_) => AVERROR_ENOMEM,
+                    };
                 }
                 if r >= 0 {
                     (*hw).pts = self.pts;

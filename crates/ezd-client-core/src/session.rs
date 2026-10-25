@@ -3,8 +3,8 @@
 use crate::{ClientHandle, now_us};
 use ezd_link::{Link, MuxError, MuxReceiver, MuxSender};
 use ezd_proto::{
-    Bye, ClientCaps, CursorShape, CursorState, FrameAck, Hello, Message, Ping, Pong, Role,
-    StreamConfig, VideoFrame,
+    Bye, ClientCaps, ClientHdr, CursorShape, CursorState, FrameAck, Hello, Message, Ping, Pong,
+    Role, StreamColor, StreamConfig, VideoFrame,
 };
 use std::time::Duration;
 use tokio::time::{MissedTickBehavior, interval, timeout};
@@ -33,6 +33,13 @@ pub trait ClientHandler: Send {
     /// right after this returns `Ok`.
     fn on_stream_config(&mut self, cfg: &StreamConfig) -> HandlerResult;
 
+    /// The colour description of the stream, called right before [`on_stream_config`]
+    /// (BT.709 8-bit when the host sent none). Also readable with
+    /// [`ClientHandle::stream_color`](crate::ClientHandle::stream_color).
+    ///
+    /// [`on_stream_config`]: ClientHandler::on_stream_config
+    fn on_stream_color(&mut self, _color: &StreamColor) {}
+
     /// A `CODEC_CONFIG` frame (parameter sets). Never acked.
     fn on_codec_config(&mut self, frame: VideoFrame) -> HandlerResult;
 
@@ -56,6 +63,10 @@ pub struct ClientConfig {
     pub app_version: String,
     /// Capabilities sent in `ClientCaps`.
     pub caps: ClientCaps,
+    /// HDR10 capabilities, supplied by the platform. Whenever the host speaks protocol 0.5 a
+    /// `ClientHdr` is sent right after the host `Hello`; `None` sends [`ClientHdr::none`]
+    /// (no HDR10), so the host always gets an answer and never waits for it in vain.
+    pub hdr: Option<ClientHdr>,
     /// Interval of `ClientStats` messages.
     pub stats_interval: Duration,
     /// Interval of client-initiated pings (clock sync).
@@ -77,6 +88,7 @@ impl ClientConfig {
             device_name: device_name.into(),
             app_version: env!("CARGO_PKG_VERSION").into(),
             caps,
+            hdr: None,
             stats_interval: Duration::from_secs(1),
             ping_interval: Duration::from_millis(500),
             max_duration: None,
@@ -105,6 +117,8 @@ pub enum ClientEnd {
 pub struct ClientOutcome {
     /// Negotiated configuration.
     pub stream: StreamConfig,
+    /// Colour description of the stream (BT.709 8-bit when the host sent none).
+    pub color: StreamColor,
     /// Why it ended.
     pub end: ClientEnd,
     /// Estimated `host_clock - client_clock` in microseconds.
@@ -197,6 +211,7 @@ pub async fn run_client<H: ClientHandler>(
     if let Some(minor) = cfg.proto_minor {
         my_hello.proto_minor = minor;
     }
+    let my_minor_supports_hdr = my_hello.supports_hdr();
     tx.send_control(Message::Hello(my_hello))?;
     tx.send_control(Message::ClientCaps(cfg.caps.clone()))?;
     let hello = wait_for(&mut rx, &tx, "Hello", wait, |m| match m {
@@ -207,16 +222,34 @@ pub async fn run_client<H: ClientHandler>(
     hello
         .check_compatible()
         .map_err(|e| ClientError::Handshake(e.to_string()))?;
+    if hello.supports_hdr() && my_minor_supports_hdr {
+        tx.send_control(Message::ClientHdr(
+            cfg.hdr.clone().unwrap_or_else(ClientHdr::none),
+        ))?;
+    }
     wait_for(&mut rx, &tx, "HostCaps", wait, |m| match m {
         Message::HostCaps(h) => Ok(h),
         o => Err(o),
     })
     .await?;
-    let stream = wait_for(&mut rx, &tx, "StreamConfig", wait, |m| match m {
-        Message::StreamConfig(c) => Ok(c),
-        o => Err(o),
-    })
-    .await?;
+    // `StreamColor` (0.5) may precede `StreamConfig`; without it the stream is BT.709 8-bit.
+    let mut color = StreamColor::sdr_bt709();
+    let stream = loop {
+        let next = wait_for(&mut rx, &tx, "StreamConfig", wait, |m| match m {
+            Message::StreamConfig(c) => Ok(Some(c)),
+            Message::StreamColor(c) => {
+                color = c;
+                Ok(None)
+            }
+            o => Err(o),
+        })
+        .await?;
+        if let Some(c) = next {
+            break c;
+        }
+    };
+    handle.store_stream_color(color);
+    handler.on_stream_color(&color);
     if let Err(e) = handler.on_stream_config(&stream) {
         let _ = tx.send_control(Message::Bye(Bye {
             reason: format!("decoder init failed: {e}"),
@@ -289,6 +322,7 @@ pub async fn run_client<H: ClientHandler>(
     handle.set_input_sender(None);
     let outcome = ClientOutcome {
         stream,
+        color,
         end,
         clock_offset_us: handle.clock_offset_us(),
         rtt_us: handle.rtt_us(),

@@ -3,6 +3,26 @@
 /// Ordered fallback chain of AVOption sets for `name`: the first set that
 /// opens successfully is used (e.g. VAAPI with `low_power` first, then without).
 pub fn option_sets(name: &str) -> Vec<Vec<(&'static str, String)>> {
+    option_sets_for(name, false)
+}
+
+/// Like [`option_sets`] for 10-bit input (P010): the HEVC encoders get `profile=main10`, and
+/// `hevc_vaapi` loses its `low_power` set (Gen 9.5 has no low-power HEVC Main10 and some
+/// drivers open it anyway). Other encoders are unchanged.
+pub fn option_sets_for(name: &str, ten_bit: bool) -> Vec<Vec<(&'static str, String)>> {
+    let mut sets = base_option_sets(name);
+    if ten_bit && matches!(name, "hevc_nvenc" | "hevc_qsv" | "hevc_amf" | "hevc_vaapi") {
+        if name == "hevc_vaapi" {
+            sets.retain(|set| !set.iter().any(|(k, _)| *k == "low_power"));
+        }
+        for set in &mut sets {
+            set.push(("profile", "main10".to_string()));
+        }
+    }
+    sets
+}
+
+fn base_option_sets(name: &str) -> Vec<Vec<(&'static str, String)>> {
     let s = |k: &'static str, v: &str| (k, v.to_string());
     match name {
         "libx264" => vec![vec![
@@ -129,5 +149,36 @@ mod tests {
                 .iter()
                 .all(|set| set.contains(&("async_depth", "1".to_string())))
         );
+    }
+
+    #[test]
+    fn ten_bit_sets_select_main10() {
+        let main10 = ("profile", "main10".to_string());
+        for n in ["hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_vaapi"] {
+            let plain = option_sets_for(n, false);
+            assert_eq!(plain, option_sets(n), "{n}");
+            assert!(plain.iter().all(|set| !set.contains(&main10)), "{n}");
+            let ten = option_sets_for(n, true);
+            assert!(
+                !ten.is_empty() && ten.iter().all(|set| set.contains(&main10)),
+                "{n}"
+            );
+        }
+        // Counts: AMF and QSV keep their fallback chains; VAAPI drops low_power.
+        assert_eq!(option_sets_for("hevc_amf", true).len(), 6);
+        assert_eq!(option_sets_for("hevc_qsv", true).len(), 2);
+        assert_eq!(option_sets_for("hevc_vaapi", true).len(), 1);
+        assert!(
+            option_sets_for("hevc_vaapi", true)
+                .iter()
+                .flatten()
+                .all(|(k, _)| *k != "low_power")
+        );
+        // Unrelated encoders ignore the flag.
+        assert_eq!(
+            option_sets_for("h264_nvenc", true),
+            option_sets("h264_nvenc")
+        );
+        assert_eq!(option_sets_for("av1_vaapi", true), option_sets("av1_vaapi"));
     }
 }

@@ -16,6 +16,7 @@
 // Bindgen constant types (i32 vs u32) differ between platforms; the casts keep one code base portable.
 #![allow(clippy::unnecessary_cast)]
 
+mod color;
 mod decoder;
 mod encoder;
 mod error;
@@ -26,12 +27,13 @@ mod source;
 #[cfg(target_os = "linux")]
 mod vulkan;
 
+pub use color::{ColorInfo, HdrMeta};
 pub use decoder::{DecodedFrame, Decoder};
 pub use encoder::{EncodedPacket, Encoder, EncoderConfig, RawPixelFormat};
 pub use error::FfmpegError;
 pub use ffmpeg_sys_next as sys;
 pub use hw::{HwDevice, HwKind};
-pub use options::option_sets;
+pub use options::{option_sets, option_sets_for};
 pub use probe::{
     ProbeResult, encoder_available, probe_encoder, probe_encoder_with, software_encoders,
 };

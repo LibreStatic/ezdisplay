@@ -50,6 +50,8 @@ Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 | Control | 12 | `FrameAck` | client to host | postcard |
 | Control | 13 | `InputStatus` | host to client | postcard (0.3) |
 | Control | 14 | `ClientOptions` | host to client | postcard (0.3) |
+| Control | 15 | `ClientHdr` | client to host | postcard (0.5) |
+| Control | 16 | `StreamColor` | host to client | postcard (0.5) |
 | Input | 1 | `Pen` (`PenSample`) | client to host | postcard (0.3) |
 | Input | 2 | `Touch` (`TouchFrame`) | client to host | postcard (0.3) |
 | Input | 3 | `PointerButton` | client to host | postcard (0.3) |
@@ -89,14 +91,17 @@ per push) and yields complete messages.
 
 ### Versioning
 
-`Hello` carries `proto_major` and `proto_minor` (currently 0 and 4; 0.2 added `FrameAck`, 0.3
-the input messages, `InputStatus` and `ClientOptions`, 0.4 the `Key` message). A different major version is fatal: the
+`Hello` carries `proto_major` and `proto_minor` (currently 0 and 5; 0.2 added `FrameAck`, 0.3
+the input messages, `InputStatus` and `ClientOptions`, 0.4 the `Key` message, 0.5 `ClientHdr` and
+`StreamColor` for HDR10). A different major version is fatal: the
 receiver answers `Reject` and closes. Minor versions only add new `(channel,
 kind)` pairs, so peers with different minors interoperate. `Hello::supports_input()` is true
 when the peer's minor is at least `MINOR_INPUT` = 3; a host must not send `InputStatus` or
 `ClientOptions` to an older client (it would skip them anyway), and a client must not send
 Input messages to an older host. `Key` needs no minor gate: a client sends it only when the
 host's `InputStatus.caps` has `KEYS`, and an older host would skip the unknown pair anyway.
+`Hello::supports_hdr()` is true when the peer's minor is at least `MINOR_HDR` = 5: a client sends
+`ClientHdr` only to such a host, and a host sends `StreamColor` only to such a client.
 
 ## Handshake and session
 
@@ -105,8 +110,10 @@ client                                     host
   |  Hello(role=Client, version, name) ----->|
   |<----- Hello(role=Host, version, name)    |   either order; major mismatch -> Reject
   |  ClientCaps(display, decoders, ...) ---->|
+  |  ClientHdr (host minor >= 5) ----------->|   host waits for it if the client minor >= 5
   |<---------------------- HostCaps(encoders)|
-  |            negotiate(ClientCaps, HostCaps, Prefs)  (host, pure function)
+  |            negotiate_hdr(ClientCaps, HostCaps, Prefs, ...)  (host, pure function)
+  |<----------------- StreamColor (minor >= 5)|   sent before StreamConfig
   |<-------------------------- StreamConfig |   or Reject{reason}
   |  open decoder                            |
   |  ConfigAck ----------------------------->|
@@ -135,6 +142,13 @@ gives up (the host uses 10 s per step).
 * Bitrate: `width * height * fps * 0.07` bit/s for H.264 (`0.05` for HEVC and AV1), clamped to
   the link ceiling (USB 80 Mbit/s, network 30 Mbit/s by default).
 * Encoder: the first hardware encoder for the codec, otherwise the first software one.
+* Dynamic range (`pick_dynamic_range`, used through `negotiate_hdr`): HDR10 is streamed only when
+  the source is HDR, `Prefs.hdr` is not `Off`, the client sent `ClientHdr` with
+  `display_hdr10` and a 10-bit decoder, and the host can encode 10 bits for a shared codec. HEVC
+  is preferred, AV1 is used when HEVC is not shared. The HDR10 codec overrides the codec choice
+  above and `StreamConfig.codec` matches it. Otherwise the stream is SDR and an HDR source is
+  tone-mapped, for one reason of: turned off, old client, display not HDR, no 10-bit decoder,
+  no 10-bit encoder.
 
 ## Video
 
@@ -230,6 +244,22 @@ Host to client, on the Control channel: `InputStatus { caps: u32, note: String }
 bits `TOUCH` = 1, `PEN` = 2, `ACTIONS` = 4, `KEYS` = 8 (what the host can inject) and a human-readable
 `note` explaining what is unavailable (empty when all is fine); `ClientOptions { flags: u32 }`
 with `TELEMETRY` = 1 (show the telemetry overlay).
+
+### HDR10 (0.5)
+
+Client to host, on the Control channel, right after the host `Hello` when the host minor is at
+least 5: `ClientHdr { display_hdr10: bool, max_nits: u16, max_avg_nits: u16, min_millinits: u16,
+main10: Vec<u8> }`. `main10` lists the codecs with a 10-bit HDR10 decoder as plain codes (`H264` =
+1, `HEVC` = 2, `AV1` = 3) so unknown codes are skipped. A client without HDR10 sends `display_hdr10
+= false` and an empty list.
+
+Host to client, immediately before `StreamConfig` when the client minor is at least 5:
+`StreamColor { bit_depth: u8, primaries: u8, transfer: u8, matrix: u8, full_range: bool,
+mastering: Option<Mastering>, max_cll: u16, max_fall: u16 }`. The codes are ITU-T H.273: BT.709 is
+1/1/1 and BT.2020 PQ is 9/16/9 (primaries/transfer/matrix). `Mastering { primaries: [[u16; 2]; 3],
+white: [u16; 2], max_luminance: u32, min_luminance: u32 }` holds the red, green and blue
+chromaticities and the white point in units of 0.00002, and the luminances in units of 0.0001
+cd/m2. A client that receives no `StreamColor` assumes 8-bit limited-range BT.709, as before 0.5.
 
 ## Cursor
 

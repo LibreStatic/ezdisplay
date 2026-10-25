@@ -1,6 +1,6 @@
 //! Capability negotiation: a pure function from caps + preferences to a [`StreamConfig`].
 
-use crate::msg::{ClientCaps, Codec, DecoderCaps, EncoderCaps, HostCaps, StreamConfig};
+use crate::msg::{ClientCaps, ClientHdr, Codec, DecoderCaps, EncoderCaps, HostCaps, StreamConfig};
 use crate::{ProtoError, Result};
 
 /// Kind of transport carrying the link; selects the default bitrate ceiling.
@@ -22,6 +22,52 @@ impl LinkKind {
     }
 }
 
+/// User preference for HDR10 streaming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HdrMode {
+    /// Stream HDR10 whenever the source, the client and the host encoder all support it.
+    #[default]
+    Auto,
+    /// Never stream HDR10; an HDR source is tone-mapped to SDR.
+    Off,
+}
+
+/// Why an HDR source is streamed as tone-mapped SDR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdrReason {
+    /// The user set [`HdrMode::Off`].
+    TurnedOff,
+    /// The client speaks a protocol older than 0.5 (sent no `ClientHdr`).
+    OldClient,
+    /// The client display does not show HDR10.
+    DisplayNotHdr,
+    /// The client has no 10-bit HDR10 decoder (for a codec the host can also encode).
+    NoMain10Decoder,
+    /// The host has no 10-bit encoder (for a codec the client can also decode).
+    NoMain10Encoder,
+}
+
+/// Outcome of [`pick_dynamic_range`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicRange {
+    /// Stream HDR10 (BT.2020 PQ, 10-bit) with this codec.
+    Hdr10 {
+        /// Codec to use; overrides the normal codec choice.
+        codec: Codec,
+    },
+    /// The source is HDR but the stream is SDR (tone-mapped on the host) for this reason.
+    SdrToneMapped(SdrReason),
+    /// The source is SDR.
+    Sdr,
+}
+
+impl DynamicRange {
+    /// True for [`DynamicRange::Hdr10`].
+    pub fn is_hdr10(&self) -> bool {
+        matches!(self, DynamicRange::Hdr10 { .. })
+    }
+}
+
 /// User/host preferences fed into [`negotiate`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prefs {
@@ -40,6 +86,8 @@ pub struct Prefs {
     /// Stream size as a fraction of the client's native size, in thousandths (250-1000).
     /// Default 1000. Values outside the range are clamped.
     pub scale_permille: u16,
+    /// HDR10 streaming policy, used by [`negotiate_hdr`]. Default [`HdrMode::Auto`].
+    pub hdr: HdrMode,
 }
 
 impl Default for Prefs {
@@ -52,6 +100,7 @@ impl Default for Prefs {
             bitrate_kbps: None,
             encoder: None,
             scale_permille: 1000,
+            hdr: HdrMode::Auto,
         }
     }
 }
@@ -161,6 +210,82 @@ fn pick_encoder<'a>(host: &'a HostCaps, codec: Codec, prefs: &Prefs) -> Option<&
         .copied()
 }
 
+/// Decides between HDR10 and SDR for a stream. Pure.
+///
+/// * `source_hdr`: the captured content is HDR; otherwise the result is [`DynamicRange::Sdr`];
+/// * `prefs_hdr`: [`HdrMode::Off`] gives `SdrToneMapped(TurnedOff)`;
+/// * `client`: the client's `ClientHdr`, `None` for a client older than protocol 0.5;
+/// * `host_main10`: codecs the host can encode in 10 bits;
+/// * `client_decoders`: the client's decoders; a codec in `ClientHdr::main10` only counts when
+///   a decoder for it is listed.
+///
+/// HDR10 picks HEVC when both sides have it, else AV1.
+pub fn pick_dynamic_range(
+    source_hdr: bool,
+    prefs_hdr: HdrMode,
+    client: Option<&ClientHdr>,
+    host_main10: &[Codec],
+    client_decoders: &[DecoderCaps],
+) -> DynamicRange {
+    if !source_hdr {
+        return DynamicRange::Sdr;
+    }
+    if prefs_hdr == HdrMode::Off {
+        return DynamicRange::SdrToneMapped(SdrReason::TurnedOff);
+    }
+    let Some(client) = client else {
+        return DynamicRange::SdrToneMapped(SdrReason::OldClient);
+    };
+    if !client.display_hdr10 {
+        return DynamicRange::SdrToneMapped(SdrReason::DisplayNotHdr);
+    }
+    let client_codecs: Vec<Codec> = client
+        .main10_codecs()
+        .into_iter()
+        .filter(|c| client_decoders.iter().any(|d| d.codec == *c))
+        .collect();
+    if client_codecs.is_empty() {
+        return DynamicRange::SdrToneMapped(SdrReason::NoMain10Decoder);
+    }
+    [Codec::Hevc, Codec::Av1]
+        .into_iter()
+        .find(|c| client_codecs.contains(c) && host_main10.contains(c))
+        .map_or(
+            DynamicRange::SdrToneMapped(SdrReason::NoMain10Encoder),
+            |codec| DynamicRange::Hdr10 { codec },
+        )
+}
+
+/// Like [`negotiate`] for an HDR-aware host: also decides the dynamic range with
+/// [`pick_dynamic_range`]. When it is [`DynamicRange::Hdr10`] the codec is forced to the HDR10
+/// codec (`StreamConfig::codec` matches it). A `prefs.encoder` override only counts as a 10-bit
+/// encoder when it matches the codec's encoder.
+pub fn negotiate_hdr(
+    client: &ClientCaps,
+    host: &HostCaps,
+    prefs: &Prefs,
+    source_hdr: bool,
+    client_hdr: Option<&ClientHdr>,
+    host_main10: &[Codec],
+) -> Result<(StreamConfig, DynamicRange)> {
+    let usable: Vec<Codec> = host_main10
+        .iter()
+        .copied()
+        .filter(|&c| pick_encoder(host, c, prefs).is_some())
+        .collect();
+    let range = pick_dynamic_range(source_hdr, prefs.hdr, client_hdr, &usable, &client.decoders);
+    if let DynamicRange::Hdr10 { codec } = range {
+        let forced = Prefs {
+            codec: Some(codec),
+            ..prefs.clone()
+        };
+        let cfg = negotiate(client, host, &forced)?;
+        debug_assert_eq!(cfg.codec, codec);
+        return Ok((cfg, range));
+    }
+    Ok((negotiate(client, host, prefs)?, range))
+}
+
 /// Computes the stream configuration for a client/host pair.
 ///
 /// * codec: `prefs.codec` if both sides support it, else H.264 (then HEVC, AV1);
@@ -246,6 +371,191 @@ mod tests {
             gpu: "t".into(),
             encoders,
         }
+    }
+
+    #[test]
+    fn dynamic_range_table() {
+        let hdr = |display: bool, codecs: &[Codec]| ClientHdr::new(display, 1000, 600, 50, codecs);
+        let decs = vec![
+            dec(Codec::H264, "d", true, true),
+            dec(Codec::Hevc, "dh", true, true),
+            dec(Codec::Av1, "da", true, true),
+        ];
+        let good = hdr(true, &[Codec::Hevc, Codec::Av1]);
+        let ten = [Codec::Hevc, Codec::Av1];
+        use DynamicRange::*;
+        struct Row<'a> {
+            name: &'static str,
+            source: bool,
+            mode: HdrMode,
+            client: Option<&'a ClientHdr>,
+            host: &'a [Codec],
+            decoders: &'a [DecoderCaps],
+            want: DynamicRange,
+        }
+        let no_main10 = hdr(true, &[]);
+        let not_hdr = hdr(false, &[Codec::Hevc]);
+        let av1_only = hdr(true, &[Codec::Av1]);
+        let rows = [
+            Row {
+                name: "sdr source",
+                source: false,
+                mode: HdrMode::Auto,
+                client: Some(&good),
+                host: &ten,
+                decoders: &decs,
+                want: Sdr,
+            },
+            Row {
+                name: "sdr source ignores everything",
+                source: false,
+                mode: HdrMode::Off,
+                client: None,
+                host: &[],
+                decoders: &[],
+                want: Sdr,
+            },
+            Row {
+                name: "turned off",
+                source: true,
+                mode: HdrMode::Off,
+                client: Some(&good),
+                host: &ten,
+                decoders: &decs,
+                want: SdrToneMapped(SdrReason::TurnedOff),
+            },
+            Row {
+                name: "old client",
+                source: true,
+                mode: HdrMode::Auto,
+                client: None,
+                host: &ten,
+                decoders: &decs,
+                want: SdrToneMapped(SdrReason::OldClient),
+            },
+            Row {
+                name: "display not hdr",
+                source: true,
+                mode: HdrMode::Auto,
+                client: Some(&not_hdr),
+                host: &ten,
+                decoders: &decs,
+                want: SdrToneMapped(SdrReason::DisplayNotHdr),
+            },
+            Row {
+                name: "no main10 decoder",
+                source: true,
+                mode: HdrMode::Auto,
+                client: Some(&no_main10),
+                host: &ten,
+                decoders: &decs,
+                want: SdrToneMapped(SdrReason::NoMain10Decoder),
+            },
+            Row {
+                name: "main10 claimed without a decoder entry",
+                source: true,
+                mode: HdrMode::Auto,
+                client: Some(&good),
+                host: &ten,
+                decoders: &decs[..1],
+                want: SdrToneMapped(SdrReason::NoMain10Decoder),
+            },
+            Row {
+                name: "no main10 encoder",
+                source: true,
+                mode: HdrMode::Auto,
+                client: Some(&good),
+                host: &[],
+                decoders: &decs,
+                want: SdrToneMapped(SdrReason::NoMain10Encoder),
+            },
+            Row {
+                name: "no common main10 codec",
+                source: true,
+                mode: HdrMode::Auto,
+                client: Some(&hevc_only_hdr()),
+                host: &[Codec::Av1],
+                decoders: &decs,
+                want: SdrToneMapped(SdrReason::NoMain10Encoder),
+            },
+            Row {
+                name: "hevc preferred",
+                source: true,
+                mode: HdrMode::Auto,
+                client: Some(&good),
+                host: &ten,
+                decoders: &decs,
+                want: Hdr10 { codec: Codec::Hevc },
+            },
+            Row {
+                name: "av1 when no hevc on the host",
+                source: true,
+                mode: HdrMode::Auto,
+                client: Some(&good),
+                host: &[Codec::Av1],
+                decoders: &decs,
+                want: Hdr10 { codec: Codec::Av1 },
+            },
+            Row {
+                name: "av1 when no hevc on the client",
+                source: true,
+                mode: HdrMode::Auto,
+                client: Some(&av1_only),
+                host: &ten,
+                decoders: &decs,
+                want: Hdr10 { codec: Codec::Av1 },
+            },
+        ];
+        for r in rows {
+            let got = pick_dynamic_range(r.source, r.mode, r.client, r.host, r.decoders);
+            assert_eq!(got, r.want, "{}", r.name);
+        }
+    }
+
+    fn hevc_only_hdr() -> ClientHdr {
+        ClientHdr::new(true, 1000, 600, 50, &[Codec::Hevc])
+    }
+
+    #[test]
+    fn negotiate_hdr_forces_the_hdr_codec() {
+        let c = client(
+            1920,
+            1080,
+            &[60000],
+            vec![
+                dec(Codec::H264, "d", true, true),
+                dec(Codec::Hevc, "dh", true, true),
+            ],
+        );
+        let h = host(vec![
+            enc(Codec::H264, "h264_nvenc", true),
+            enc(Codec::Hevc, "hevc_nvenc", true),
+        ]);
+        let ch = ClientHdr::new(true, 1000, 600, 50, &[Codec::Hevc]);
+        let (cfg, range) =
+            negotiate_hdr(&c, &h, &Prefs::default(), true, Some(&ch), &[Codec::Hevc]).unwrap();
+        assert_eq!(range, DynamicRange::Hdr10 { codec: Codec::Hevc });
+        assert_eq!(
+            (cfg.codec, cfg.encoder_name.as_str()),
+            (Codec::Hevc, "hevc_nvenc")
+        );
+
+        // Forcing an unrelated encoder removes the 10-bit encoder.
+        let forced = Prefs {
+            encoder: Some("h264_nvenc".into()),
+            ..Prefs::default()
+        };
+        let (cfg, range) = negotiate_hdr(&c, &h, &forced, true, Some(&ch), &[Codec::Hevc]).unwrap();
+        assert_eq!(
+            range,
+            DynamicRange::SdrToneMapped(SdrReason::NoMain10Encoder)
+        );
+        assert_eq!(cfg.codec, Codec::H264);
+
+        // SDR path is exactly `negotiate`.
+        let (cfg, range) = negotiate_hdr(&c, &h, &Prefs::default(), false, None, &[]).unwrap();
+        assert_eq!(range, DynamicRange::Sdr);
+        assert_eq!(cfg, negotiate(&c, &h, &Prefs::default()).unwrap());
     }
 
     #[test]

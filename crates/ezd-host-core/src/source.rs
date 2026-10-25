@@ -1,7 +1,10 @@
 //! Traits implemented by platform backends.
 
 use ezd_link::{MuxClosed, MuxSender};
-use ezd_proto::{CursorShape, CursorState, EncoderCaps, StreamConfig};
+use ezd_proto::{
+    Codec, CursorShape, CursorState, DynamicRange, EncoderCaps, Mastering, StreamColor,
+    StreamConfig,
+};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -117,6 +120,24 @@ impl CursorSink {
     }
 }
 
+/// HDR10 properties of the captured content, reported by a source whose output is HDR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SourceHdr {
+    /// Mastering display colour volume of the output, if known.
+    pub mastering: Option<Mastering>,
+    /// Maximum content light level in cd/m2 (0 = unknown).
+    pub max_cll: u16,
+    /// Maximum frame-average light level in cd/m2 (0 = unknown).
+    pub max_fall: u16,
+}
+
+impl SourceHdr {
+    /// The HDR10 stream colour description carrying these values.
+    pub fn stream_color(&self) -> StreamColor {
+        StreamColor::hdr10(self.mastering, self.max_cll, self.max_fall)
+    }
+}
+
 /// A capture + encode pipeline for one virtual display.
 ///
 /// Implemented per platform (and by `ezd_ffmpeg::SwVideoSource` for tests).
@@ -132,6 +153,23 @@ pub trait VideoSource: Send {
     fn gpu_description(&self) -> String {
         "unknown".into()
     }
+
+    /// HDR properties of the captured output, `None` when it is SDR (the default). Queried
+    /// before the handshake; an HDR source lets the session negotiate HDR10.
+    fn source_hdr(&self) -> Option<SourceHdr> {
+        None
+    }
+
+    /// Codecs this host can encode in 10 bits (HEVC Main10 / AV1 10-bit) with an HDR10-capable
+    /// encoder, queried before the handshake (default: none).
+    fn main10_codecs(&self) -> Vec<Codec> {
+        Vec::new()
+    }
+
+    /// Tells the source the negotiated dynamic range and the stream colour, right before
+    /// [`start`](Self::start). `StreamConfig::codec` already matches an HDR10 range. Default:
+    /// ignored (SDR BT.709 stream).
+    fn set_dynamic_range(&mut self, _range: DynamicRange, _color: &StreamColor) {}
 
     /// Starts capture and encoding with the negotiated configuration. The
     /// first produced frame must be a keyframe carrying `codec_config`.
