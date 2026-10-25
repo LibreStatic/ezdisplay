@@ -12,7 +12,7 @@ pub fn option_sets(name: &str) -> Vec<Vec<(&'static str, String)>> {
             // Keep in-band SPS/PPS on keyframes in addition to the global-header extradata.
             s(
                 "x264-params",
-                "repeat-headers=1:scenecut=0:rc-lookahead=0:sliced-threads=0",
+                "repeat-headers=1:scenecut=0:rc-lookahead=0:sliced-threads=1",
             ),
         ]],
         "libopenh264" => vec![vec![s("allow_skip_frames", "0")]],

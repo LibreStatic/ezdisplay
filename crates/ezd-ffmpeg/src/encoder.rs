@@ -194,7 +194,10 @@ impl Encoder {
             c.rc_buffer_size = ((bitrate as f64 * 2.0 / fps) as i32).max(1000);
             c.gop_size = i32::MAX;
             c.max_b_frames = 0;
-            c.thread_count = 1;
+            // Hardware encoders gain nothing from threads. libx264 needs them: one thread manages
+            // only a few frames per second at tablet resolutions. Its sliced threads (see
+            // `option_sets`) split each frame, so they add no latency.
+            c.thread_count = if cfg.name == "libx264" { 0 } else { 1 };
             c.colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
             c.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
             c.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
