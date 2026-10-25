@@ -287,7 +287,7 @@ pub fn status_json() -> Value {
             "SENDLOGSTHROUGHPIPE": reg_flag("SENDLOGSTHROUGHPIPE"),
         },
         "pipe": pipe,
-        "monitors": display::find_vdd_monitors().into_iter().map(|m| json!({"gdi_name": m.gdi_name, "how": m.how, "attached": m.attached})).collect::<Vec<_>>(),
+        "monitors": display::find_vdd_monitors().into_iter().map(|m| json!({"gdi_name": m.gdi_name, "how": m.how, "attached": m.attached, "cloned": m.cloned})).collect::<Vec<_>>(),
     })
 }
 
@@ -474,7 +474,8 @@ pub fn find_vdd_output(
     adapters: &[AdapterEntry],
     monitors: &[VddMonitor],
 ) -> Option<(usize, usize)> {
-    for m in monitors {
+    // A cloned source belongs to another monitor (the VDD is in Duplicate mode): never the VDD's.
+    for m in monitors.iter().filter(|m| !m.cloned) {
         for (ai, a) in adapters.iter().enumerate() {
             if let Some(oi) = a
                 .outputs
@@ -527,6 +528,28 @@ pub fn prepare(chosen: &AdapterInfo, mode: Mode) -> Result<Prepared, String> {
         let m = "VDD <HardwareCursor> is false: the pointer is drawn into the video, not sent on the cursor channel";
         tracing::warn!("{m}");
         notes.push(m.to_string());
+    }
+
+    // 0. Windows may have put the VDD in Duplicate mode with another monitor; the VDD output must
+    // be its own desktop source before anything below looks for it or changes its mode.
+    let changed = match display::extend_cloned_vdd() {
+        Ok(None) => false,
+        Ok(Some(m)) => {
+            tracing::info!("{m}");
+            notes.push(m);
+            true
+        }
+        Err(e) => {
+            let m = format!("could not switch the cloned virtual monitor to Extend: {e}");
+            tracing::warn!("{m}");
+            notes.push(m);
+            true
+        }
+    };
+    if changed && wait_for_vdd(Duration::from_secs(10), None, true).is_none() {
+        let m = "no extended (non-cloned) VDD output appeared within 10 s".to_string();
+        tracing::warn!("{m}");
+        notes.push(m);
     }
 
     // 1. The driver must render on the chosen adapter.
@@ -598,7 +621,14 @@ pub fn prepare(chosen: &AdapterInfo, mode: Mode) -> Result<Prepared, String> {
 
     // 3. Locate the output, attach it, set the mode.
     let (adapters, monitors) = snapshot()?;
-    let Some(mon) = monitors.first().cloned() else {
+    let Some(mon) = monitors.iter().find(|m| !m.cloned).cloned() else {
+        if let Some(c) = monitors.first() {
+            return Err(format!(
+                "Windows is duplicating the virtual monitor with {} instead of extending the desktop, and \
+                 switching it to Extend failed. Press Win+P and choose Extend, then reconnect.",
+                c.gdi_name
+            ));
+        }
         return Err(format!(
             "no virtual monitor found. The driver pipe answers but Windows lists no VDD monitor; check \
              Device Manager and `ezd-host vdd status` (<monitors><count> must be at least 1). To install the driver: {INSTALL_HINT}"

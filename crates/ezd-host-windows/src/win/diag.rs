@@ -83,7 +83,7 @@ fn vdd_output_section(adapters: &[AdapterEntry]) -> Value {
     let Some((ai, oi)) = vdd::find_vdd_output(adapters, &monitors) else {
         return json!({
             "found": false,
-            "monitors": monitors.iter().map(|m| json!({"gdi_name": m.gdi_name, "how": m.how})).collect::<Vec<_>>(),
+            "monitors": monitors.iter().map(|m| json!({"gdi_name": m.gdi_name, "how": m.how, "cloned": m.cloned})).collect::<Vec<_>>(),
             "note": "no VDD output visible to DXGI (driver not installed, no monitor enabled, or the monitor is detached)",
         });
     };

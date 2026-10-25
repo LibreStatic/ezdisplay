@@ -1,6 +1,7 @@
 //! Display devices (GDI / CCD): finding the VDD monitor and setting its mode.
 
-use super::util::{from_wide, wide};
+use super::util::{from_wide, luid_u64, wide};
+use crate::display_topology::{PathKey, plan_extend, source_is_cloned};
 use crate::ident::looks_like_vdd;
 use crate::vdd_xml::{Mode, format_refresh};
 use serde_json::{Value, json};
@@ -10,6 +11,8 @@ use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SDR_WHITE_LEVEL,
     DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo,
     GetDisplayConfigBufferSizes, QDC_ALL_PATHS, QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
+    SDC_ALLOW_PATH_ORDER_CHANGES, SDC_APPLY, SDC_TOPOLOGY_EXTEND, SDC_TOPOLOGY_SUPPLIED,
+    SetDisplayConfig,
 };
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::Graphics::Gdi::{
@@ -23,6 +26,7 @@ use windows::core::PCWSTR;
 const DISPLAY_DEVICE_ATTACHED_TO_DESKTOP: u32 = 1;
 const DISPLAY_DEVICE_PRIMARY_DEVICE: u32 = 4;
 const DISPLAYCONFIG_PATH_ACTIVE: u32 = 1;
+const DISPLAYCONFIG_PATH_MODE_IDX_INVALID: u32 = u32::MAX;
 
 /// A monitor we believe is the VDD.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +37,9 @@ pub struct VddMonitor {
     pub how: String,
     /// Part of the desktop.
     pub attached: bool,
+    /// The GDI source also drives a monitor that is not the VDD (Windows is in Duplicate mode), so
+    /// it is the other monitor's output and must not be treated as the VDD's.
+    pub cloned: bool,
 }
 
 /// One `EnumDisplayDevicesW` entry (adapter level) with its monitors.
@@ -247,49 +254,214 @@ pub fn sdr_white_nits_of(levels: &[(String, u32)], gdi_name: &str) -> f32 {
     )
 }
 
-/// Monitors that look like the VDD, best candidates first (attached before not).
+/// Monitors that look like the VDD, best candidates first (not cloned before cloned, attached
+/// before not).
 pub fn find_vdd_monitors() -> Vec<VddMonitor> {
     let mut found: Vec<VddMonitor> = Vec::new();
-    let mut add = |name: String, how: String, attached: bool| {
-        if !found.iter().any(|m| m.gdi_name.eq_ignore_ascii_case(&name)) {
+    let mut add = |name: String, how: String, attached: bool, cloned: bool| {
+        if let Some(m) = found
+            .iter_mut()
+            .find(|m| m.gdi_name.eq_ignore_ascii_case(&name))
+        {
+            m.cloned |= cloned;
+        } else {
             found.push(VddMonitor {
                 gdi_name: name,
                 how,
                 attached,
+                cloned,
             });
         }
     };
     for d in display_devices() {
         let attached = d.state_flags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP != 0;
+        let flags: Vec<bool> = d
+            .monitors
+            .iter()
+            .map(|(id, desc)| looks_like_vdd(id) || looks_like_vdd(desc))
+            .collect();
+        let cloned = source_is_cloned(&flags);
         if looks_like_vdd(&d.description) || looks_like_vdd(&d.device_id) {
             add(
                 d.name.clone(),
                 format!("display device {:?}", d.description),
                 attached,
+                cloned,
             );
         }
         for (id, desc) in &d.monitors {
             if looks_like_vdd(id) || looks_like_vdd(desc) {
-                add(d.name.clone(), format!("monitor {desc:?} ({id})"), attached);
-            }
-        }
-    }
-    if let Ok(targets) = ccd_targets() {
-        for t in targets {
-            let Some(g) = &t.gdi_name else { continue };
-            if (looks_like_vdd(&t.friendly_name) || looks_like_vdd(&t.device_path))
-                && t.target_available
-            {
                 add(
-                    g.clone(),
-                    format!("display config target {:?}", t.friendly_name),
-                    t.active,
+                    d.name.clone(),
+                    format!("monitor {desc:?} ({id})"),
+                    attached,
+                    cloned,
                 );
             }
         }
     }
-    found.sort_by_key(|m| !m.attached);
+    if let Ok(targets) = ccd_targets() {
+        let is_vdd =
+            |t: &CcdTarget| looks_like_vdd(&t.friendly_name) || looks_like_vdd(&t.device_path);
+        for t in &targets {
+            let Some(g) = &t.gdi_name else { continue };
+            if is_vdd(t) && t.target_available {
+                // A source that an active, non-VDD target also uses is shared, whether or not this
+                // (possibly inactive) VDD path is the one in use.
+                let mut flags = vec![true];
+                flags.extend(
+                    targets
+                        .iter()
+                        .filter(|o| o.active && !is_vdd(o))
+                        .filter_map(|o| {
+                            o.gdi_name
+                                .as_deref()
+                                .is_some_and(|og| og.eq_ignore_ascii_case(g))
+                                .then_some(false)
+                        }),
+                );
+                add(
+                    g.clone(),
+                    format!("display config target {:?}", t.friendly_name),
+                    t.active,
+                    source_is_cloned(&flags),
+                );
+            }
+        }
+    }
+    found.sort_by_key(|m| (m.cloned, !m.attached));
     found
+}
+
+/// Friendly name and device path of the target of a CCD path.
+fn target_names(p: &DISPLAYCONFIG_PATH_INFO) -> Option<(String, String)> {
+    let mut t = DISPLAYCONFIG_TARGET_DEVICE_NAME {
+        header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+            r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+            size: size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
+            adapterId: p.targetInfo.adapterId,
+            id: p.targetInfo.id,
+        },
+        ..Default::default()
+    };
+    // SAFETY: the header is the first field of the (larger) request structure.
+    let rc = unsafe {
+        DisplayConfigGetDeviceInfo(
+            (&mut t as *mut DISPLAYCONFIG_TARGET_DEVICE_NAME)
+                .cast::<DISPLAYCONFIG_DEVICE_INFO_HEADER>(),
+        )
+    };
+    (rc == 0).then(|| {
+        (
+            from_wide(&t.monitorFriendlyDeviceName),
+            from_wide(&t.monitorDevicePath),
+        )
+    })
+}
+
+/// Takes the VDD out of Duplicate mode: moves its path to a source no other monitor uses (the
+/// "Extend" topology), keeping every other active path as is. Falls back to Windows' own
+/// Extend (Win+P) when no such path exists or applying it fails. `Ok(None)`: no active VDD path
+/// shares its source, so nothing is changed (inactive paths pairing the VDD with another source
+/// are always listed and do not count).
+pub fn extend_cloned_vdd() -> Result<Option<String>, String> {
+    let (mut np, mut nm) = (0u32, 0u32);
+    // SAFETY: valid out-pointers.
+    let r = unsafe { GetDisplayConfigBufferSizes(QDC_ALL_PATHS, &mut np, &mut nm) };
+    if r != ERROR_SUCCESS {
+        return Err(format!("GetDisplayConfigBufferSizes: error {}", r.0));
+    }
+    let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+    let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+    // SAFETY: arrays sized as reported above.
+    let r = unsafe {
+        QueryDisplayConfig(
+            QDC_ALL_PATHS,
+            &mut np,
+            paths.as_mut_ptr(),
+            &mut nm,
+            modes.as_mut_ptr(),
+            None,
+        )
+    };
+    if r != ERROR_SUCCESS {
+        return Err(format!("QueryDisplayConfig: error {}", r.0));
+    }
+    paths.truncate(np as usize);
+    let keys: Vec<PathKey> = paths
+        .iter()
+        .map(|p| PathKey {
+            source: (luid_u64(p.sourceInfo.adapterId), p.sourceInfo.id),
+            target: (luid_u64(p.targetInfo.adapterId), p.targetInfo.id),
+            active: p.flags & DISPLAYCONFIG_PATH_ACTIVE != 0,
+            target_is_vdd: target_names(p)
+                .is_some_and(|(n, d)| looks_like_vdd(&n) || looks_like_vdd(&d)),
+        })
+        .collect();
+    let plan = plan_extend(&keys);
+    if plan.replacements.is_empty() && !plan.unresolved {
+        return Ok(None);
+    }
+
+    let mut applied = None;
+    if !plan.replacements.is_empty() {
+        let mut topology: Vec<DISPLAYCONFIG_PATH_INFO> = Vec::new();
+        for (i, p) in paths.iter().enumerate() {
+            if !keys[i].active {
+                continue;
+            }
+            let mut q = plan
+                .replacements
+                .iter()
+                .find(|(from, _)| *from == i)
+                .map_or(*p, |&(_, to)| paths[to]);
+            q.flags |= DISPLAYCONFIG_PATH_ACTIVE;
+            q.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            q.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            topology.push(q);
+        }
+        // SAFETY: `topology` is a valid path array; no mode array is allowed with SDC_TOPOLOGY_SUPPLIED.
+        let rc = unsafe {
+            SetDisplayConfig(
+                Some(&topology),
+                None,
+                SDC_APPLY | SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES,
+            )
+        };
+        if rc == 0 {
+            applied = Some(format!(
+                "Windows was duplicating the virtual monitor; moved it to its own display source ({} path{})",
+                plan.replacements.len(),
+                if plan.replacements.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
+        } else {
+            tracing::warn!("SetDisplayConfig with the VDD on its own source failed: error {rc}");
+        }
+    }
+    if let Some(note) = applied {
+        return Ok(Some(note));
+    }
+    let why = if plan.replacements.is_empty() {
+        "no free display source for the virtual monitor"
+    } else {
+        "applying the VDD's own display source failed"
+    };
+    tracing::warn!("{why}; asking Windows for the Extend topology instead");
+    // SAFETY: no arrays are passed with SDC_TOPOLOGY_EXTEND.
+    let rc = unsafe { SetDisplayConfig(None, None, SDC_APPLY | SDC_TOPOLOGY_EXTEND) };
+    if rc == 0 {
+        Ok(Some(format!(
+            "Windows was duplicating the virtual monitor ({why}); switched to the Extend topology"
+        )))
+    } else {
+        Err(format!(
+            "{why}, and SetDisplayConfig(SDC_TOPOLOGY_EXTEND) failed with error {rc}"
+        ))
+    }
 }
 
 /// Available `(width, height, frequency)` modes of a GDI device.
@@ -462,6 +634,6 @@ pub fn diag_json() -> Value {
     json!({
         "devices": devices,
         "ccd_targets": targets,
-        "vdd_candidates": find_vdd_monitors().into_iter().map(|m| json!({"gdi_name": m.gdi_name, "how": m.how, "attached": m.attached})).collect::<Vec<_>>(),
+        "vdd_candidates": find_vdd_monitors().into_iter().map(|m| json!({"gdi_name": m.gdi_name, "how": m.how, "attached": m.attached, "cloned": m.cloned})).collect::<Vec<_>>(),
     })
 }
