@@ -1,0 +1,159 @@
+name: Linux packages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Called by the release workflow.
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  arch:
+    name: Arch package (makepkg)
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - name: Install build tools and runtime libraries
+        run: |
+          pacman -Syu --noconfirm --needed base-devel sudo git clang pkgconf rust ffmpeg pipewire libva
+      - uses: actions/checkout@v4
+      - name: Build the package as a regular user
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          useradd --create-home builder
+          mkdir -p "$GITHUB_WORKSPACE/pkg-out" /var/tmp/ezdisplay-build
+          chown -R builder "$GITHUB_WORKSPACE" /var/tmp/ezdisplay-build
+          cd packaging/linux/arch
+          sudo -u builder env RUSTFLAGS="$RUSTFLAGS" CARGO_TERM_COLOR=always \
+            BUILDDIR=/var/tmp/ezdisplay-build PKGDEST="$GITHUB_WORKSPACE/pkg-out" \
+            makepkg --noconfirm --force
+      - name: Install test
+        run: |
+          pacman -U --noconfirm pkg-out/ezdisplay-*.pkg.tar.zst
+          ezd-host --version
+          ezdisplay --help
+          for bin in ezd-host ezdisplay; do
+            if ldd "/usr/bin/$bin" | grep 'not found'; then echo "$bin has unresolved libraries"; exit 1; fi
+          done
+          pacman -Ql ezdisplay
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ezdisplay-arch
+          path: pkg-out/ezdisplay-*.pkg.tar.zst
+          if-no-files-found: error
+
+  deb:
+    name: Debian package (${{ matrix.id }})
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:24.04", id: "ubuntu24.04" }
+          - { image: "debian:trixie", id: "debian13" }
+          - { image: "ubuntu:26.04", id: "ubuntu26.04" }
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install build tools and development libraries
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential clang libclang-dev pkg-config \
+            ca-certificates git curl dpkg-dev libavcodec-dev libavformat-dev libavfilter-dev \
+            libavutil-dev libswscale-dev libswresample-dev libpipewire-0.3-dev libva-dev \
+            libx11-dev libxkbcommon-dev libwayland-dev
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: deb-${{ matrix.id }}
+      - run: cargo build --release --locked -p ezd-host -p ezd-tray
+      # Covers the FFmpeg version of each distro (6.1, 7.1 and 8.0).
+      - run: cargo test --locked -p ezd-ffmpeg -p ezd-host-linux
+      - name: Build the .deb
+        run: |
+          cargo install cargo-deb --version 3.8.0 --locked
+          mkdir -p deb-out
+          cargo deb -p ezd-tray --no-build --strip --deb-revision "1~${{ matrix.id }}" --output deb-out/
+          ls -l deb-out
+          dpkg-deb -f deb-out/*.deb Package Version Depends Recommends
+      - name: Install test (Depends must resolve on this distro)
+        run: |
+          apt-get install -y ./deb-out/ezdisplay_*.deb
+          ezd-host --version
+          ezdisplay --help
+          for bin in ezd-host ezdisplay; do
+            if ldd "/usr/bin/$bin" | grep 'not found'; then echo "$bin has unresolved libraries"; exit 1; fi
+          done
+          dpkg -c deb-out/ezdisplay_*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ezdisplay-deb-${{ matrix.id }}
+          path: deb-out/ezdisplay_*.deb
+          if-no-files-found: error
+
+  appimage:
+    name: AppImage (build)
+    runs-on: ubuntu-24.04
+    # glibc 2.39 is the floor of the AppImage. No libav*-dev package: FFmpeg is built from the pins.
+    container: ubuntu:24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential clang libclang-dev pkg-config \
+            nasm curl ca-certificates git xz-utils unzip file patchelf binutils \
+            libva-dev libdrm-dev libpipewire-0.3-dev libvulkan-dev libxkbcommon-dev \
+            libwayland-dev libx11-dev glslang-tools glslang-dev spirv-tools
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: appimage
+          # FFmpeg is rebuilt every time: do not reuse build scripts that ran against an older one.
+          cache-targets: false
+      - name: Build the AppImage
+        run: |
+          packaging/linux/appimage/build.sh --out "$GITHUB_WORKSPACE/appimage-out" \
+            --cache "$RUNNER_TEMP/pins" --work "$RUNNER_TEMP/appimage-work"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ezdisplay-appimage
+          path: appimage-out/ezdisplay-*.AppImage
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ezdisplay-appimage-sources
+          path: appimage-out/ezdisplay-appimage-sources/
+          if-no-files-found: error
+
+  appimage-smoke:
+    name: AppImage (smoke test without FFmpeg)
+    needs: appimage
+    runs-on: ubuntu-24.04
+    # A clean Debian 13 with only the libraries the AppImage expects from the host.
+    container: debian:trixie
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install the host libraries and test tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git jq libva2 libva-drm2 \
+            libdrm2 libvulkan1 libpipewire-0.3-0t64
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ezdisplay-appimage
+          path: appimage
+      - name: Smoke test
+        run: packaging/linux/appimage/smoke.sh appimage/ezdisplay-*.AppImage

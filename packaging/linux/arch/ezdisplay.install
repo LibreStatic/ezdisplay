@@ -1,0 +1,8 @@
+post_install() {
+  # pacman's own hook reloads the udev rules; apply the uaccess tag to an existing /dev/uinput.
+  udevadm trigger --name-match=uinput 2>/dev/null || true
+}
+
+post_upgrade() {
+  post_install
+}

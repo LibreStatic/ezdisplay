@@ -1,0 +1,12 @@
+#!/bin/sh
+# Applies the /dev/uinput udev rule right after install; containers and chroots have no udev.
+set -e
+
+case "$1" in
+    configure)
+        udevadm control --reload-rules 2>/dev/null || true
+        udevadm trigger --name-match=uinput 2>/dev/null || true
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,46 @@
+# Maintainer: LibreStatic <facumo.fm@gmail.com>
+#
+# Builds ezdisplay from the repository this file lives in (no source download):
+#   cd packaging/linux/arch && makepkg -sf
+# See packaging/linux/README.md.
+
+pkgname=ezdisplay
+pkgver=0.1.0 # replaced by pkgver() with the workspace version
+pkgrel=1
+pkgdesc='Use an Android tablet as an extended monitor over USB (KDE Plasma host and tray app)'
+arch=(x86_64)
+url='https://github.com/LibreStatic/ezdisplay'
+license=('MIT OR Apache-2.0')
+depends=(ffmpeg pipewire libva gcc-libs glibc android-tools xdg-desktop-portal-kde libkscreen)
+makedepends=(rust clang pkgconf)
+options=(!lto !debug)
+install=ezdisplay.install
+
+_root=$(realpath "$startdir/../../..")
+
+pkgver() {
+  sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' "$_root/Cargo.toml"
+}
+
+build() {
+  cd "$_root"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  # Keep the build directory out of the binaries' panic locations and debug paths.
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=src --remap-path-prefix=$_root=."
+  cargo build --release --locked -p ezd-host -p ezd-tray
+}
+
+package() {
+  cd "$_root"
+  local t="$srcdir/target/release"
+  install -Dm755 "$t/ezdisplay" "$pkgdir/usr/bin/ezdisplay"
+  install -Dm755 "$t/ezd-host" "$pkgdir/usr/bin/ezd-host"
+  install -Dm644 packaging/linux/70-ezdisplay-uinput.rules \
+    "$pkgdir/usr/lib/udev/rules.d/70-ezdisplay-uinput.rules"
+  install -Dm644 packaging/linux/com.librestatic.ezdisplay.desktop \
+    "$pkgdir/usr/share/applications/com.librestatic.ezdisplay.desktop"
+  install -Dm644 packaging/linux/com.librestatic.ezdisplay.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/com.librestatic.ezdisplay.svg"
+  install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

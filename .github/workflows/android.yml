@@ -18,6 +18,8 @@ on:
       - "crates/ezd-proto/**"
       - "crates/ezd-link/**"
       - ".github/workflows/android.yml"
+  # Called by the release workflow, which builds the APKs it publishes.
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always

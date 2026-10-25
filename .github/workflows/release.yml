@@ -1,0 +1,124 @@
+name: Release
+
+# Push a tag `v<workspace version>` (see docs/releasing.md) to build everything and publish a
+# GitHub Release. "Run workflow" with dry_run builds the same set and uploads it as the
+# `release-preview` artifact without creating a release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build everything and upload release-preview, but create no release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Version check
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml)
+          [ -n "$version" ] || { echo "cannot read the workspace version from Cargo.toml"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Workspace version: $version"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the workspace version (expected v$version)"
+            exit 1
+          fi
+
+  ci:
+    name: CI
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  android:
+    name: Android
+    needs: version
+    uses: ./.github/workflows/android.yml
+
+  linux:
+    name: Linux packages
+    needs: version
+    uses: ./.github/workflows/linux-packages.yml
+
+  publish:
+    name: Publish
+    needs: [version, ci, android, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Decide between release and preview
+        id: mode
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ] && { [ "$GITHUB_EVENT_NAME" = push ] || [ "$DRY_RUN" = false ]; }; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$DRY_RUN" = false ]; then
+            echo "::error::a real release needs a tag: run the workflow on a v* tag, not on $GITHUB_REF_NAME"
+            exit 1
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ezdisplay-*
+          path: dl
+      - name: Collect the release files
+        run: |
+          set -euo pipefail
+          mkdir release
+          one() { # one DIR GLOB: copy exactly one file
+            local files
+            files=$(find "dl/$1" -type f -name "$2")
+            [ "$(echo "$files" | grep -c .)" = 1 ] || { echo "expected one $2 in dl/$1, got: $files"; exit 1; }
+            cp "$files" release/
+          }
+          one ezdisplay-windows-installer 'ezdisplay-setup-*-x64.exe'
+          one ezdisplay-arch 'ezdisplay-*.pkg.tar.zst'
+          for id in ubuntu24.04 debian13 ubuntu26.04; do
+            one "ezdisplay-deb-$id" 'ezdisplay_*.deb'
+          done
+          one ezdisplay-appimage 'ezdisplay-*.AppImage'
+          chmod +x release/*.AppImage
+          mv dl/ezdisplay-appimage-sources "ezdisplay-$VERSION-appimage-sources"
+          tar -cf "release/ezdisplay-$VERSION-appimage-sources.tar" "ezdisplay-$VERSION-appimage-sources"
+          apks=$(find dl/ezdisplay-android-apks -type f -name '*.apk')
+          [ -n "$apks" ] || { echo "no APKs found"; exit 1; }
+          for apk in $apks; do
+            flavor=$(basename "$(dirname "$(dirname "$apk")")") # <flavor>/debug/<file>.apk
+            cp "$apk" "release/ezdisplay-$VERSION-$flavor-debug.apk"
+          done
+          (cd release && sha256sum -- * > ../SHA256SUMS)
+          mv SHA256SUMS release/
+          ls -l release
+          cat release/SHA256SUMS
+      - name: Create the GitHub Release
+        if: steps.mode.outputs.release == 'true'
+        run: |
+          prerelease=
+          case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "ezdisplay $VERSION" --generate-notes $prerelease release/*
+      - name: Upload the preview
+        if: steps.mode.outputs.release != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-preview
+          path: release/
+          if-no-files-found: error

@@ -57,3 +57,29 @@ winresource = "0.1"
 
 [lints]
 workspace = true
+
+# Debian/Ubuntu package: `cargo deb -p ezd-tray --no-build` after
+# `cargo build --release -p ezd-host -p ezd-tray` (see packaging/linux/README.md).
+[package.metadata.deb]
+name = "ezdisplay"
+maintainer = "LibreStatic <facumo.fm@gmail.com>"
+license-file = ["../../packaging/linux/debian/copyright", "0"]
+section = "utils"
+priority = "optional"
+extended-description = """\
+Use an Android tablet as an extended monitor over USB, with very low latency. \
+The host renders a virtual display on KDE Plasma (Wayland), encodes it on the GPU \
+and streams it to the tablet, which sends touch and pen input back. \
+Installs the ezdisplay tray app and the ezd-host command line tool."""
+depends = "$auto, adb"
+recommends = "xdg-desktop-portal-kde, libkscreen-bin | libkf5screen-bin"
+maintainer-scripts = "../../packaging/linux/debian/"
+assets = [
+    ["target/release/ezdisplay", "usr/bin/", "755"],
+    ["target/release/ezd-host", "usr/bin/", "755"],
+    ["../../packaging/linux/70-ezdisplay-uinput.rules", "usr/lib/udev/rules.d/", "644"],
+    ["../../packaging/linux/com.librestatic.ezdisplay.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/linux/com.librestatic.ezdisplay.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../LICENSE-MIT", "usr/share/doc/ezdisplay/", "644"],
+    ["../../LICENSE-APACHE", "usr/share/doc/ezdisplay/", "644"],
+]
