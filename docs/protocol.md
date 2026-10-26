@@ -168,14 +168,23 @@ Before the framed protocol the client sends one preamble message (`ezd_proto::pa
 messages are postcard with a `u16` little-endian length prefix, at most 1024 bytes, and each
 step must complete within 10 s.
 
-```
-client                                     host
-  |  LinkOpen::Session --------------------->|   client certificate must be paired
-  |<--------------------- LinkReply::Accepted |   or Refused(NotPaired | Busy)
-  |=== input stream: 'I', Pen/Touch ... ===>|   opened after reading Accepted
-  |<== cursor stream: 'C', CursorState ... ==|   opened after writing Accepted
-  |<=== video stream: 'V', VideoFrame ... ===|
-  |  Hello ... (as in Handshake and session) |
+```mermaid
+sequenceDiagram
+  participant C as Client (tablet)
+  participant H as Host (PC)
+  Note over C,H: QUIC connection, TLS with both certificates
+  C->>H: Control stream: LinkOpen::Session
+  alt client certificate paired, host free
+    H->>C: LinkReply::Accepted
+    Note right of H: opens the cursor ('C') and video ('V') streams
+    Note left of C: opens the input stream ('I') after reading Accepted
+    Note over C,H: Control stream: framed protocol from Hello on (see Handshake and session)
+    C->>H: Input stream 'I': Pen, Touch, ...
+    H->>C: Cursor stream 'C': CursorShape, CursorState
+    H->>C: Video stream 'V': VideoFrame
+  else
+    H-->>C: LinkReply::Refused(NotPaired or Busy)
+  end
 ```
 
 Transport settings tuned for latency: keep-alive 1 s, idle timeout 5 s, initial RTT estimate
@@ -205,15 +214,25 @@ With the QR code the client pins `fp` before connecting. With a typed PIN it acc
 certificate for this one connection; the PIN exchange below then authenticates the
 certificates of both sides.
 
-```
-client (SPAKE2 side A)                     host (SPAKE2 side B)
-  |  LinkOpen::Pair{device_name, spake_A} -->|   window closed -> Refused(PairingClosed
-  |                                          |   or TooManyAttempts); else counts an attempt
-  |<-- LinkReply::PairChallenge{host_name,   |
-  |        spake_B, confirm_host}            |
-  |  check confirm_host; on mismatch close   |
-  |  PairConfirm{confirm_client} ----------->|   mismatch -> PairOutcome::Refused(WrongPin)
-  |<----------------------- PairOutcome::Paired   host stored the client first
+```mermaid
+sequenceDiagram
+  participant C as Client (SPAKE2 side A)
+  participant H as Host (SPAKE2 side B)
+  C->>H: Control stream: LinkOpen::Pair(device_name, spake_A)
+  alt pairing window closed or used up
+    H-->>C: LinkReply::Refused(PairingClosed or TooManyAttempts)
+  else window open
+    Note right of H: counts an attempt
+    H->>C: LinkReply::PairChallenge(host_name, spake_B, confirm_host)
+    Note left of C: checks confirm_host, closes on a mismatch
+    C->>H: PairConfirm(confirm_client)
+    alt confirm_client does not match (wrong PIN)
+      H-->>C: PairOutcome::Refused(WrongPin)
+    else match
+      Note right of H: stores the client first
+      H->>C: PairOutcome::Paired
+    end
+  end
 ```
 
 * SPAKE2 over Ed25519 with the PIN as the password and the identities `ezdisplay client` (A)
