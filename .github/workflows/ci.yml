@@ -18,7 +18,7 @@ jobs:
     steps:
       - name: Install system packages
         run: |
-          pacman -Syu --noconfirm --needed base-devel clang pkgconf ffmpeg pipewire libva libusb git curl
+          pacman -Syu --noconfirm --needed base-devel clang pkgconf ffmpeg pipewire libva libusb git curl xorg-server xf86-video-dummy
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -27,6 +27,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The X11 backend against Xorg with the dummy video driver (no desktop or Docker needed).
+      - run: tools/x11-dummy-test.sh
 
   windows:
     name: Windows (build, test, artifact)

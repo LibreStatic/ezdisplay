@@ -4,9 +4,10 @@
 //! [`crate::source::LinuxSource`] owns the shared half (encoder selection, capture negotiation,
 //! encode pipeline) and talks to one [`VirtualOutputProvider`]: [`crate::kde::KdeProvider`],
 //! [`crate::gnome::GnomeProvider`], [`crate::sway::SwayProvider`] or
-//! [`crate::hyprland::HyprlandProvider`]. A provider returns a [`FrameSource`]: PipeWire for KDE
-//! and GNOME; the wlroots providers return a Wayland output that `wl_capture.rs` captures with
-//! the compositor's own protocols.
+//! [`crate::hyprland::HyprlandProvider`] or [`crate::x11_output::X11Provider`]. A provider returns
+//! a [`FrameSource`]: PipeWire for KDE and GNOME; the wlroots providers return a Wayland output
+//! that `wl_capture.rs` captures with the compositor's own protocols; the X11 provider returns a
+//! rectangle of the root window that `x11_capture.rs` grabs.
 
 use crate::portal::SourceKind;
 use crate::pw::Target;
@@ -33,6 +34,9 @@ pub enum FrameSource {
     /// A Wayland output captured directly over the compositor's capture protocols
     /// (`wl_capture.rs`); `output` is its `wl_output` name (`HEADLESS-2`, `ezdisplay-1`).
     Wayland { output: String },
+    /// A rectangle `(x, y, width, height)` of the X screen, grabbed from the root window
+    /// (`x11_capture.rs`).
+    X11 { rect: (i32, i32, u32, u32) },
 }
 
 /// An opened output.
