@@ -60,7 +60,7 @@ Working today, over USB with ADB:
 | Extended display at native resolution and refresh rate | ✅ | ✅ |
 | Locally drawn cursor | ✅ | ✅ |
 | Zero-copy hardware encode | ✅ | ✅ |
-| Touch, pen pressure, tilt and hover | 🧪 needs hardware testing | ✅ |
+| Touch, pen pressure, tilt and hover | ✅ | ✅ |
 | Tray app with settings and live statistics | ✅ | ✅ |
 | Installer / packages | ✅ `.exe` | ✅ AppImage, `.deb`, Arch |
 
