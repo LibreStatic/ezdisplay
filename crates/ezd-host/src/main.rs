@@ -1,13 +1,19 @@
 //! `ezd-host`: host side of ezdisplay.
 //!
 //! * `ezd-host run --source synthetic`: listen for one client at a time and stream.
+//! * `ezd-host run --wifi --source synthetic`: also accept paired tablets over Wi-Fi.
+//! * `ezd-host paired list|forget`: manage the tablets paired over Wi-Fi.
 //! * `ezd-host diag`: print a JSON report about the machine (GPUs, encoders, adb).
 
 mod diag;
+#[cfg(target_os = "linux")]
+mod firewall;
 mod i18n;
 mod run;
 #[cfg(windows)]
 mod vdd;
+#[cfg(feature = "wifi")]
+mod wifi;
 
 use anyhow::Result;
 use clap::{
@@ -28,6 +34,9 @@ struct Cli {
 enum Command {
     Run(run::RunArgs),
     Diag,
+    #[cfg(feature = "wifi")]
+    #[command(subcommand)]
+    Paired(wifi::PairedCommand),
     #[cfg(windows)]
     #[command(subcommand)]
     Vdd(vdd::VddCommand),
@@ -41,6 +50,10 @@ fn command(l: &FluentLanguageLoader) -> ClapCommand {
         .about(fl!(l, "about"))
         .mut_subcommand("run", |s| run::localize(s.about(fl!(l, "cmd-run")), l))
         .mut_subcommand("diag", |s| s.about(fl!(l, "cmd-diag")));
+    #[cfg(feature = "wifi")]
+    let cmd = cmd.mut_subcommand("paired", |s| {
+        wifi::localize(s.about(fl!(l, "cmd-paired")), l)
+    });
     #[cfg(windows)]
     let cmd = cmd.mut_subcommand("vdd", |s| vdd::localize(s.about(fl!(l, "cmd-vdd")), l));
     i18n::localize_version(i18n::localize_chrome(cmd, l), l)
@@ -72,6 +85,8 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&diag::report())?);
             Ok(())
         }
+        #[cfg(feature = "wifi")]
+        Command::Paired(cmd) => wifi::run(cmd),
         #[cfg(windows)]
         Command::Vdd(cmd) => vdd::run(cmd),
     }

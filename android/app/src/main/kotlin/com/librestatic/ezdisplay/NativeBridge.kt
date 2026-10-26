@@ -16,6 +16,35 @@ object NativeBridge {
     /** Starts one connection attempt to [host]:[port]. Returns null on success or an error message. */
     @JvmStatic external fun start(surface: Surface?, host: String, port: Int, capsJson: String): String?
 
+    /**
+     * Starts one connection attempt over the USB accessory file descriptor [fd]. Takes ownership: the caller
+     * detached it from its ParcelFileDescriptor and must not close it. Null on success, else an error.
+     */
+    @JvmStatic external fun startFd(surface: Surface?, fd: Int, capsJson: String): String?
+
+    /**
+     * Starts one connection attempt over Wi-Fi to the paired host with certificate [fingerprintHex] at [addr]
+     * (`ip:port`). [stateDir] holds this device's identity and the paired hosts. Null on success, else an error.
+     */
+    @JvmStatic external fun startWifi(
+        surface: Surface?, addr: String, fingerprintHex: String, stateDir: String, capsJson: String,
+    ): String?
+
+    /**
+     * Pairs with the host at [addr] using a typed PIN, or with the host of an `ezd://pair?...` link in [pinOrUri].
+     * Blocks (call off the main thread). JSON: `{ok, host:{name, fingerprint, shortFp}}` or `{ok:false, error, message}`.
+     */
+    @JvmStatic external fun wifiPair(addr: String, pinOrUri: String, deviceName: String, stateDir: String): String
+
+    /** Paired hosts as a JSON array of `{name, fingerprint, shortFp, addr?}`. */
+    @JvmStatic external fun wifiHosts(stateDir: String): String
+
+    /** Forgets a paired host; false when it was not paired. */
+    @JvmStatic external fun wifiForget(stateDir: String, fingerprint: String): Boolean
+
+    /** This device's short fingerprint (empty if the state is unusable). */
+    @JvmStatic external fun wifiIdentity(stateDir: String): String
+
     /** Stops the session; the decoder is released before this returns. */
     @JvmStatic external fun stop()
 

@@ -27,6 +27,8 @@ pub enum Phase {
 struct State {
     phase: Phase,
     detail: String,
+    /// Stable error code of a failure Kotlin localizes; `None` for the free-form detail.
+    code: Option<&'static str>,
     stream: Option<StreamConfig>,
     decoder: Option<String>,
     /// Size of the decoder's output buffers, which can exceed the stream (coded vs cropped size).
@@ -41,6 +43,7 @@ impl Default for Shared {
         Shared(Mutex::new(State {
             phase: Phase::Idle,
             detail: String::new(),
+            code: None,
             stream: None,
             decoder: None,
             buffer: None,
@@ -63,6 +66,17 @@ impl Shared {
             }
             s.phase = phase;
             s.detail = detail;
+            s.code = None;
+        });
+    }
+
+    /// Fails with `detail` (English, for logs and fallbacks) and a stable `code` for Kotlin.
+    pub fn set_failed_code(&self, detail: impl Into<String>, code: &'static str) {
+        let detail = detail.into();
+        self.with(|s| {
+            s.phase = Phase::Failed;
+            s.detail = detail;
+            s.code = Some(code);
         });
     }
 
@@ -117,6 +131,7 @@ impl Shared {
         let v = serde_json::json!({
             "phase": s.phase,
             "detail": s.detail,
+            "code": s.code,
             "width": s.stream.as_ref().map_or(0, |c| c.width),
             "height": s.stream.as_ref().map_or(0, |c| c.height),
             "refresh_mhz": s.stream.as_ref().map_or(0, |c| c.refresh_mhz),
@@ -209,6 +224,22 @@ mod tests {
         assert_eq!(j["input_note"], "no uinput");
         assert_eq!(j["client_flags"], 1);
         assert_eq!(j["inputs_sent"], 9);
+    }
+
+    #[test]
+    fn a_failure_code_is_reported_and_cleared_by_the_next_phase() {
+        let sh = Shared::default();
+        let snap = ClientSnapshot::default();
+        sh.set_failed_code("connect: refused", "not_paired");
+        let j: serde_json::Value = serde_json::from_str(&sh.to_json(&snap)).unwrap();
+        assert_eq!(
+            (j["phase"].as_str(), j["code"].as_str()),
+            (Some("failed"), Some("not_paired"))
+        );
+        assert_eq!(j["detail"], "connect: refused");
+        sh.set_phase(Phase::Connecting, "x");
+        let j: serde_json::Value = serde_json::from_str(&sh.to_json(&snap)).unwrap();
+        assert!(j["code"].is_null());
     }
 
     #[test]

@@ -18,6 +18,7 @@ status-streaming = Diffusion vers { $device } · { $width }×{ $height } à { $h
 error-bind = Impossible d'écouter sur { $addr } : { $reason }
 error-adb-not-found = adb est introuvable
 error-adb-reverse = Échec d'adb reverse pour { $serial } : { $reason }
+usb-unavailable-hint = L'USB sans mode développeur est indisponible ({ $reason }) ; le débogage USB fonctionne toujours.
 error-unsupported = Ce système ne prend pas encore en charge les écrans virtuels
 error-source = Impossible de créer la source vidéo : { $reason }
 
@@ -45,6 +46,9 @@ devices-heading = Appareils
 stats-heading = Statistiques en direct
 stats-waiting = En attente des premières mesures…
 stat-device = Tablette
+stat-connection = Connexion
+transport-aoa = USB (accessoire)
+transport-wifi = Wi-Fi
 stat-mode = Mode
 stat-encoder = Encodeur
 stat-fps = Fréquence d'images
@@ -129,6 +133,7 @@ device-unauthorized = en attente de votre acceptation du débogage USB
 device-offline = hors ligne
 open-app = Ouvrir l'application sur la tablette à la connexion
 use-adb = Se connecter en USB avec adb
+use-aoa = USB sans mode développeur
 advanced = Avancé
 setting-port = Port
 port-hint = La tablette joint cet ordinateur sur ce port. Les modifications s'appliquent quand aucune session n'est en cours.
@@ -185,6 +190,7 @@ input-description = Utilisez la tablette comme écran tactile et comme stylet su
 pen-description = Une tablette graphique ajoute la pression et l'inclinaison.
 telemetry-description = Affiche des mesures de performance en direct sur la tablette pendant la diffusion.
 use-adb-description = Trouve les tablettes dont le débogage USB est activé.
+use-aoa-description = Fait passer la tablette en mode accessoire dès que vous la branchez, sans débogage USB. adb reste disponible en secours.
 autostart-description = Lance ezdisplay à l'ouverture de votre session.
 start-on-launch-description = Se met en attente de votre tablette dès l'ouverture d'ezdisplay.
 system-accent = Utiliser la couleur d'accentuation du système
@@ -194,3 +200,28 @@ logs-description = Ouvre le dossier où ezdisplay écrit ses journaux.
 about-description = Écran USB open source pour tablettes Android.
 repository = Code source
 driver-reinstall = Réinstaller le pilote
+
+## Window: Wi-Fi
+card-wifi = Wi-Fi
+wifi-enable = Se connecter par Wi-Fi
+wifi-latency-warning = Le Wi-Fi ajoute de la latence et de la gigue ; l'USB est préférable pour dessiner.
+wifi-starts-with-stream = Le Wi-Fi s'active quand la diffusion démarre.
+wifi-address = Adresse
+wifi-fingerprint = Empreinte de l'hôte
+wifi-pair = Appairer un appareil
+wifi-pair-cancel = Annuler
+wifi-pair-hint = Sur la tablette, scannez ce QR code ou saisissez le code PIN.
+wifi-pin = Code PIN
+wifi-qr-label = QR code d'appairage
+wifi-pair-expires = Se ferme dans { $seconds } s
+wifi-notice-paired = Appairage réussi avec { $device }.
+wifi-notice-attempts = L'appairage est fermé : trop de codes PIN incorrects.
+wifi-notice-expired = L'appairage est fermé : le temps est écoulé.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } appareil appairé
+       *[other] { $count } appareils appairés
+    }
+wifi-paired-none = Aucun appareil n'est encore appairé.
+wifi-forget = Oublier
+error-wifi = Impossible de démarrer le Wi-Fi : { $reason }

@@ -18,6 +18,7 @@ status-streaming = Streaming to { $device } · { $width }×{ $height } at { $hz 
 error-bind = Cannot listen on { $addr }: { $reason }
 error-adb-not-found = adb was not found
 error-adb-reverse = adb reverse failed for { $serial }: { $reason }
+usb-unavailable-hint = USB without developer mode is unavailable ({ $reason }); USB debugging still works.
 error-unsupported = This system has no virtual display support yet
 error-source = Cannot create the video source: { $reason }
 
@@ -45,6 +46,9 @@ devices-heading = Devices
 stats-heading = Live statistics
 stats-waiting = Waiting for the first measurements…
 stat-device = Tablet
+stat-connection = Connection
+transport-aoa = USB (accessory)
+transport-wifi = Wi-Fi
 stat-mode = Mode
 stat-encoder = Encoder
 stat-fps = Frame rate
@@ -129,6 +133,7 @@ device-unauthorized = waiting for you to accept USB debugging
 device-offline = offline
 open-app = Open the app on the tablet when it is connected
 use-adb = Connect over USB with adb
+use-aoa = USB without developer mode
 advanced = Advanced
 setting-port = Port
 port-hint = The tablet reaches this computer on this port. Changes apply when no session is running.
@@ -185,6 +190,7 @@ input-description = Use the tablet as a touch screen and a pen on this computer.
 pen-description = A graphics tablet adds pressure and tilt.
 telemetry-description = Shows live performance numbers on the tablet while streaming.
 use-adb-description = Finds tablets that have USB debugging turned on.
+use-aoa-description = Switches the tablet to accessory mode when you plug it in, so USB debugging is not needed. adb stays as the fallback.
 autostart-description = Starts ezdisplay when you sign in.
 start-on-launch-description = Starts waiting for your tablet as soon as ezdisplay opens.
 system-accent = Use the system accent color
@@ -194,3 +200,28 @@ logs-description = Open the folder where ezdisplay writes its logs.
 about-description = Open-source USB display for Android tablets.
 repository = Source code
 driver-reinstall = Reinstall the driver
+
+## Window: Wi-Fi
+card-wifi = Wi-Fi
+wifi-enable = Connect over Wi-Fi
+wifi-latency-warning = Wi-Fi adds latency and jitter; USB is best for drawing.
+wifi-starts-with-stream = Wi-Fi turns on when streaming starts.
+wifi-address = Address
+wifi-fingerprint = Host fingerprint
+wifi-pair = Pair a device
+wifi-pair-cancel = Cancel
+wifi-pair-hint = On the tablet, scan this QR code or type the PIN.
+wifi-pin = PIN
+wifi-qr-label = Pairing QR code
+wifi-pair-expires = Closes in { $seconds } s
+wifi-notice-paired = Paired with { $device }.
+wifi-notice-attempts = Pairing closed: too many wrong PINs.
+wifi-notice-expired = Pairing closed: time ran out.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } paired device
+       *[other] { $count } paired devices
+    }
+wifi-paired-none = No devices are paired yet.
+wifi-forget = Forget
+error-wifi = Wi-Fi cannot start: { $reason }

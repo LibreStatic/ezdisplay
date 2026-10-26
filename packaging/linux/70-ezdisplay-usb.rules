@@ -1,0 +1,12 @@
+# ezdisplay: let the logged-in user open the USB devices the host talks to over AOA (Android Open
+# Accessory), without developer mode: phones and tablets with an MTP or ADB interface, and devices
+# already switched into accessory mode.
+#
+# Install:
+#   sudo install -m644 packaging/linux/70-ezdisplay-usb.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=usb
+#
+# The file name must sort before 73-seat-late.rules, which applies the "uaccess" tag.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:060101:*", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:ff4201:*", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d0[0-5]", TAG+="uaccess"

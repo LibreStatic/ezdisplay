@@ -1,7 +1,7 @@
 # ezdisplay wire protocol (version 0.6)
 
-All integers are little endian. The protocol runs over any reliable ordered byte stream (TCP
-through `adb reverse` today; AOA bulk endpoints later). It is implemented in the `ezd-proto`
+All integers are little endian. The protocol runs over any reliable ordered byte stream: TCP
+through `adb reverse` over USB, or a QUIC connection on Wi-Fi (see [Transports](#transports)). It is implemented in the `ezd-proto`
 crate (messages, framing) and `ezd-link` (prioritized mux).
 
 ## Framing
@@ -114,7 +114,8 @@ per push) and yields complete messages.
 
 `Hello` carries `proto_major` and `proto_minor` (currently 0 and 6; 0.2 added `FrameAck`, 0.3
 the input messages, `InputStatus` and `ClientOptions`, 0.4 the `Key` message, 0.5 `ClientHdr` and
-`StreamColor` for HDR10, 0.6 `ClientKeyboard`). A different major version is fatal: the
+`StreamColor` for HDR10, 0.6 `ClientKeyboard`; the Wi-Fi transport is below the framed protocol and
+needs no minor bump). A different major version is fatal: the
 receiver answers `Reject` and closes. Minor versions only add new `(channel,
 kind)` pairs, so peers with different minors interoperate. `Hello::supports_input()` is true
 when the peer's minor is at least `MINOR_INPUT` = 3; a host must not send `InputStatus` or
@@ -125,6 +126,117 @@ host's `InputStatus.caps` has `KEYS`, and an older host would skip the unknown p
 `ClientHdr` only to such a host, and a host sends `StreamColor` only to such a client.
 `Hello::supports_keyboard()` is true when the peer's minor is at least `MINOR_KEYBOARD` = 6: a
 client sends `ClientKeyboard` only to such a host.
+
+## Transports
+
+### USB (TCP through `adb reverse`)
+
+The host listens on `127.0.0.1:27183` and `adb reverse` maps the tablet's `127.0.0.1:27183` to
+it. Everything goes over one TCP stream in the order described in [Priority](#priority). The
+link is not encrypted; it never leaves the loopback interface and the USB cable.
+
+### Wi-Fi (QUIC)
+
+The host listens on UDP `0.0.0.0:27183` with QUIC (TLS 1.3 only, ALPN `ezd/0`). Both sides
+present a long-lived self-signed certificate (ECDSA P-256) and identify each other by its
+fingerprint, the SHA-256 of the certificate DER. There is no CA: the client pins the host's
+fingerprint, and the host only starts sessions for fingerprints it has paired with.
+
+Streams, one per channel:
+
+| Stream | Kind | Opened by | Tag | Send priority |
+| --- | --- | --- | --- | --- |
+| Control | bidirectional | client | none (preamble first) | 4 (highest) |
+| Input | unidirectional | client, after reading `Accepted` | `'I'` | 3 |
+| Cursor | unidirectional | host, after writing `Accepted` | `'C'` | 2 |
+| Audio (reserved) | unidirectional | host | `'A'` | 1 |
+| Video | unidirectional | host, after writing `Accepted` | `'V'` | 0 (lowest) |
+
+Every unidirectional stream starts with its tag byte, then carries the framed messages of its
+channel. Control carries the preamble, then the framed protocol for the control channel. The
+receiver accepts the expected streams (the host one, the client two) within 10 s and dispatches
+them by tag, not by arrival order; an unknown or repeated tag ends the session. The cursor stream
+carries cursor shapes and the latest-wins cursor state, shapes first. There is no compatibility
+with earlier layouts.
+
+Each channel has its own stream so a lost packet on one never holds back another: a lost packet
+of a large video frame does not delay input, cursor or control messages. Every other rule of
+this document (credit, coalescing, reassembly) is unchanged; each stream is reassembled on its
+own, and the priorities above are QUIC send priorities between the streams.
+
+Before the framed protocol the client sends one preamble message (`ezd_proto::pair`). Preamble
+messages are postcard with a `u16` little-endian length prefix, at most 1024 bytes, and each
+step must complete within 10 s.
+
+```
+client                                     host
+  |  LinkOpen::Session --------------------->|   client certificate must be paired
+  |<--------------------- LinkReply::Accepted |   or Refused(NotPaired | Busy)
+  |=== input stream: 'I', Pen/Touch ... ===>|   opened after reading Accepted
+  |<== cursor stream: 'C', CursorState ... ==|   opened after writing Accepted
+  |<=== video stream: 'V', VideoFrame ... ===|
+  |  Hello ... (as in Handshake and session) |
+```
+
+Transport settings tuned for latency: keep-alive 1 s, idle timeout 5 s, initial RTT estimate
+10 ms. The congestion controller is Cubic; BBR can be selected for experiments.
+
+The host accepts any client certificate in the handshake, so it treats every peer as untrusted
+until the preamble: it finishes each handshake in its own task within 10 s, keeps at most 8
+connections, allows the client one bidirectional stream and one unidirectional one (input), and uses
+256 KiB receive windows (it never receives video). The client allows the host only the cursor
+and video streams and uses 8 MiB stream and 16 MiB connection receive windows, room for a large keyframe.
+A client only opens a session on a connection whose host certificate it pinned.
+
+Hosts advertise themselves over mDNS as `_ezdisplay._udp.local.` with TXT records `fp` (short
+fingerprint, see below), `name` and `pv` (protocol major version). The client can also be given
+an address by hand.
+
+### Pairing
+
+A client that is not paired yet asks the host to pair while the host's pairing window is open.
+The host shows a random 6-digit PIN, and a QR code of
+
+```
+ezd://pair?a=<ip:port>&fp=<host fingerprint, 64 hex digits>&pin=<PIN>&n=<host name, percent-encoded>
+```
+
+With the QR code the client pins `fp` before connecting. With a typed PIN it accepts any host
+certificate for this one connection; the PIN exchange below then authenticates the
+certificates of both sides.
+
+```
+client (SPAKE2 side A)                     host (SPAKE2 side B)
+  |  LinkOpen::Pair{device_name, spake_A} -->|   window closed -> Refused(PairingClosed
+  |                                          |   or TooManyAttempts); else counts an attempt
+  |<-- LinkReply::PairChallenge{host_name,   |
+  |        spake_B, confirm_host}            |
+  |  check confirm_host; on mismatch close   |
+  |  PairConfirm{confirm_client} ----------->|   mismatch -> PairOutcome::Refused(WrongPin)
+  |<----------------------- PairOutcome::Paired   host stored the client first
+```
+
+* SPAKE2 over Ed25519 with the PIN as the password and the identities `ezdisplay client` (A)
+  and `ezdisplay host` (B). The shared key `K` only matches if both sides used the same PIN; a
+  passive observer learns nothing about the PIN and an active attacker tests one guess per
+  attempt.
+* Each confirmation is an HMAC-SHA256 with a per-side key `HMAC(K, side)` (`side` is
+  `host confirm` or `client confirm`) over the transcript
+  `"ezd-pair-v1" || exporter || host_fp || client_fp`. `exporter` is the 32-byte TLS keying
+  material exporter value for the label `EXPORTER-ezd-pair-v1`, so the confirmation is bound to
+  this TLS connection and both certificates: a machine in the middle running two TLS
+  connections cannot relay it.
+* The window allows 5 attempts and stays open 5 minutes; it closes after a successful pairing,
+  so at most one device pairs per window. An attempt that started before the window was
+  closed, reopened or expired is refused at the end even with the right PIN.
+* Known limit: anyone on the network can use up the 5 attempts of an open window, which then
+  has to be reopened. The PIN stays safe (5 guesses out of a million per window); only pairing
+  is delayed.
+* Both sides then store the other's fingerprint and name. Later connections open a session
+  directly. The pairing connection itself is closed; the client reconnects for the session.
+
+People compare fingerprints in a short form: the first 8 bytes as hex in 4 groups
+(`3f2a-91c0-77de-0b14`).
 
 ## Handshake and session
 

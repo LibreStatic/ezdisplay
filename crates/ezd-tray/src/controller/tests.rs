@@ -234,3 +234,73 @@ fn a_cancelled_enable_leaves_access_denied() {
     wait_for_input_fix(&f.ctl, &mut snap, InputFixState::Cancelled);
     assert_eq!(snap.input_access, InputAccess::Denied);
 }
+
+#[cfg(feature = "wifi")]
+mod wifi {
+    use super::*;
+    use ezd_host_service::WifiConfig;
+
+    fn wifi_fixture() -> Fixture {
+        let mut f = fixture();
+        let mut c = f.ctl.config().clone();
+        c.service.wifi = Some(WifiConfig {
+            listen: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            config_dir: Some(f.dir.path().join("wifi")),
+            ..WifiConfig::default()
+        });
+        f.ctl.set_config(c, false);
+        f
+    }
+
+    #[test]
+    fn the_card_follows_the_service_and_pairing_opens_and_closes() {
+        let mut f = wifi_fixture();
+        assert!(f.ctl.snapshot().wifi.info.is_none());
+        f.ctl.start();
+        wait_until(&mut f.ctl, "listener", |c| c.snapshot().wifi.info.is_some());
+        let snap = f.ctl.snapshot();
+        assert!(snap.wifi.supported && snap.wifi.enabled);
+        // Nobody is paired yet, so the window opens by itself.
+        wait_until(&mut f.ctl, "the first window", |c| {
+            c.snapshot().wifi.pairing.is_some()
+        });
+        let offer = f.ctl.snapshot().wifi.pairing.unwrap();
+        assert_eq!(offer.pin.len(), 6);
+        assert!(offer.uri.starts_with("ezd://pair"));
+        f.ctl.dispatch(vec![Action::ClosePairing]);
+        wait_until(&mut f.ctl, "closed", |c| {
+            c.snapshot().wifi.pairing.is_none()
+        });
+        f.ctl.dispatch(vec![Action::PairDevice]);
+        wait_until(&mut f.ctl, "reopened", |c| {
+            c.snapshot().wifi.pairing.is_some()
+        });
+        assert!(f.ctl.snapshot().wifi.paired.is_empty());
+        // Forgetting an unknown device changes nothing.
+        f.ctl.dispatch(vec![Action::ForgetDevice("abcd".into())]);
+        assert!(f.ctl.snapshot().wifi.paired.is_empty());
+    }
+
+    #[test]
+    fn switching_wifi_restarts_the_running_service_and_saves() {
+        let mut f = fixture();
+        f.ctl.start();
+        wait_until(&mut f.ctl, "waiting", waiting);
+        assert!(f.ctl.snapshot().wifi.info.is_none());
+        // The default listener port may be taken on a developer machine; the switch itself is
+        // what is tested, so use a free one.
+        let mut c = f.ctl.config().clone();
+        c.service.wifi = Some(WifiConfig {
+            listen: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            config_dir: Some(f.dir.path().join("wifi")),
+            ..WifiConfig::default()
+        });
+        f.ctl.set_config(c, false);
+        f.ctl.dispatch(vec![Action::SetWifi(false)]);
+        wait_until(&mut f.ctl, "restarted", waiting);
+        assert!(f.ctl.config().service.wifi.is_none());
+        assert!(!f.ctl.snapshot().wifi.enabled);
+        let saved = config::load(&f.dir.path().join("config.toml")).config;
+        assert!(saved.service.wifi.is_none());
+    }
+}

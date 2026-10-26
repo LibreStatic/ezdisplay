@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-ezd-client-core = { path = "../ezd-client-core" }
+ezd-client-core = { path = "../ezd-client-core", features = ["wifi"] }
 ezd-input.workspace = true
 ezd-link.workspace = true
 ezd-proto.workspace = true

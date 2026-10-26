@@ -3,6 +3,7 @@
 //! the tray or the service, so tests render it with fake state.
 
 use super::glyphs;
+use super::qr;
 use super::theme::{self, Palette};
 use super::widgets::{self, Tone};
 use crate::config::TrayConfig;
@@ -11,12 +12,14 @@ use crate::state::Lifecycle;
 use crate::text;
 use eframe::egui::{self, ComboBox, Margin, RichText, Ui};
 use ezd_host_service::{
-    AdbMode, DeviceInfo, DeviceState, HdrChoice, HostStatus, LiveSession, PenChoice,
+    AdbMode, AoaMode, DeviceInfo, DeviceState, HdrChoice, HostStatus, LiveSession, PenChoice,
+    Transport, WifiInfo,
 };
 use ezd_proto::{DynamicRange, SdrReason};
 use i18n_embed::fluent::FluentLanguageLoader;
 use i18n_embed_fl::fl;
 use std::path::PathBuf;
+use std::time::Instant;
 
 pub const REPOSITORY_URL: &str = "https://github.com/LibreStatic/ezdisplay";
 pub const SAMSUNG_DRIVER_URL: &str = "https://developer.samsung.com/android-usb-driver";
@@ -102,6 +105,49 @@ pub enum InputFixState {
     Error(String),
 }
 
+/// An open pairing window of the service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairingOffer {
+    /// The PIN to type on the tablet.
+    pub pin: String,
+    /// The `ezd://pair?...` text of the QR code.
+    pub uri: String,
+    /// When the window closes by itself.
+    pub expires: Instant,
+}
+
+/// A device allowed to stream over Wi-Fi.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairedEntry {
+    pub name: String,
+    /// Lower-case hex of the certificate fingerprint.
+    pub fingerprint: String,
+}
+
+/// Why the last pairing window closed, when it did not end in a pairing request of the user.
+#[cfg_attr(not(feature = "wifi"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WifiNotice {
+    /// A device paired.
+    Paired(String),
+    TooManyAttempts,
+    Expired,
+}
+
+/// What the Wi-Fi card shows.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WifiState {
+    /// This build has the Wi-Fi transport; without it the card is hidden.
+    pub supported: bool,
+    /// Wi-Fi is switched on in the settings.
+    pub enabled: bool,
+    /// The listener, while the service runs with Wi-Fi.
+    pub info: Option<WifiInfo>,
+    pub pairing: Option<PairingOffer>,
+    pub paired: Vec<PairedEntry>,
+    pub notice: Option<WifiNotice>,
+}
+
 /// Everything the window shows, copied from the app each frame.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -116,12 +162,17 @@ pub struct Snapshot {
     pub input_access: InputAccess,
     pub input_fix: InputFixState,
     pub has_licenses_dir: bool,
+    pub wifi: WifiState,
+    /// Why USB accessory mode is unavailable; informational (adb still works).
+    pub usb_problem: Option<String>,
     /// GPU choices and the USB driver hint are Windows-only.
     pub windows: bool,
     pub version: String,
 }
 
 /// What the user asked for; the app carries these out after the frame.
+// A few actions per frame at most, so the size of `SetConfig` does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// The configuration changed (saved and passed to the service for the next session).
@@ -139,6 +190,14 @@ pub enum Action {
     Repair,
     /// Install the udev rule that lets the app create input devices (asks for authorization).
     EnableInput,
+    /// Switch Wi-Fi on or off (the service restarts to apply it).
+    SetWifi(bool),
+    /// Open the pairing window with a new PIN.
+    PairDevice,
+    /// Close the pairing window.
+    ClosePairing,
+    /// Forget the paired device with this fingerprint (lower-case hex).
+    ForgetDevice(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -186,6 +245,8 @@ const PAGE_PADDING: i8 = 24;
 const CARD_GAP: f32 = 12.0;
 /// Width of the drop-down controls of the rows.
 const COMBO_WIDTH: f32 = 130.0;
+/// Side of the pairing QR code, quiet zone included.
+const QR_SIDE: f32 = 190.0;
 /// Narrowest a stat tile gets before the grid drops a column.
 const TILE_MIN_WIDTH: f32 = 140.0;
 
@@ -466,6 +527,11 @@ impl SettingsView {
             (fl!(l, "stat-device"), live.device_name.clone()),
             (fl!(l, "stat-mode"), mode),
         ];
+        match live.transport {
+            Transport::Aoa => session.push((fl!(l, "stat-connection"), fl!(l, "transport-aoa"))),
+            Transport::Wifi => session.push((fl!(l, "stat-connection"), fl!(l, "transport-wifi"))),
+            Transport::Tcp => {}
+        }
         if let DynamicRange::SdrToneMapped(reason) = live.dynamic_range {
             session.push((fl!(l, "stat-hdr"), sdr_reason_text(l, reason)));
         }
@@ -1009,15 +1075,39 @@ impl SettingsView {
             _ => Vec::new(),
         };
         let windows = self.snap.windows;
+        let usb_problem = self.snap.usb_problem.clone();
         let cfg = &mut self.snap.config.service;
 
         // Android Debug Bridge.
         let mut use_adb = cfg.adb != AdbMode::Off;
+        let mut use_aoa = cfg.aoa != AoaMode::Off;
         widgets::card(
             ui,
             pal,
             Some((glyphs::PLUG_CONNECTED, &fl!(l, "card-adb"))),
             |ui| {
+                if cfg!(feature = "aoa") {
+                    if widgets::toggle_row(
+                        ui,
+                        pal,
+                        &fl!(l, "use-aoa"),
+                        Some(&fl!(l, "use-aoa-description")),
+                        &mut use_aoa,
+                    )
+                    .changed()
+                    {
+                        cfg.aoa = if use_aoa { AoaMode::Auto } else { AoaMode::Off };
+                    }
+                    if let Some(reason) = usb_problem.as_deref().filter(|_| use_aoa) {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(fl!(l, "usb-unavailable-hint", reason = reason))
+                                .small()
+                                .weak(),
+                        );
+                    }
+                    widgets::row_divider(ui, pal);
+                }
                 widgets::info_row(ui, pal, "adb", &adb_value);
                 widgets::row_divider(ui, pal);
                 if widgets::toggle_row(
@@ -1075,6 +1165,12 @@ impl SettingsView {
             },
         );
         ui.add_space(CARD_GAP);
+
+        // Wi-Fi.
+        if self.snap.wifi.supported {
+            wifi_card(ui, pal, l, &self.snap.wifi, actions);
+            ui.add_space(CARD_GAP);
+        }
 
         // Advanced.
         widgets::disclosure(
@@ -1332,6 +1428,175 @@ fn info_rows(ui: &mut Ui, pal: Palette, rows: &[(String, String)]) {
         }
         widgets::info_row(ui, pal, name, value);
     }
+}
+
+/// The first 16 digits of a hex fingerprint in groups of four, as people compare them.
+fn short_fingerprint(hex: &str) -> String {
+    hex.as_bytes()
+        .chunks(4)
+        .take(4)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// The Wi-Fi card: the switch with its latency warning, then, while the listener runs, the host
+/// fingerprint, the pairing window (PIN and QR code) and the paired devices.
+fn wifi_card(
+    ui: &mut Ui,
+    pal: Palette,
+    l: &FluentLanguageLoader,
+    wifi: &WifiState,
+    actions: &mut Vec<Action>,
+) {
+    widgets::card(
+        ui,
+        pal,
+        Some((glyphs::ARROW_SWAP, &fl!(l, "card-wifi"))),
+        |ui| {
+            let mut on = wifi.enabled;
+            if widgets::toggle_row(ui, pal, &fl!(l, "wifi-enable"), None, &mut on).changed() {
+                actions.push(Action::SetWifi(on));
+            }
+            // Always visible: the cost of Wi-Fi is the point of choosing it.
+            ui.horizontal_top(|ui| {
+                ui.label(RichText::new(glyphs::WARNING).size(16.0).color(pal.warning));
+                ui.label(
+                    RichText::new(fl!(l, "wifi-latency-warning"))
+                        .size(13.0)
+                        .color(pal.text_secondary),
+                );
+            });
+            ui.add_space(10.0);
+            if !wifi.enabled {
+                return;
+            }
+            let Some(info) = &wifi.info else {
+                widgets::row_divider(ui, pal);
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(fl!(l, "wifi-starts-with-stream"))
+                        .size(13.0)
+                        .color(pal.text_secondary),
+                );
+                ui.add_space(10.0);
+                return;
+            };
+            widgets::row_divider(ui, pal);
+            widgets::info_row(ui, pal, &fl!(l, "wifi-address"), &info.addr.to_string());
+            widgets::row_divider(ui, pal);
+            widgets::info_row(
+                ui,
+                pal,
+                &fl!(l, "wifi-fingerprint"),
+                &info.fingerprint_short,
+            );
+            widgets::row_divider(ui, pal);
+            pairing_block(ui, pal, l, wifi, actions);
+            widgets::row_divider(ui, pal);
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(fl!(l, "wifi-paired-count", count = wifi.paired.len()))
+                    .size(13.0)
+                    .color(pal.text_secondary),
+            );
+            if wifi.paired.is_empty() {
+                widgets::empty_state(ui, pal, glyphs::TABLET, &fl!(l, "wifi-paired-none"), None);
+            } else {
+                ui.add_space(10.0);
+            }
+            for d in &wifi.paired {
+                widgets::row_divider(ui, pal);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(glyphs::TABLET).size(20.0).color(pal.text));
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.label(RichText::new(&d.name).size(14.0).color(pal.text));
+                        ui.label(
+                            RichText::new(short_fingerprint(&d.fingerprint))
+                                .size(12.0)
+                                .color(pal.text_secondary),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::secondary_button(ui, pal, &fl!(l, "wifi-forget")).clicked() {
+                            actions.push(Action::ForgetDevice(d.fingerprint.clone()));
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+            }
+        },
+    );
+}
+
+/// The pairing window: the PIN, the QR code and the time left, or the button that opens it.
+fn pairing_block(
+    ui: &mut Ui,
+    pal: Palette,
+    l: &FluentLanguageLoader,
+    wifi: &WifiState,
+    actions: &mut Vec<Action>,
+) {
+    ui.add_space(10.0);
+    if let Some(notice) = &wifi.notice {
+        let (text, color) = match notice {
+            WifiNotice::Paired(device) => (
+                fl!(l, "wifi-notice-paired", device = device.as_str()),
+                pal.success,
+            ),
+            WifiNotice::TooManyAttempts => (fl!(l, "wifi-notice-attempts"), pal.warning),
+            WifiNotice::Expired => (fl!(l, "wifi-notice-expired"), pal.warning),
+        };
+        ui.label(RichText::new(text).size(13.0).color(color));
+        ui.add_space(8.0);
+    }
+    let Some(offer) = &wifi.pairing else {
+        if widgets::primary_button(ui, pal, &fl!(l, "wifi-pair")).clicked() {
+            actions.push(Action::PairDevice);
+        }
+        ui.add_space(10.0);
+        return;
+    };
+    ui.label(
+        RichText::new(fl!(l, "wifi-pair-hint"))
+            .size(13.0)
+            .color(pal.text_secondary),
+    );
+    ui.add_space(8.0);
+    ui.horizontal_top(|ui| {
+        qr::show(ui, &offer.uri, QR_SIDE, &fl!(l, "wifi-qr-label"));
+        ui.add_space(12.0);
+        ui.vertical(|ui| {
+            ui.label(
+                RichText::new(fl!(l, "wifi-pin"))
+                    .size(13.0)
+                    .color(pal.text_secondary),
+            );
+            ui.label(
+                RichText::new(&offer.pin)
+                    .size(32.0)
+                    .strong()
+                    .monospace()
+                    .color(pal.text),
+            );
+            let seconds = offer
+                .expires
+                .saturating_duration_since(Instant::now())
+                .as_secs();
+            ui.label(
+                RichText::new(fl!(l, "wifi-pair-expires", seconds = seconds))
+                    .size(13.0)
+                    .color(pal.text_secondary),
+            );
+            ui.add_space(8.0);
+            if widgets::secondary_button(ui, pal, &fl!(l, "wifi-pair-cancel")).clicked() {
+                actions.push(Action::ClosePairing);
+            }
+        });
+    });
+    ui.add_space(10.0);
 }
 
 /// An adb device: an icon coloured by its state and the line describing it.
