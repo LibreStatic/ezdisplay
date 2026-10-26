@@ -298,3 +298,41 @@ Neither restore command has been checked on a live compositor (both are harmless
 gone). Sway accepts the `map_to_output` commands for devices that do not exist yet, which is how the
 headless test exercises the path; real device mapping needs a session with udev. `ezd-host diag`
 reports the compositor, its version and the capture protocols it advertises.
+
+## Linux (X11)
+
+The same four uinput devices are created. The X server (libinput or evdev driver) adds the touch and
+pen devices as XInput2 slave devices a moment later; their `Device Node` property names the
+`/dev/input/eventN` node, which is how the host finds the ones it created (it waits up to three
+seconds). Each one gets the `Coordinate Transformation Matrix` property (`FLOAT`, nine values,
+row-major) that maps the device's whole range onto the `EZDISPLAY` monitor inside the screen:
+
+```
+[ w/SW  0     x/SW ]
+[ 0     h/SH  y/SH ]
+[ 0     0     1    ]
+```
+
+with `x, y, w, h` the monitor's rectangle and `SW, SH` the screen size. A pen that the driver exposes
+as several devices (stylus, eraser, pad) gets the matrix on all of them. When the session ends the
+identity matrix is set again.
+
+The mapping stays current while the session lives. A watcher thread (its own connection) listens for
+XInput2 hierarchy changes and RandR screen changes. Drivers such as xf86-input-libinput create a
+tablet's stylus and eraser devices only on the tool's first proximity, so a device that appears later
+with one of the host's `Device Node` values gets the matrix when it is added. When the screen size
+changes (the virtual monitor being applied again, a monitor plugged in) the matrix is recomputed from
+the current layout and set again on every device it was set on. Both are debounced by 300 ms and
+logged at info level.
+
+The absolute pointer is not mapped by the server per device: it is spread over the whole screen, so
+the host computes the position itself, like on KDE, from the RandR monitors plus one entry for the
+whole screen (the screen can be taller than every monitor).
+
+The pointer can only reach the virtual monitor because the backend enables panning on a CRTC (see
+`docs/architecture.md`): Xorg otherwise clamps every pointer, including the absolute ones and XTest, to
+the CRTC areas. `ezd-host diag` has an `x11` section with the server vendor and release, the versions
+of RandR, MIT-SHM, XFixes, Damage and XInput, the monitors, the window manager and whether a compositor
+is running. `tools/x11-dummy-test.sh` runs the tests against Xorg with the dummy driver; the transformation
+of a real uinput device runs only where the server hot-plugs input devices and `/dev/uinput` is
+accessible, and is skipped otherwise; the re-mapping on a screen change is tested on the XTEST pointer.

@@ -1,7 +1,8 @@
-//! Linux (KDE Plasma, GNOME, sway and Hyprland, Wayland) host backend: a virtual output from the
-//! compositor (KWin through the ScreenCast portal, Mutter through its own ScreenCast service, sway
-//! and Hyprland through their IPC), PipeWire capture (DMA-BUF preferred) or, on the wlroots
-//! compositors, direct Wayland capture, and VAAPI / NVENC / x264 encoding.
+//! Linux (KDE Plasma, GNOME, sway and Hyprland on Wayland, any desktop on X11) host backend: a
+//! virtual output from the compositor (KWin through the ScreenCast portal, Mutter through its own
+//! ScreenCast service, sway and Hyprland through their IPC, an X server as a RandR monitor),
+//! PipeWire capture (DMA-BUF preferred), direct Wayland capture on the wlroots compositors or
+//! MIT-SHM capture on X11, and VAAPI / NVENC / x264 encoding.
 //!
 //! Exposes the platform contract used by `ezd-host`:
 //! `create_virtual_source(&PlatformOptions)` and `diag_section()`.
@@ -37,6 +38,11 @@ mod vkdma;
 mod wl_capture;
 #[cfg(test)]
 mod wlroots_test;
+mod x11_capture;
+mod x11_input;
+mod x11_output;
+#[cfg(test)]
+mod x11_test;
 
 use backend::LinuxBackend;
 pub use ezd_host_core::PlatformOptions;
@@ -53,6 +59,7 @@ pub fn create_virtual_source(
         LinuxBackend::Gnome => Box::new(gnome::GnomeProvider::new()),
         LinuxBackend::Sway => Box::new(sway::SwayProvider),
         LinuxBackend::Hyprland => Box::new(hyprland::HyprlandProvider),
+        LinuxBackend::X11 => Box::new(x11_output::X11Provider),
     };
     tracing::info!(backend = backend.name(), "Linux backend");
     let src = source::LinuxSource::new(opts, provider);
@@ -66,7 +73,7 @@ pub fn create_virtual_source(
 
 /// Input injection backend for the detected desktop (see [`backend`]): KDE through KWin's input
 /// device interface, GNOME through gsettings, sway and Hyprland through their per-device output
-/// mapping.
+/// mapping, X11 through XInput2 transformation matrices.
 pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
     let backend = match backend::current() {
         Ok(b) => b,
@@ -88,6 +95,9 @@ pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
         )))),
         LinuxBackend::Hyprland => Some(Arc::new(uinput_sink::UinputBackend::new(Arc::new(
             hyprland::HyprlandDesktop,
+        )))),
+        LinuxBackend::X11 => Some(Arc::new(uinput_sink::UinputBackend::new(Arc::new(
+            x11_input::X11Desktop,
         )))),
     }
 }

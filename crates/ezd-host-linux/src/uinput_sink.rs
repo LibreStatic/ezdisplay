@@ -137,7 +137,7 @@ pub fn create_keyboard() -> io::Result<VirtualDevice> {
 }
 
 /// `eventN` names of a freshly created device (the nodes can show up a moment later).
-fn event_name(dev: &mut VirtualDevice) -> Option<String> {
+pub(crate) fn event_name(dev: &mut VirtualDevice) -> Option<String> {
     for _ in 0..40 {
         if let Ok(nodes) = dev.enumerate_dev_nodes_blocking() {
             for p in nodes.flatten() {
