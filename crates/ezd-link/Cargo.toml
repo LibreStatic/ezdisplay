@@ -13,9 +13,30 @@ ezd-proto.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# Wi-Fi links (`quic` feature). ring is the only crypto backend: it builds with the NDK clang and
+# needs no cmake. Its C code needs the target's C toolchain, so the Windows cross-check from Linux
+# builds without this feature.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+rcgen = { version = "0.14", default-features = false, features = ["ring"], optional = true }
+ring = { version = "0.17", optional = true }
+spake2 = { version = "0.4", optional = true }
+serde = { workspace = true, optional = true }
+# USB accessory (AOA) transport (`aoa` feature, not on Android). libusb comes from the system on
+# Linux; Windows builds it from source.
+rusb = { version = "0.9", optional = true }
+
+[features]
+default = ["quic"]
+# Host side of the Android Open Accessory USB transport (libusb through rusb).
+aoa = ["dep:rusb"]
+quic = ["dep:quinn", "dep:rustls", "dep:rcgen", "dep:ring", "dep:spake2", "dep:serde"]
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 socket2 = { version = "0.6", features = ["all"] }
+
+[target.'cfg(windows)'.dependencies]
+rusb = { version = "0.9", optional = true, features = ["vendored"] }
 
 [lints]
 workspace = true

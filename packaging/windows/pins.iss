@@ -22,3 +22,9 @@
 ; Android SDK Platform-Tools r37.0.1. Bundled: adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll, NOTICE.txt.
 #define PlatformToolsUrl "https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip"
 #define PlatformToolsSha256 "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99"
+
+; UsbDk 1.0.22 (Apache-2.0, https://github.com/daynix/UsbDk): the filter driver that lets libusb open
+; devices Windows keeps for itself (MTP), needed for USB without developer mode (AOA). Optional
+; installer task: the installer downloads the MSI and runs it only when the task is selected.
+#define UsbDkUrl "https://github.com/daynix/UsbDk/releases/download/v1.00-22/UsbDk_1.0.22_x64.msi"
+#define UsbDkSha256 "91f6f695e1e13c656024e6d3b55620bf08d8835ef05ee0496935ba6bb62466a5"

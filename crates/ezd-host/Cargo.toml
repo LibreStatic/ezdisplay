@@ -13,12 +13,18 @@ name = "ezd-host"
 path = "src/main.rs"
 
 [features]
-default = ["ffmpeg"]
+default = ["ffmpeg", "wifi", "aoa"]
 # Encoder probing in `diag` and the service's FFmpeg paths. `--no-default-features` builds without
 # FFmpeg headers (the Windows cross-check in CI).
 ffmpeg = ["dep:ezd-ffmpeg", "ezd-host-service/ffmpeg", "ezd-host-windows/ffmpeg"]
+# Wi-Fi (QUIC) transport: `run --wifi`, `--pair` and the `paired` commands.
+wifi = ["ezd-host-service/wifi", "dep:qrcode"]
+# USB without developer mode (Android accessory mode through libusb): `run --aoa` and the `usb`
+# section of `diag`. `--no-default-features` builds without libusb (the Windows cross-check in CI).
+aoa = ["ezd-host-service/aoa", "ezd-link/aoa"]
 
 [dependencies]
+qrcode = { workspace = true, optional = true }
 anyhow.workspace = true
 clap.workspace = true
 ezd-ffmpeg = { workspace = true, optional = true }

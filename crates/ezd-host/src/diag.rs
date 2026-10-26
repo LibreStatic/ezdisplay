@@ -25,10 +25,12 @@ pub fn sections() -> Vec<Box<dyn Section>> {
     {
         v.push(Box::new(LinuxSession));
         v.push(Box::new(LinuxGpus));
+        v.push(Box::new(LinuxFirewall));
     }
     v.push(Box::new(Platform));
     v.push(Box::new(Encoders));
     v.push(Box::new(AdbInfo));
+    v.push(Box::new(UsbInfo));
     v
 }
 
@@ -137,6 +139,18 @@ impl Section for LinuxGpus {
     }
 }
 
+#[cfg(target_os = "linux")]
+struct LinuxFirewall;
+#[cfg(target_os = "linux")]
+impl Section for LinuxFirewall {
+    fn name(&self) -> &'static str {
+        "firewall"
+    }
+    fn collect(&self) -> Value {
+        crate::firewall::diag_value(crate::firewall::detect())
+    }
+}
+
 /// Backend-specific section; the platform crates fill it in.
 struct Platform;
 impl Section for Platform {
@@ -219,6 +233,57 @@ impl Section for AdbInfo {
     }
 }
 
+/// USB without developer mode: whether libusb works and which devices could be switched.
+struct UsbInfo;
+impl Section for UsbInfo {
+    fn name(&self) -> &'static str {
+        "usb"
+    }
+    #[cfg(not(feature = "aoa"))]
+    fn collect(&self) -> Value {
+        json!({ "aoa": { "available": false, "reason": "built without the aoa feature" } })
+    }
+    #[cfg(feature = "aoa")]
+    fn collect(&self) -> Value {
+        use ezd_link::aoa::Aoa;
+        let mut v = json!({ "libusb": Aoa::libusb_version() });
+        let aoa = match Aoa::new() {
+            Ok(a) => a,
+            Err(e) => {
+                v["aoa"] = json!({ "available": false, "reason": e.to_string() });
+                #[cfg(windows)]
+                {
+                    v["usbdk"] = json!({ "present": false });
+                }
+                return v;
+            }
+        };
+        v["aoa"] = json!({ "available": true });
+        #[cfg(windows)]
+        {
+            // libusb only initializes with UsbDk when it is installed.
+            v["usbdk"] = json!({ "present": true });
+        }
+        // Serial numbers are left out on purpose: a report gets pasted into issues.
+        v["devices"] = match aoa.list() {
+            Ok(list) => Value::Array(
+                list.into_iter()
+                    .map(|d| {
+                        json!({
+                            "vid": format!("{:04x}", d.vid),
+                            "pid": format!("{:04x}", d.pid),
+                            "product": d.product,
+                            "mode": d.mode.as_str(),
+                        })
+                    })
+                    .collect(),
+            ),
+            Err(e) => json!({ "error": e.to_string() }),
+        };
+        v
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +293,16 @@ mod tests {
         let v = HostInfo.collect();
         assert_eq!(v["family"], std::env::consts::OS);
         assert!(v["arch"].is_string());
+    }
+
+    #[test]
+    fn the_usb_section_reports_aoa_and_no_serials() {
+        let v = UsbInfo.collect();
+        assert!(v["aoa"]["available"].is_boolean());
+        if v["aoa"]["available"] == false {
+            assert!(v["aoa"]["reason"].is_string());
+        }
+        assert!(!v.to_string().contains("serial"));
     }
 
     #[test]

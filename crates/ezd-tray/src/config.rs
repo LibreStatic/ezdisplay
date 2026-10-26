@@ -192,4 +192,22 @@ mod tests {
             (1000, 8)
         );
     }
+
+    #[cfg(feature = "wifi")]
+    #[test]
+    fn the_wifi_listener_is_off_by_default_and_round_trips() {
+        use ezd_host_service::WifiConfig;
+        assert_eq!(TrayConfig::default().service.wifi, None);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut c = TrayConfig::default();
+        c.service.wifi = Some(WifiConfig::default());
+        save(&path, &c).unwrap();
+        assert_eq!(load(&path).config, c);
+        let from_file: TrayConfig =
+            toml::from_str("[service.wifi]\nlisten = \"0.0.0.0:4000\"").unwrap();
+        let wifi = from_file.service.wifi.unwrap();
+        assert_eq!(wifi.listen.port(), 4000);
+        assert!(!wifi.pair_on_start);
+    }
 }

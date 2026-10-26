@@ -4,6 +4,10 @@
 //! * [`HostService::start`] binds the listener and spawns the accept loop and the adb watcher.
 //! * [`HostService::status`] is a `watch` channel with the current [`HostStatus`]; one-off
 //!   notifications (a session ended, ...) come from [`HostService::events`].
+//! * With the `wifi` feature, [`ServiceConfig::wifi`] adds a QUIC listener for paired tablets
+//!   next to the plaintext TCP one; only one session streams at a time across both.
+//! * With the `aoa` feature, [`ServiceConfig::aoa`] switches a connected tablet to Android accessory
+//!   mode and streams over USB without developer mode (see [`aoa`]).
 //! * [`HostService::apply`] changes the [`ServiceConfig`] while running; [`HostService::stop`]
 //!   ends the session cleanly and removes the adb reverses.
 //!
@@ -11,14 +15,27 @@
 //! English for logs.
 
 pub mod adb;
+#[cfg(feature = "aoa")]
+pub mod aoa;
 pub mod config;
 pub mod error;
+#[cfg(feature = "wifi")]
+mod mdns;
 pub mod platform;
 mod service;
 pub mod status;
+#[cfg(feature = "wifi")]
+pub mod store;
+#[cfg(feature = "wifi")]
+mod wifi;
 
 pub use adb::{AdbClient, AdbLocator, is_network_serial};
-pub use config::{AdbMode, HdrChoice, LinkChoice, PenChoice, ServiceConfig, SourceKind};
+pub use config::{AdbMode, AoaMode, HdrChoice, LinkChoice, PenChoice, ServiceConfig, SourceKind};
+#[cfg(feature = "wifi")]
+pub use config::{CongestionChoice, WifiConfig};
 pub use error::ServiceError;
 pub use service::{HostService, ServiceHooks, SourceFactory};
-pub use status::{DeviceInfo, DeviceState, HostEvent, HostStatus, LiveSession};
+pub use status::{
+    DeviceInfo, DeviceState, HostEvent, HostStatus, LiveSession, PairingCloseReason, RefusedWhy,
+    Transport, WifiInfo,
+};

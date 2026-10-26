@@ -44,7 +44,8 @@ jobs:
       - name: Native library (aarch64)
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
-          cargo check --target aarch64-linux-android -p ezd-android -p ezd-client-core
+          # cargo-ndk points ring's C build at the NDK clang, which a plain cargo check lacks.
+          cargo ndk -t arm64-v8a check -p ezd-android -p ezd-client-core
           cargo ndk -t arm64-v8a clippy -p ezd-android -p ezd-client-core -- -D warnings
       - name: Host tests of the portable parts
         run: cargo test -p ezd-android -p ezd-client-core

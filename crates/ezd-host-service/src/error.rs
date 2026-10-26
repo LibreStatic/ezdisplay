@@ -27,6 +27,9 @@ pub enum ServiceError {
     /// There is no virtual display backend for this platform.
     #[error("no virtual display backend for this platform")]
     UnsupportedPlatform,
+    /// The Wi-Fi transport cannot start (identity or paired-devices file unusable, ...).
+    #[error("Wi-Fi: {0}")]
+    Wifi(String),
     /// The video source could not be created.
     #[error("cannot create the video source: {0}")]
     Source(String),

@@ -18,6 +18,7 @@ status-streaming = Trasmissione verso { $device } · { $width }×{ $height } a {
 error-bind = Impossibile mettersi in ascolto su { $addr }: { $reason }
 error-adb-not-found = adb non trovato
 error-adb-reverse = adb reverse non riuscito per { $serial }: { $reason }
+usb-unavailable-hint = L'USB senza modalità sviluppatore non è disponibile ({ $reason }); il debug USB funziona ancora.
 error-unsupported = Questo sistema non supporta ancora gli schermi virtuali
 error-source = Impossibile creare la sorgente video: { $reason }
 
@@ -45,6 +46,9 @@ devices-heading = Dispositivi
 stats-heading = Statistiche in tempo reale
 stats-waiting = In attesa delle prime misurazioni…
 stat-device = Tablet
+stat-connection = Connessione
+transport-aoa = USB (accessorio)
+transport-wifi = Wi-Fi
 stat-mode = Modalità
 stat-encoder = Encoder
 stat-fps = Frequenza dei fotogrammi
@@ -129,6 +133,7 @@ device-unauthorized = in attesa che accetti il debug USB
 device-offline = offline
 open-app = Apri l'app sul tablet quando si connette
 use-adb = Connetti via USB con adb
+use-aoa = USB senza modalità sviluppatore
 advanced = Avanzate
 setting-port = Porta
 port-hint = Il tablet raggiunge questo computer su questa porta. Le modifiche valgono quando non c'è nessuna sessione in corso.
@@ -185,6 +190,7 @@ input-description = Usa il tablet come touchscreen e penna su questo computer.
 pen-description = Una tavoletta grafica aggiunge pressione e inclinazione.
 telemetry-description = Mostra sul tablet valori di prestazione in tempo reale durante lo streaming.
 use-adb-description = Trova i tablet con il debug USB attivo.
+use-aoa-description = Porta il tablet in modalità accessorio quando lo colleghi, senza bisogno del debug USB. adb resta come alternativa.
 autostart-description = Avvia ezdisplay quando accedi.
 start-on-launch-description = Si mette in attesa del tablet appena ezdisplay si apre.
 system-accent = Usa il colore d'accento del sistema
@@ -194,3 +200,28 @@ logs-description = Apre la cartella in cui ezdisplay salva i log.
 about-description = Schermo USB open source per tablet Android.
 repository = Codice sorgente
 driver-reinstall = Reinstalla il driver
+
+## Window: Wi-Fi
+card-wifi = Wi-Fi
+wifi-enable = Connetti tramite Wi-Fi
+wifi-latency-warning = Il Wi-Fi aggiunge latenza e jitter; l'USB è il migliore per disegnare.
+wifi-starts-with-stream = Il Wi-Fi si attiva quando inizia lo streaming.
+wifi-address = Indirizzo
+wifi-fingerprint = Impronta dell'host
+wifi-pair = Associa un dispositivo
+wifi-pair-cancel = Annulla
+wifi-pair-hint = Sul tablet, inquadra questo codice QR o digita il PIN.
+wifi-pin = PIN
+wifi-qr-label = Codice QR di associazione
+wifi-pair-expires = Si chiude tra { $seconds } s
+wifi-notice-paired = Associato con { $device }.
+wifi-notice-attempts = Associazione chiusa: troppi PIN errati.
+wifi-notice-expired = Associazione chiusa: il tempo è scaduto.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } dispositivo associato
+       *[other] { $count } dispositivi associati
+    }
+wifi-paired-none = Nessun dispositivo è ancora associato.
+wifi-forget = Dimentica
+error-wifi = Impossibile avviare il Wi-Fi: { $reason }

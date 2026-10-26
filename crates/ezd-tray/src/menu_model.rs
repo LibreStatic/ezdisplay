@@ -129,6 +129,7 @@ mod tests {
             devices: vec![],
             stats: None,
             input: None,
+            transport: ezd_host_service::Transport::Tcp,
         })
     }
 

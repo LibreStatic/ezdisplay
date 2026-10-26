@@ -15,10 +15,16 @@ name = "ezdisplay"
 path = "src/main.rs"
 
 [features]
-default = ["ffmpeg"]
+default = ["ffmpeg", "wifi", "aoa"]
 # FFmpeg paths of the service. `--no-default-features` builds without FFmpeg headers (the Windows
 # cross-check in CI).
 ffmpeg = ["ezd-host-service/ffmpeg"]
+# Wi-Fi card: the QUIC transport and PIN pairing of the service. `--no-default-features` leaves it
+# out (ring has C code the Windows cross-check from Linux cannot build).
+wifi = ["ezd-host-service/wifi"]
+# USB without developer mode (Android accessory mode through libusb). `--no-default-features`
+# leaves it out (the Windows cross-check from Linux cannot build libusb).
+aoa = ["ezd-host-service/aoa"]
 # Local only: PNG snapshots of the window (needs a GPU/wgpu). CI never enables it.
 snapshots = ["egui_kittest/snapshot", "egui_kittest/wgpu"]
 
@@ -34,6 +40,7 @@ i18n-embed.workspace = true
 i18n-embed-fl.workspace = true
 interprocess = "2.4"
 png = "0.18"
+qrcode.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
 tokio.workspace = true
@@ -83,6 +90,9 @@ assets = [
     ["target/release/ezdisplay", "usr/bin/", "755"],
     ["target/release/ezd-host", "usr/bin/", "755"],
     ["../../packaging/linux/70-ezdisplay-uinput.rules", "usr/lib/udev/rules.d/", "644"],
+    ["../../packaging/linux/70-ezdisplay-usb.rules", "usr/lib/udev/rules.d/", "644"],
+    ["../../packaging/linux/ufw/ezdisplay", "etc/ufw/applications.d/", "644"],
+    ["../../packaging/linux/firewalld/ezdisplay.xml", "usr/lib/firewalld/services/", "644"],
     ["../../packaging/linux/com.librestatic.ezdisplay.desktop", "usr/share/applications/", "644"],
     ["../../packaging/linux/com.librestatic.ezdisplay.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
     ["../../LICENSE-MIT", "usr/share/doc/ezdisplay/", "644"],
