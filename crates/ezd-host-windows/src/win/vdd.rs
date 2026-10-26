@@ -10,6 +10,7 @@ use crate::policy::{self, AdapterInfo};
 use crate::vdd_xml::{self, Mode, Summary};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_PIPE_BUSY,
@@ -508,6 +509,72 @@ fn wait_for_vdd(
     })
 }
 
+/// The VDD monitor waiting to be detached, with a number that every [`detach_later`] and
+/// [`cancel_detach`] bumps: a pending detach runs only while it is still the latest. The lock is
+/// held while detaching, so `prepare` never overlaps one.
+static PENDING_DETACH: Mutex<(u64, Option<String>)> = Mutex::new((0, None));
+
+fn pending() -> std::sync::MutexGuard<'static, (u64, Option<String>)> {
+    PENDING_DETACH.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn detach_logged(gdi_name: &str) {
+    match display::detach(gdi_name) {
+        Ok(m) => tracing::info!("{m}"),
+        Err(e) => tracing::warn!("could not detach the virtual monitor: {e}"),
+    }
+}
+
+/// Takes the VDD monitor `gdi_name` off the desktop after `grace`, unless [`cancel_detach`] (the
+/// next session) comes first.
+pub fn detach_later(gdi_name: String, grace: Duration) {
+    if grace.is_zero() {
+        cancel_detach();
+        detach_logged(&gdi_name);
+        return;
+    }
+    let id = {
+        let mut p = pending();
+        p.0 += 1;
+        p.1 = Some(gdi_name);
+        p.0
+    };
+    let run = move || {
+        std::thread::sleep(grace);
+        let mut p = pending();
+        if p.0 != id {
+            tracing::debug!("a new session started; keeping the virtual monitor");
+            return;
+        }
+        if let Some(gdi) = p.1.take() {
+            detach_logged(&gdi);
+        }
+    };
+    if let Err(e) = std::thread::Builder::new()
+        .name("ezd-vdd-detach".into())
+        .spawn(run)
+    {
+        tracing::warn!("could not schedule the virtual monitor's removal: {e}");
+        detach_now();
+    }
+}
+
+/// Keeps the VDD monitor: drops a pending [`detach_later`].
+pub fn cancel_detach() {
+    let mut p = pending();
+    p.0 += 1;
+    p.1 = None;
+}
+
+/// Runs a pending [`detach_later`] at once (the host is stopping and would not wait for it).
+pub fn detach_now() {
+    let mut p = pending();
+    p.0 += 1;
+    if let Some(gdi) = p.1.take() {
+        detach_logged(&gdi);
+    }
+}
+
 /// Makes the VDD output exist on the adapter `chosen`, with `mode` active.
 pub fn prepare(chosen: &AdapterInfo, mode: Mode) -> Result<Prepared, String> {
     let mut notes = Vec::new();
@@ -640,8 +707,12 @@ pub fn prepare(chosen: &AdapterInfo, mode: Mode) -> Result<Prepared, String> {
     });
     if !already {
         let attached = existing.map_or(mon.attached, |o| o.attached);
-        let x = (!attached).then(|| dxgi::desktop_right_edge(&adapters));
-        let r = display::set_mode(&mon.gdi_name, mode, x)?;
+        // Back where it was when the last session detached it, or right of the desktop.
+        let at = (!attached).then(|| {
+            display::detached_position(&mon.gdi_name)
+                .unwrap_or_else(|| (dxgi::desktop_right_edge(&adapters), 0))
+        });
+        let r = display::set_mode(&mon.gdi_name, mode, at)?;
         tracing::info!("{r}");
         notes.push(r);
     }

@@ -1,8 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  # Pushes to main run through the release workflow, which calls this one.
   pull_request:
   workflow_call:
 

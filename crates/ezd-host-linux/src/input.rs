@@ -705,7 +705,8 @@ pub fn keyboard_keys() -> impl Iterator<Item = Key> {
     HID_TO_EVDEV.iter().map(|&(_, k)| k)
 }
 
-/// Keyboard encoder: one frame per transition, duplicates and unknown usages ignored.
+/// Keyboard encoder: one frame per transition; a press of a key already down is an autorepeat
+/// (value 2). Releases of keys not down and unknown usages are ignored.
 #[derive(Debug, Default)]
 pub struct KeyboardEncoder {
     /// Usages currently down, in press order.
@@ -718,8 +719,8 @@ impl KeyboardEncoder {
         Self::default()
     }
 
-    /// A key press or release. Pressing a key that is down or releasing one that is not emits
-    /// nothing.
+    /// A key press or release. Pressing a key that is down emits an autorepeat (value 2);
+    /// releasing one that is not down emits nothing.
     pub fn key(&mut self, k: &HidKey) -> Vec<Frame> {
         let Some(code) = hid_to_evdev(k.usage) else {
             return vec![];
@@ -730,6 +731,7 @@ impl KeyboardEncoder {
                 self.down.push(k.usage);
                 vec![vec![key(code, 1)]]
             }
+            (true, Some(_)) => vec![vec![key(code, 2)]],
             (false, Some(i)) => {
                 self.down.remove(i);
                 vec![vec![key(code, 0)]]
@@ -1280,7 +1282,11 @@ mod tests {
             "release of a key not down"
         );
         assert_eq!(e.key(&hk(0x2C, true)), vec![vec![(K, Key::KEY_SPACE.0, 1)]]);
-        assert!(e.key(&hk(0x2C, true)).is_empty(), "duplicate press");
+        assert_eq!(
+            e.key(&hk(0x2C, true)),
+            vec![vec![(K, Key::KEY_SPACE.0, 2)]],
+            "press of a key already down is an autorepeat"
+        );
         assert!(e.key(&hk(0x03, true)).is_empty(), "unknown usage");
         assert_eq!(
             e.key(&hk(0x2C, false)),

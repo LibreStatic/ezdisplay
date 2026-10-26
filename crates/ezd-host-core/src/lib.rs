@@ -19,7 +19,7 @@ pub mod testing;
 pub mod time;
 
 pub use input::{InputBackend, InputSink, InputTarget, PenMode, UnavailableBackend};
-pub use platform::{PlatformError, PlatformOptions};
+pub use platform::{DEFAULT_DETACH_GRACE, PlatformError, PlatformOptions};
 pub use session::{
     EndReason, LiveStats, SessionError, SessionEvent, SessionOptions, SessionSummary,
     run_host_session, run_host_session_with,

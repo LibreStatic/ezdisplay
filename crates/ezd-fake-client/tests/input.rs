@@ -101,7 +101,7 @@ fn injected(rec: &Mutex<Recording>) -> (Vec<Message>, bool) {
                 }
                 InputCall::Scroll(s) => Message::Scroll(ezd_proto::Scroll { t_us: 0, ..*s }),
                 InputCall::Key(k) => Message::Key(Key { t_us: 0, ..*k }),
-                InputCall::ReleaseAll => return None,
+                InputCall::Keyboard(_) | InputCall::ReleaseAll => return None,
             })
         })
         .collect();
@@ -160,6 +160,36 @@ async fn touch_and_scroll_scripts_arrive_intact() {
         assert!(released, "{script:?}");
         assert_eq!(summary.input_events, want.len() as u64, "{script:?}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keyboard_state_reaches_the_sink() {
+    let backend = RecordingBackend::new(status());
+    let client = FakeClientConfig {
+        keyboard_attached: Some(true),
+        ..client_cfg(InputScript::Tap)
+    };
+    run(client, opts_with(&backend)).await;
+    let rec = backend.recording.lock().unwrap();
+    assert!(rec.calls.contains(&InputCall::Keyboard(true)));
+    assert_eq!(rec.calls.last(), Some(&InputCall::ReleaseAll));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keyboard_state_is_not_sent_by_an_older_client_minor() {
+    let backend = RecordingBackend::new(status());
+    let client = FakeClientConfig {
+        keyboard_attached: Some(true),
+        proto_minor: Some(ezd_proto::MINOR_KEYBOARD - 1),
+        ..client_cfg(InputScript::Tap)
+    };
+    run(client, opts_with(&backend)).await;
+    let rec = backend.recording.lock().unwrap();
+    assert!(
+        !rec.calls
+            .iter()
+            .any(|c| matches!(c, InputCall::Keyboard(_)))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

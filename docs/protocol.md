@@ -1,4 +1,4 @@
-# ezdisplay wire protocol (version 0.5)
+# ezdisplay wire protocol (version 0.6)
 
 All integers are little endian. The protocol runs over any reliable ordered byte stream: TCP
 through `adb reverse` over USB, or a QUIC connection on Wi-Fi (see [Transports](#transports)). It is implemented in the `ezd-proto`
@@ -8,11 +8,15 @@ crate (messages, framing) and `ezd-link` (prioritized mux).
 
 Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 
-```
- 0       4       5       6       8
- +-------+-------+-------+-------+----------...
- | len   |  ch   | kind  | flags | payload
- | u32   |  u8   |  u8   | u16   |
+```mermaid
+flowchart LR
+  subgraph HDR["8-byte header"]
+    direction LR
+    LEN["bytes 0–3<br/><b>payload_len</b><br/>u32"] --- CH["byte 4<br/><b>channel</b><br/>u8"]
+    CH --- KIND["byte 5<br/><b>kind</b><br/>u8"]
+    KIND --- FLAGS["bytes 6–7<br/><b>flags</b><br/>u16, bit 0 = MORE"]
+  end
+  FLAGS --- PAY["bytes 8 … 8 + payload_len − 1<br/><b>payload</b><br/>postcard-encoded message<br/>(or one fragment of it)"]
 ```
 
 | Field | Meaning |
@@ -52,6 +56,7 @@ Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 | Control | 14 | `ClientOptions` | host to client | postcard (0.3) |
 | Control | 15 | `ClientHdr` | client to host | postcard (0.5) |
 | Control | 16 | `StreamColor` | host to client | postcard (0.5) |
+| Control | 17 | `ClientKeyboard` | client to host | postcard (0.6) |
 | Input | 1 | `Pen` (`PenSample`) | client to host | postcard (0.3) |
 | Input | 2 | `Touch` (`TouchFrame`) | client to host | postcard (0.3) |
 | Input | 3 | `PointerButton` | client to host | postcard (0.3) |
@@ -77,6 +82,22 @@ the fragments of a message. This is how a cursor update overtakes a large keyfra
 is therefore keyed by `(channel, kind)`. The fragments of one key stay in order. A reassembled
 message must not exceed `MAX_MESSAGE_LEN` = 32 MiB.
 
+```mermaid
+sequenceDiagram
+  participant W as Writer (mux)
+  participant D as FrameDecoder
+  W->>D: Video / VideoFrame, 64 KiB, MORE
+  Note right of D: buffered under (Video, VideoFrame)
+  W->>D: Cursor / CursorState, complete
+  Note right of D: CursorState delivered at once
+  W->>D: Video / VideoFrame, 64 KiB, MORE
+  Note right of D: appended to the buffer
+  W->>D: Control / Ping, complete
+  Note right of D: Ping delivered at once
+  W->>D: Video / VideoFrame, last fragment, no MORE
+  Note right of D: VideoFrame delivered, reassembled
+```
+
 The IO-free `FrameDecoder` accepts bytes in arbitrary pieces (one byte at a time or many frames
 per push) and yields complete messages.
 
@@ -91,10 +112,10 @@ per push) and yields complete messages.
 
 ### Versioning
 
-`Hello` carries `proto_major` and `proto_minor` (currently 0 and 5; 0.2 added `FrameAck`, 0.3
+`Hello` carries `proto_major` and `proto_minor` (currently 0 and 6; 0.2 added `FrameAck`, 0.3
 the input messages, `InputStatus` and `ClientOptions`, 0.4 the `Key` message, 0.5 `ClientHdr` and
-`StreamColor` for HDR10; the Wi-Fi transport is below the framed protocol and needs no minor
-bump). A different major version is fatal: the
+`StreamColor` for HDR10, 0.6 `ClientKeyboard`; the Wi-Fi transport is below the framed protocol and
+needs no minor bump). A different major version is fatal: the
 receiver answers `Reject` and closes. Minor versions only add new `(channel,
 kind)` pairs, so peers with different minors interoperate. `Hello::supports_input()` is true
 when the peer's minor is at least `MINOR_INPUT` = 3; a host must not send `InputStatus` or
@@ -103,6 +124,8 @@ Input messages to an older host. `Key` needs no minor gate: a client sends it on
 host's `InputStatus.caps` has `KEYS`, and an older host would skip the unknown pair anyway.
 `Hello::supports_hdr()` is true when the peer's minor is at least `MINOR_HDR` = 5: a client sends
 `ClientHdr` only to such a host, and a host sends `StreamColor` only to such a client.
+`Hello::supports_keyboard()` is true when the peer's minor is at least `MINOR_KEYBOARD` = 6: a
+client sends `ClientKeyboard` only to such a host.
 
 ## Transports
 
@@ -217,25 +240,66 @@ People compare fingerprints in a short form: the first 8 bytes as hex in 4 group
 
 ## Handshake and session
 
-```
-client                                     host
-  |  Hello(role=Client, version, name) ----->|
-  |<----- Hello(role=Host, version, name)    |   either order; major mismatch -> Reject
-  |  ClientCaps(display, decoders, ...) ---->|
-  |  ClientHdr (host minor >= 5) ----------->|   host waits for it if the client minor >= 5
-  |<---------------------- HostCaps(encoders)|
-  |            negotiate_hdr(ClientCaps, HostCaps, Prefs, ...)  (host, pure function)
-  |<----------------- StreamColor (minor >= 5)|   sent before StreamConfig
-  |<-------------------------- StreamConfig |   or Reject{reason}
-  |  open decoder                            |
-  |  ConfigAck ----------------------------->|
-  |                                          |   host starts capture + encode
-  |<=== VideoFrame(CODEC_CONFIG) ============|
-  |<=== VideoFrame(KEYFRAME) ================|
-  |<=== VideoFrame..., CursorShape/State ====|   Ping/Pong both ways, ClientStats ~1 Hz
-  |  FrameAck (per frame, before decode) --->|   releases the host's video credit
-  |  RequestKeyframe (on decode error) ----->|   next frame is an IDR
-  |  Bye ------------------------------------>|   or EOF; host closes its side
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client (tablet)
+  participant H as Host (PC)
+
+  Note over C,H: Handshake on the Control channel (10 s per step)
+  par either order
+    C->>H: Hello(role=Client, proto_major/minor, app_version, device_name)
+  and
+    H->>C: Hello(role=Host, proto_major/minor, app_version, device_name)
+  end
+  alt major versions differ
+    H-->>C: Reject(reason), then close
+  end
+  C->>H: ClientCaps(display, decoders, stylus, max_touch_points)
+  opt host minor ≥ 5
+    C->>H: ClientHdr(display_hdr10, nits, main10 codecs)
+    Note right of H: host waits for it when the client minor ≥ 5
+  end
+  H->>C: HostCaps(os, gpu, encoders)
+  Note right of H: negotiate_hdr(...), a pure function:<br/>codec, size, rate, bitrate, range
+  alt no common configuration
+    H-->>C: Reject(reason), then close
+  else configured
+    opt client minor ≥ 5
+      H->>C: StreamColor(bit depth, H.273 codes, mastering)
+    end
+    H->>C: StreamConfig(codec, width, height, refresh_mhz, bitrate_kbps, encoder_name)
+    Note left of C: opens the decoder
+    C->>H: ConfigAck
+  end
+
+  Note over C,H: Session (host starts capture and encode after ConfigAck)
+  opt client minor ≥ 3
+    H->>C: ClientOptions(flags)
+    H->>C: InputStatus(caps, note), again whenever it changes
+  end
+  H->>C: VideoFrame(CODEC_CONFIG): parameter sets only
+  H->>C: VideoFrame(KEYFRAME)
+  loop every frame, one in flight (video credit)
+    H->>C: VideoFrame
+    C->>H: FrameAck(frame_id, received_us), before decode
+    Note right of H: the ack frees the credit,<br/>host encodes the newest content
+  end
+  par alongside video
+    H->>C: CursorShape (once per shape_id), CursorState (latest wins)
+  and
+    C->>H: Pen, Touch, PointerButton, Scroll, Key (Input channel)
+  and
+    H->>C: Ping every 500 ms (client pings too), peer answers Pong
+  and
+    C->>H: ClientStats about once per second
+  end
+  opt decode error
+    C->>H: RequestKeyframe
+    H->>C: next frame is an IDR
+  end
+  C->>H: Bye(reason) or EOF
+  Note right of H: host closes its side<br/>(sends Bye itself on shutdown)
 ```
 
 Cursor messages may arrive any time after `StreamConfig`; a client must tolerate cursor traffic
@@ -312,6 +376,20 @@ chunks, so a large keyframe delays a control, input or cursor message by at most
 replaced by a newer one. Everything else is reliable FIFO. Note that control messages overtake
 video: send `Bye` after the last frame has been written if the peer should see all frames first.
 
+```mermaid
+flowchart LR
+  subgraph Q["Queues, highest priority on top"]
+    direction TB
+    QC["Control<br/>FIFO"]
+    QI["Input<br/>drained into one write"]
+    QS["CursorShape<br/>FIFO"]
+    QT["CursorState<br/>latest wins"]
+    QV["Video<br/>one frame per credit, freed by FrameAck<br/>written in 64 KiB chunks"]
+  end
+  Q --> WR["Writer<br/>re-checks the higher queues<br/>between video chunks"]
+  WR --> S["byte stream<br/>(TCP over adb reverse)"]
+```
+
 Input is batched: when the writer takes input it drains every queued input message into one
 buffer and writes and flushes it once. Under a backlog (128 or more queued input messages) a
 new `Pen` replaces the last queued message if that is a `Pen` with identical `flags`, and a new
@@ -357,6 +435,14 @@ bits `TOUCH` = 1, `PEN` = 2, `ACTIONS` = 4, `KEYS` = 8 (what the host can inject
 `note` explaining what is unavailable (empty when all is fine); `ClientOptions { flags: u32 }`
 with `TELEMETRY` = 1 (show the telemetry overlay).
 
+### Hardware keyboard (0.6)
+
+Client to host, on the Control channel: `ClientKeyboard { attached: bool }`, sent right after the
+handshake (when the host minor is at least 6) and whenever a hardware keyboard is attached or
+detached on the client. The host may use it to adapt its desktop; the Windows host stops the touch
+keyboard from popping up while `attached` is true and restores the setting when it becomes false or
+the session ends. A host that does not care ignores it.
+
 ### HDR10 (0.5)
 
 Client to host, on the Control channel, right after the host `Hello` when the host minor is at
@@ -387,6 +473,18 @@ Either side may send `Ping { seq, t0_us }`; the peer answers immediately with `P
 t1_us, t2_us }`, where `t1` is its clock when the ping arrived and `t2` its clock when the pong
 was sent. All clocks are local monotonic microseconds with an arbitrary epoch. With `t3` the
 pinger's clock when the pong arrived:
+
+```mermaid
+sequenceDiagram
+  participant A as Pinger (local clock)
+  participant B as Peer (peer clock)
+  Note left of A: t0 = local time
+  A->>B: Ping(seq, t0)
+  Note right of B: t1 = arrival, peer clock
+  Note right of B: t2 = send, peer clock
+  B->>A: Pong(seq, t0, t1, t2)
+  Note left of A: t3 = arrival, local clock
+```
 
 ```
 rtt    = (t3 - t0) - (t2 - t1)

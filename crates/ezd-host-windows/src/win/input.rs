@@ -6,6 +6,7 @@
 //! converts them into Win32 structs and injects them.
 
 use super::display;
+use super::touch_keyboard::TouchKeyboard;
 use super::util::err_str;
 use crate::input_map::{
     self, KeyTracker, Modifier, MouseButton, MouseOrKey, MousePenTracker, PenFrame, PenTracker,
@@ -94,6 +95,7 @@ pub fn diag_json() -> Value {
     json!({
         "pen": show(Device::pen()),
         "touch": show(Device::touch()),
+        "touch_keyboard": super::touch_keyboard::diag_json(),
         "note": "needs Windows 10 1809+; input to elevated (administrator) windows is blocked unless the host runs elevated (the tray app does by default)",
     })
 }
@@ -272,6 +274,8 @@ pub struct WinInputBackend;
 impl WinInputBackend {
     /// A backend; devices are created per session, in `create`.
     pub fn new() -> Self {
+        // A host that crashed while the touch keyboard was suppressed left the setting changed.
+        super::touch_keyboard::recover_after_crash();
         WinInputBackend
     }
 }
@@ -350,6 +354,7 @@ impl InputBackend for WinInputBackend {
             mouse_pen: MousePenTracker::default(),
             touch: TouchTracker::default(),
             keys: KeyTracker::new(),
+            touch_keyboard: TouchKeyboard::new(),
             notes,
             warn_inject: RateLimit::new(WARN_EVERY),
             warn_send: RateLimit::new(WARN_EVERY),
@@ -370,6 +375,8 @@ struct WinInputSink {
     mouse_pen: MousePenTracker,
     touch: TouchTracker,
     keys: KeyTracker,
+    /// Hides the touch keyboard while the client has a hardware keyboard; restores on drop.
+    touch_keyboard: TouchKeyboard,
     notes: Vec<String>,
     warn_inject: RateLimit,
     warn_send: RateLimit,
@@ -521,6 +528,10 @@ impl InputSink for WinInputSink {
         self.send(&events);
     }
 
+    fn keyboard_attached(&mut self, attached: bool) {
+        self.touch_keyboard.set_attached(attached);
+    }
+
     fn tick(&mut self) {
         if let Some(contacts) = self.touch.refresh(Instant::now()) {
             self.inject_touch_contacts(&contacts);
@@ -536,6 +547,7 @@ impl InputSink for WinInputSink {
         self.inject_touch_contacts(&contacts);
         let events = self.keys.release_all();
         self.send(&events);
+        self.touch_keyboard.restore();
     }
 
     fn status(&self) -> InputStatus {

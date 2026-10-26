@@ -9,8 +9,10 @@
 //! ```
 //! so `ezd-host` can call them without knowing the platform.
 
+use std::time::Duration;
+
 /// Options chosen on the command line that platform backends interpret.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformOptions {
     /// Force a GPU/adapter by name (render node path, adapter description or LUID).
     pub adapter: Option<String>,
@@ -18,6 +20,23 @@ pub struct PlatformOptions {
     pub prefer_dgpu: bool,
     /// Name of an existing output to capture instead of creating a virtual one.
     pub output_name: Option<String>,
+    /// How long a virtual display that outlives its session (Windows) stays on the desktop
+    /// after the client goes away, so a quick reconnect does not move its windows.
+    pub detach_grace: Duration,
+}
+
+/// Default [`PlatformOptions::detach_grace`].
+pub const DEFAULT_DETACH_GRACE: Duration = Duration::from_secs(2);
+
+impl Default for PlatformOptions {
+    fn default() -> Self {
+        PlatformOptions {
+            adapter: None,
+            prefer_dgpu: false,
+            output_name: None,
+            detach_grace: DEFAULT_DETACH_GRACE,
+        }
+    }
 }
 
 /// Error from a platform backend.

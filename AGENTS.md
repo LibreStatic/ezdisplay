@@ -24,3 +24,12 @@ These rules apply to the whole repository. Component notes live next to the code
 Do not name pen-tablet vendors or commercial drawing apps in code, strings, docs, tests or commit messages; describe
 the behaviour instead (for example "graphics tablet", "drawing apps"). The platforms the app runs on or talks to
 (Android, Samsung and the S Pen, KDE, Windows) and open-source apps used as test examples (Krita) are fine.
+
+## Versioning
+- The version is `version` in `[workspace.package]` of the root `Cargo.toml` (crates, packages and the Android app
+  follow it). Every push to `main` publishes a GitHub pre-release `v<version>+<run number>`; a `vX.Y.Z` tag publishes
+  the release (see `docs/releasing.md`).
+- Bump the version in its own commit (`Bump the version to X.Y.Z`, with `cargo update -w` for `Cargo.lock`) before
+  every tagged release; never tag a release under the previous version. Patch (`x.y.Z`) for fixes and small,
+  self-contained changes (including a single small feature), minor (`x.Y.0`) for medium changes (several features, a
+  reworked screen or flow), major (`X.0.0`) for a large overhaul; keep the pre-release suffix (`-alpha`).

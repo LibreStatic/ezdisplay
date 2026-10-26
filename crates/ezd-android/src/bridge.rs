@@ -5,12 +5,13 @@
 use crate::caps::parse_caps;
 use crate::decoder::SendWindow;
 use crate::input::{mono_to_now_us, unpack_motion};
+use crate::keys::keycode_to_hid;
 use crate::session::{Session, Target};
 use crate::wifi;
 use ezd_client_core::now_us;
 use ezd_input::{InputConfig, InputEngine, ViewTransform};
 use ezd_link::identity::parse_fingerprint;
-use ezd_proto::Message;
+use ezd_proto::{Key, Message};
 use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteArray, JClass, JFloatArray, JIntArray, JLongArray, JObject, JString};
@@ -19,7 +20,7 @@ use ndk::native_window::NativeWindow;
 use std::cell::RefCell;
 use std::sync::Mutex;
 use std::sync::Once;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
@@ -36,6 +37,8 @@ static INPUT: Mutex<InputState> = Mutex::new(InputState {
     config: None,
     view: (1.0, 1.0),
 });
+/// Last hardware keyboard state from Kotlin; a new session starts with it.
+static KEYBOARD_ATTACHED: AtomicBool = AtomicBool::new(false);
 static LAST_INPUT_ERR_S: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
@@ -125,7 +128,9 @@ fn start_session(window: Option<SendWindow>, target: Target, caps: crate::caps::
         old.stop();
     }
     log::info!("start {target:?} surface={}", window.is_some());
-    *guard = Some(Session::start(window, target, caps));
+    let s = Session::start(window, target, caps);
+    s.set_keyboard_attached(KEYBOARD_ATTACHED.load(Ordering::Relaxed));
+    *guard = Some(s);
 }
 
 /// `external fun start(surface: Surface?, host: String, port: Int, capsJson: String): String?`
@@ -439,6 +444,50 @@ pub extern "system" fn input_event<'local>(
             Err(e) => log_input_error(&e),
         }
         SCRATCH.with(|s| *s.borrow_mut() = scratch);
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `external fun keyEvent(keyCode: Int, pressed: Boolean, timeNs: Long): Boolean`: one hardware
+/// key transition (`timeNs` is uptime-based). Returns whether the key code maps to a HID usage
+/// and was sent (a press of a key already down is an autorepeat).
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
+pub extern "system" fn key_event<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    key_code: jint,
+    pressed: jni::sys::jboolean,
+    time_ns: jni::sys::jlong,
+) -> jni::sys::jboolean {
+    env.with_env(|_env| -> jni::errors::Result<jni::sys::jboolean> {
+        let Some(usage) = keycode_to_hid(key_code) else {
+            return Ok(false);
+        };
+        let mut out = vec![Message::Key(Key {
+            t_us: mono_to_now_us(time_ns, mono_ns(), now_us()),
+            usage,
+            pressed,
+        })];
+        send_all(&mut out);
+        Ok(true)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `external fun setKeyboardAttached(attached: Boolean)`: whether a hardware keyboard is attached.
+/// Stored also while there is no session, so the next `start` reports it to the host.
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
+pub extern "system" fn set_keyboard_attached<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    attached: jni::sys::jboolean,
+) {
+    env.with_env(|_env| -> jni::errors::Result<()> {
+        KEYBOARD_ATTACHED.store(attached, Ordering::Relaxed);
+        if let Some(s) = session().as_ref() {
+            s.set_keyboard_attached(attached);
+        }
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()

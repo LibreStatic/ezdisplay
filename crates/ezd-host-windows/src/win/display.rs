@@ -5,6 +5,8 @@ use crate::display_topology::{PathKey, plan_extend, source_is_cloned};
 use crate::ident::looks_like_vdd;
 use crate::vdd_xml::{Mode, format_refresh};
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
     DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_DEVICE_INFO_HEADER,
@@ -524,9 +526,13 @@ pub fn current_mode(gdi_name: &str) -> Option<(u32, u32, u32, i32, i32)> {
     ))
 }
 
-/// Sets `mode` on `gdi_name`. With `attach_at_x = Some(x)` the monitor is also
-/// placed at `(x, 0)`, which attaches it to the desktop in extend mode.
-pub fn set_mode(gdi_name: &str, mode: Mode, attach_at_x: Option<i32>) -> Result<String, String> {
+/// Sets `mode` on `gdi_name`. With `attach_at = Some((x, y))` the monitor is also
+/// placed at `(x, y)`, which attaches it to the desktop in extend mode.
+pub fn set_mode(
+    gdi_name: &str,
+    mode: Mode,
+    attach_at: Option<(i32, i32)>,
+) -> Result<String, String> {
     let want_hz = (mode.refresh_mhz as f64 / 1000.0).round() as u32;
     let modes = device_modes(gdi_name);
     let best = modes
@@ -564,10 +570,10 @@ pub fn set_mode(gdi_name: &str, mode: Mode, attach_at_x: Option<i32>) -> Result<
         dmFields: DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_BITSPERPEL,
         ..Default::default()
     };
-    if let Some(x) = attach_at_x {
+    if let Some((x, y)) = attach_at {
         dm.dmFields |= DM_POSITION;
         dm.Anonymous1.Anonymous2.dmPosition.x = x;
-        dm.Anonymous1.Anonymous2.dmPosition.y = 0;
+        dm.Anonymous1.Anonymous2.dmPosition.y = y;
     }
     let name = wide(gdi_name);
     // SAFETY: `dm` is a fully initialised DEVMODEW; `name` is NUL-terminated.
@@ -596,8 +602,65 @@ pub fn set_mode(gdi_name: &str, mode: Mode, attach_at_x: Option<i32>) -> Result<
     }
     Ok(format!(
         "{gdi_name} set to {w}x{h}@{hz}{}",
-        attach_at_x.map_or(String::new(), |x| format!(" at ({x},0)"))
+        attach_at.map_or(String::new(), |(x, y)| format!(" at ({x},{y})"))
     ))
+}
+
+/// Takes `gdi_name` off the desktop (a zero-sized mode at the origin), as unplugging the monitor
+/// would: Windows moves its windows to the remaining monitors. `set_mode` with `attach_at`
+/// attaches it again; [`detached_position`] tells where it was.
+pub fn detach(gdi_name: &str) -> Result<String, String> {
+    if let Some((_, _, _, x, y)) = current_mode(gdi_name) {
+        detached_positions()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(gdi_name.to_ascii_uppercase(), (x, y));
+    }
+    let dm = DEVMODEW {
+        dmSize: size_of::<DEVMODEW>() as u16,
+        dmFields: DM_PELSWIDTH | DM_PELSHEIGHT | DM_POSITION,
+        ..Default::default()
+    };
+    let name = wide(gdi_name);
+    // SAFETY: `dm` is a fully initialised DEVMODEW; `name` is NUL-terminated.
+    let r = unsafe {
+        ChangeDisplaySettingsExW(
+            PCWSTR(name.as_ptr()),
+            Some(&dm),
+            None,
+            CDS_UPDATEREGISTRY | CDS_NORESET,
+            None,
+        )
+    };
+    if r != DISP_CHANGE_SUCCESSFUL {
+        return Err(format!(
+            "ChangeDisplaySettingsExW({gdi_name}, detach) failed: DISP_CHANGE {}",
+            r.0
+        ));
+    }
+    // SAFETY: a null device and mode apply the pending registry changes.
+    let r = unsafe { ChangeDisplaySettingsExW(PCWSTR::null(), None, None, CDS_TYPE(0), None) };
+    if r != DISP_CHANGE_SUCCESSFUL {
+        return Err(format!(
+            "applying display settings failed: DISP_CHANGE {}",
+            r.0
+        ));
+    }
+    Ok(format!("{gdi_name} detached from the desktop"))
+}
+
+fn detached_positions() -> &'static Mutex<HashMap<String, (i32, i32)>> {
+    static POSITIONS: OnceLock<Mutex<HashMap<String, (i32, i32)>>> = OnceLock::new();
+    POSITIONS.get_or_init(Default::default)
+}
+
+/// Where `gdi_name` was on the desktop when this process last detached it.
+pub fn detached_position(gdi_name: &str) -> Option<(i32, i32)> {
+    detached_positions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&gdi_name.to_ascii_uppercase())
+        .copied()
 }
 
 /// JSON of all display devices and CCD targets, for `diag`.

@@ -213,6 +213,9 @@ mod imp {
         range: DynamicRange,
         color: StreamColor,
         hdr_seen: Mutex<Option<(Instant, Option<SourceHdr>)>>,
+        /// GDI name of the VDD monitor `start` put on the desktop; `stop` takes it off again so
+        /// windows do not stay on a display nobody sees.
+        vdd_gdi: Option<String>,
     }
 
     /// The output the session will capture, as it is now: the named one, or the VDD output if it
@@ -277,6 +280,7 @@ mod imp {
                 range: DynamicRange::Sdr,
                 color: StreamColor::sdr_bt709(),
                 hdr_seen: Mutex::new(None),
+                vdd_gdi: None,
             })
         }
 
@@ -382,7 +386,9 @@ mod imp {
                     height: h,
                     refresh_mhz: cfg.refresh_mhz,
                 };
+                vdd::cancel_detach();
                 let p = vdd::prepare(&chosen, mode)?;
+                self.vdd_gdi = Some(p.output.device_name.clone());
                 for n in &p.notes {
                     tracing::info!("vdd: {n}");
                 }
@@ -660,6 +666,12 @@ mod imp {
                 let (frames, lost) = r.capture.stats();
                 tracing::info!("capture stopped: {frames} frames, {lost} access-lost events");
                 r.capture.stop();
+            }
+            // The client went away (it stopped, its screen turned off or it lost the link): take
+            // the virtual monitor off the desktop, which moves its windows to the other monitors,
+            // unless the next session starts within the grace period.
+            if let Some(gdi) = self.vdd_gdi.take() {
+                vdd::detach_later(gdi, self.opts.detach_grace);
             }
         }
     }

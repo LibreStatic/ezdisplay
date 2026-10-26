@@ -53,6 +53,8 @@ pub(crate) struct PenState {
     /// Key combination currently pressed on the host. Only the release paths
     /// clear it (`drop_gesture` cannot emit, so it leaves it alone).
     pub keys_held: Option<KeyCombo>,
+    /// Pen sample time of the last step zoom step, for its rate limit.
+    pub step_last: Option<u64>,
 }
 
 const BARREL_MASK: i32 =

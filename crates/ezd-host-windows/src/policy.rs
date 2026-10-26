@@ -385,6 +385,7 @@ mod tests {
             adapter: adapter.map(str::to_string),
             prefer_dgpu,
             output_name: None,
+            ..Default::default()
         }
     }
 

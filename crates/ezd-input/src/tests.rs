@@ -1028,6 +1028,7 @@ fn invalid_action_trigger_combinations_become_none() {
             click: Scroll,
             double_click: Eraser,
             hold: PcZoom,
+            double_hold: RightClick,
             hold_drag_contact: RightClick,
             hold_drag_hover: LocalZoom,
         },
@@ -1039,10 +1040,11 @@ fn invalid_action_trigger_combinations_become_none() {
             m.click,
             m.double_click,
             m.hold,
+            m.double_hold,
             m.hold_drag_contact,
             m.hold_drag_hover
         ),
-        (None, None, None, None, None)
+        (None, None, None, None, None, None)
     );
     // Valid ones survive.
     let c = InputConfig {
@@ -1051,6 +1053,7 @@ fn invalid_action_trigger_combinations_become_none() {
             click: MiddleClick,
             double_click: MiddleClick,
             hold: Eraser,
+            double_hold: Keys,
             hold_drag_contact: PcZoom,
             hold_drag_hover: Scroll,
         },
@@ -1078,19 +1081,23 @@ fn profile_maps() {
             m.click,
             m.double_click,
             m.hold,
+            m.double_hold,
             m.hold_drag_contact,
             m.hold_drag_hover,
         ]
     };
-    assert_eq!(t(Profile::Raw), [Raw, LocalZoom, Raw, Raw, Raw]);
+    assert_eq!(t(Profile::Raw), [Raw, LocalZoom, Raw, None, Raw, Raw]);
     assert_eq!(
         t(Profile::Desktop),
-        [RightClick, LocalZoom, None, Scroll, PcZoom]
+        [RightClick, LocalZoom, None, None, Scroll, PcZoom]
     );
-    assert_eq!(t(Profile::Drawing), [Raw, LocalZoom, Eraser, Raw, Raw]);
+    assert_eq!(
+        t(Profile::Drawing),
+        [Raw, LocalZoom, Eraser, None, Raw, Raw]
+    );
     assert_eq!(
         t(Profile::GraphicsTablet),
-        [RightClick, LocalZoom, Keys, Raw, Raw]
+        [RightClick, LocalZoom, Keys, Keys, Raw, Raw]
     );
 }
 
@@ -1499,6 +1506,7 @@ fn custom_click_and_double_click_tap_their_own_combos() {
         click: ButtonAction::Keys,
         double_click: ButtonAction::Keys,
         hold: ButtonAction::None,
+        double_hold: ButtonAction::None,
         hold_drag_contact: ButtonAction::None,
         hold_drag_hover: ButtonAction::None,
     };
@@ -1565,6 +1573,7 @@ fn contact_drag_tap_taps_the_click_combo() {
         click: ButtonAction::Keys,
         double_click: ButtonAction::None,
         hold: ButtonAction::None,
+        double_hold: ButtonAction::None,
         hold_drag_contact: ButtonAction::Scroll,
         hold_drag_hover: ButtonAction::None,
     };
@@ -1588,6 +1597,7 @@ fn keys_hold_wins_over_the_drag_triggers() {
         click: ButtonAction::None,
         double_click: ButtonAction::None,
         hold: ButtonAction::Keys,
+        double_hold: ButtonAction::None,
         hold_drag_contact: ButtonAction::Scroll,
         hold_drag_hover: ButtonAction::PcZoom,
     };
@@ -1729,6 +1739,1005 @@ fn keys_config_json_and_sanitizing() {
     }
 }
 
+// ---- double click + hold -----------------------------------------------------
+
+const CTRL_ALT_SPACE_DOWN: [&str; 3] = ["key 0xe0 down", "key 0xe2 down", "key 0x2c down"];
+const CTRL_ALT_SPACE_UP: [&str; 3] = ["key 0x2c up", "key 0xe2 up", "key 0xe0 up"];
+
+/// A graphics-tablet rig with the second press of a double click down and unresolved
+/// (first press at 100, release at 200, second press at 300; output drained).
+fn graphics_tablet_second_press() -> Rig {
+    let mut r = Rig::profile(Profile::GraphicsTablet);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(release(200, 500.0, 500.0));
+    assert_eq!(r.feed(press(300, 500.0, 500.0)), ["pen I 500,500"]);
+    assert_eq!(r.e.view().scale, 1.0, "the double click is not fired yet");
+    r
+}
+
+#[test]
+fn graphics_tablet_double_hold_tip_down_presses_ctrl_alt_space_before_the_contact() {
+    let mut r = graphics_tablet_second_press();
+    assert_eq!(
+        r.feed(pen_down(350, 500.0, 500.0, PRIMARY)),
+        [
+            CTRL_ALT_SPACE_DOWN[0],
+            CTRL_ALT_SPACE_DOWN[1],
+            CTRL_ALT_SPACE_DOWN[2],
+            "pen IC 500,500 p=32768"
+        ]
+    );
+    assert_eq!(r.e.next_deadline(), None);
+    assert_eq!(r.e.view().scale, 1.0);
+    assert_eq!(
+        r.feed(pen_up(400, 500.0, 500.0, PRIMARY)),
+        ["pen I 500,500"]
+    );
+    let mut want = CTRL_ALT_SPACE_UP.map(String::from).to_vec();
+    want.push("pen I 500,500".into());
+    assert_eq!(r.feed(release(500, 500.0, 500.0)), want);
+    // The double click did not fire either.
+    assert_eq!(r.e.view().scale, 1.0);
+    assert_eq!(r.feed(release(600, 500.0, 500.0)), ["pen I 500,500"]);
+}
+
+#[test]
+fn graphics_tablet_double_hold_resolves_at_the_hold_time() {
+    let mut r = graphics_tablet_second_press();
+    assert_eq!(r.e.next_deadline(), Some(ms(600)));
+    assert_eq!(r.tick(599), Vec::<String>::new());
+    r.e.tick(ms(650), &mut r.out);
+    for m in &r.out {
+        assert!(matches!(m, Message::Key(k) if k.t_us == ms(600)));
+    }
+    assert_eq!(
+        r.raw().iter().map(show).collect::<Vec<_>>(),
+        CTRL_ALT_SPACE_DOWN
+    );
+    assert_eq!(r.e.next_deadline(), None);
+    assert_eq!(r.feed(hover(700, 510.0, 500.0, PRIMARY)), ["pen I 510,500"]);
+    let mut want = CTRL_ALT_SPACE_UP.map(String::from).to_vec();
+    want.push("pen I 510,500".into());
+    assert_eq!(r.feed(release(800, 510.0, 500.0)), want);
+    assert_eq!(r.e.view().scale, 1.0);
+}
+
+#[test]
+fn graphics_tablet_double_hold_resolves_at_the_hover_motion() {
+    let mut r = graphics_tablet_second_press();
+    assert_eq!(r.feed(hover(310, 520.0, 500.0, PRIMARY)), ["pen I 520,500"]);
+    assert_eq!(r.e.next_deadline(), Some(ms(600)));
+    assert_eq!(
+        r.feed(hover(320, 530.0, 500.0, PRIMARY)),
+        [
+            CTRL_ALT_SPACE_DOWN[0],
+            CTRL_ALT_SPACE_DOWN[1],
+            CTRL_ALT_SPACE_DOWN[2],
+            "pen I 530,500"
+        ]
+    );
+    assert_eq!(r.e.next_deadline(), None);
+}
+
+#[test]
+fn graphics_tablet_quick_double_click_toggles_the_zoom_at_the_release() {
+    let mut r = graphics_tablet_second_press();
+    assert_eq!(r.feed(release(400, 500.0, 500.0)), ["pen I 500,500"]);
+    assert_eq!(r.e.view().scale, 2.0);
+    assert_eq!(r.e.next_deadline(), None);
+}
+
+#[test]
+fn graphics_tablet_zoomed_double_hold_motion_pans_and_tip_down_presses_the_keys() {
+    let mut r = Rig::profile(Profile::GraphicsTablet);
+    r.feed(hover(0, 500.0, 500.0, 0));
+    for (t, f) in [(10, true), (20, false), (30, true), (40, false)] {
+        r.feed(if f {
+            press(t, 500.0, 500.0)
+        } else {
+            release(t, 500.0, 500.0)
+        });
+    }
+    assert_eq!(r.e.view().scale, 2.0);
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(release(150, 500.0, 500.0));
+    r.feed(press(200, 500.0, 500.0));
+    let before = r.e.view();
+    let out = r.feed(hover(210, 600.0, 500.0, PRIMARY));
+    assert!(keys_of(&out).is_empty(), "{out:?}");
+    assert_ne!(r.e.view(), before, "panned");
+    let out = r.feed(release(300, 600.0, 500.0));
+    assert!(keys_of(&out).is_empty(), "{out:?}");
+
+    // The tip touch presses the keys even when zoomed, like the first press.
+    r.feed(press(1000, 600.0, 500.0));
+    r.feed(release(1050, 600.0, 500.0));
+    r.feed(press(1100, 600.0, 500.0));
+    let out = r.feed(pen_down(1150, 600.0, 500.0, PRIMARY));
+    assert_eq!(keys_of(&out), CTRL_ALT_SPACE_DOWN);
+}
+
+#[test]
+fn double_hold_keys_are_released_when_the_pen_leaves_range() {
+    let mut r = graphics_tablet_second_press();
+    assert_eq!(r.tick(600), CTRL_ALT_SPACE_DOWN);
+    r.feed(exit(700, 500.0, 500.0));
+    assert_eq!(
+        r.tick(740),
+        [
+            CTRL_ALT_SPACE_UP[0],
+            CTRL_ALT_SPACE_UP[1],
+            CTRL_ALT_SPACE_UP[2],
+            "pen - 500,500"
+        ]
+    );
+    assert_eq!(r.feed(release(800, 500.0, 500.0)), ["pen I 500,500"]);
+}
+
+#[test]
+fn pen_out_before_the_second_press_resolves_presses_nothing() {
+    let mut r = graphics_tablet_second_press();
+    r.feed(exit(400, 500.0, 500.0));
+    let out = r.tick(440);
+    assert!(keys_of(&out).is_empty(), "{out:?}");
+    assert_eq!(r.e.next_deadline(), None);
+}
+
+#[test]
+fn custom_double_hold_eraser_switches_like_the_hold() {
+    let map = ButtonMap {
+        click: ButtonAction::RightClick,
+        double_click: ButtonAction::LocalZoom,
+        hold: ButtonAction::None,
+        double_hold: ButtonAction::Eraser,
+        hold_drag_contact: ButtonAction::None,
+        hold_drag_hover: ButtonAction::None,
+    };
+    let mut r = custom_keys(map, KeyBindings::default());
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(release(200, 500.0, 500.0));
+    r.feed(press(300, 500.0, 500.0));
+    assert_eq!(r.tick(600), ["pen - 500,500", "pen IE 500,500"]);
+    assert_eq!(
+        r.feed(release(700, 500.0, 500.0)),
+        ["pen - 500,500", "pen I 500,500"]
+    );
+    assert_eq!(r.e.view().scale, 1.0);
+}
+
+#[test]
+fn custom_double_hold_none_keeps_the_instant_double_click() {
+    let map = ButtonMap {
+        double_hold: ButtonAction::None,
+        ..ButtonMap::for_profile(Profile::GraphicsTablet)
+    };
+    let mut r = custom_keys(map, KeyBindings::default());
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(release(200, 500.0, 500.0));
+    r.feed(press(300, 500.0, 500.0));
+    assert_eq!(r.e.view().scale, 2.0, "fired at the press");
+    assert_eq!(r.e.next_deadline(), None);
+    assert_eq!(r.tick(1000), Vec::<String>::new());
+    assert_eq!(r.feed(release(1100, 500.0, 500.0)), ["pen I 500,500"]);
+}
+
+#[test]
+fn double_hold_config_json_and_sanitizing() {
+    let c = InputConfig::from_json(r#"{"profile":"graphics_tablet"}"#).unwrap();
+    assert_eq!(
+        c.keys.double_hold,
+        KeyCombo {
+            mods: KeyCombo::CTRL | KeyCombo::ALT,
+            key: 0x2C
+        }
+    );
+    assert_eq!(c.button_map().double_hold, ButtonAction::Keys);
+
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"double_hold":"eraser"},
+            "keys":{"double_hold":{"mods":2,"key":4}}}"#,
+    )
+    .unwrap();
+    assert_eq!(c.button_map().double_hold, ButtonAction::Eraser);
+    assert_eq!(c.keys.double_hold, KeyCombo { mods: 2, key: 4 });
+    let j = serde_json::to_string(&c).unwrap();
+    assert_eq!(InputConfig::from_json(&j).unwrap(), c);
+
+    // Only Eraser, Keys and None are valid.
+    for a in ["right_click", "local_zoom", "raw", "scroll", "pc_zoom"] {
+        let c = InputConfig::from_json(&format!(
+            r#"{{"profile":"custom","custom":{{"double_hold":"{a}"}}}}"#
+        ))
+        .unwrap();
+        assert_eq!(c.button_map().double_hold, ButtonAction::None, "{a}");
+    }
+
+    // An empty combination turns Keys into None.
+    let c = InputConfig::from_json(
+        r#"{"profile":"graphics_tablet","keys":{"double_hold":{"mods":0,"key":0}}}"#,
+    )
+    .unwrap();
+    assert_eq!(c.button_map().double_hold, ButtonAction::None);
+
+    // Other profiles have no double hold.
+    for p in [
+        Profile::Raw,
+        Profile::Desktop,
+        Profile::Drawing,
+        Profile::Custom,
+    ] {
+        assert_eq!(ButtonMap::for_profile(p).double_hold, ButtonAction::None);
+    }
+}
+
+// ---- step zoom drag -----------------------------------------------------------
+
+const ZOOM_IN_DOWN: [&str; 2] = CTRL_SPACE_DOWN;
+const ZOOM_IN_UP: [&str; 2] = CTRL_SPACE_UP;
+
+/// A Custom rig with `action` on both drags and the barrel pressed at (500,500),
+/// the tip touching (output drained).
+fn step_zoom_rig(action: ButtonAction) -> Rig {
+    let mut r = custom_keys(
+        ButtonMap {
+            click: ButtonAction::None,
+            double_click: ButtonAction::None,
+            hold: ButtonAction::None,
+            double_hold: ButtonAction::None,
+            hold_drag_contact: action,
+            hold_drag_hover: action,
+        },
+        KeyBindings::default(),
+    );
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r
+}
+
+fn step_zoom_touching() -> Rig {
+    let mut r = step_zoom_rig(ButtonAction::StepZoom);
+    assert_eq!(
+        r.feed(pen_down(110, 500.0, 500.0, PRIMARY)),
+        ["pen I 500,500"]
+    );
+    r
+}
+
+#[test]
+fn step_zoom_up_gives_one_zoom_in_step_clicking_at_the_anchor() {
+    let mut r = step_zoom_touching();
+    assert_eq!(
+        r.feed(pen_move(120, 520.0, 420.0, PRIMARY)),
+        [
+            ZOOM_IN_DOWN[0],
+            ZOOM_IN_DOWN[1],
+            "btn L+ 500,500",
+            "btn L- 500,500",
+            ZOOM_IN_UP[0],
+            ZOOM_IN_UP[1],
+            "pen I 520,420"
+        ]
+    );
+    // Lifting after a drag is not a tap, and nothing stays pressed.
+    assert_eq!(
+        r.feed(pen_up(130, 520.0, 420.0, PRIMARY)),
+        ["pen I 520,420"]
+    );
+}
+
+#[test]
+fn step_zoom_down_gives_a_zoom_out_step() {
+    let mut r = step_zoom_touching();
+    assert_eq!(
+        r.feed(pen_move(120, 500.0, 580.0, PRIMARY)),
+        [
+            CTRL_ALT_SPACE_DOWN[0],
+            CTRL_ALT_SPACE_DOWN[1],
+            CTRL_ALT_SPACE_DOWN[2],
+            "btn L+ 500,500",
+            "btn L- 500,500",
+            CTRL_ALT_SPACE_UP[0],
+            CTRL_ALT_SPACE_UP[1],
+            CTRL_ALT_SPACE_UP[2],
+            "pen I 500,580"
+        ]
+    );
+}
+
+#[test]
+fn step_zoom_keeps_the_leftover_travel() {
+    let mut r = step_zoom_touching();
+    assert_eq!(
+        r.feed(pen_move(120, 500.0, 421.0, PRIMARY)),
+        ["pen I 500,421"]
+    );
+    // 79 px so far; 2 more complete the step. Horizontal travel is ignored.
+    let out = r.feed(pen_move(130, 900.0, 419.0, PRIMARY));
+    assert_eq!(keys_of(&out), [ZOOM_IN_DOWN, ZOOM_IN_UP].concat());
+    // The leftover is 1 px: 79 more are needed for the next step.
+    assert_eq!(
+        r.feed(pen_move(300, 900.0, 341.0, PRIMARY)),
+        ["pen I 900,341"]
+    );
+    let out = r.feed(pen_move(310, 900.0, 339.0, PRIMARY));
+    assert_eq!(keys_of(&out).len(), 4, "{out:?}");
+}
+
+#[test]
+fn step_zoom_is_rate_limited_and_the_backlog_capped() {
+    let mut r = step_zoom_touching();
+    // 400 px up in one sample: one step now, the backlog is capped to 3 steps.
+    let out = r.feed(pen_move(120, 500.0, 100.0, PRIMARY));
+    assert_eq!(keys_of(&out).len(), 4, "{out:?}");
+    let steps = |out: &[String]| out.iter().filter(|s| *s == "btn L+ 500,500").count();
+    // Within 60 ms: nothing.
+    assert_eq!(steps(&r.feed(pen_move(150, 500.0, 99.0, PRIMARY))), 0);
+    assert_eq!(steps(&r.feed(pen_move(179, 500.0, 98.0, PRIMARY))), 0);
+    // Then one step per 60 ms of pen samples, two more in total (3 were queued).
+    assert_eq!(steps(&r.feed(pen_move(180, 500.0, 97.0, PRIMARY))), 1);
+    assert_eq!(steps(&r.feed(pen_move(200, 500.0, 96.0, PRIMARY))), 0);
+    assert_eq!(steps(&r.feed(pen_move(240, 500.0, 95.0, PRIMARY))), 1);
+    // The backlog is empty (the pen moved 1 px per sample): no more steps.
+    assert_eq!(steps(&r.feed(pen_move(300, 500.0, 94.0, PRIMARY))), 0);
+    assert_eq!(steps(&r.feed(pen_move(400, 500.0, 93.0, PRIMARY))), 0);
+}
+
+#[test]
+fn step_zoom_contact_drag_never_reports_contact() {
+    let mut r = step_zoom_touching();
+    for (t, y) in [(120, 450.0), (200, 400.0), (300, 300.0)] {
+        let out = r.feed(pen_move(t, 500.0, y, PRIMARY));
+        let pen = out.iter().find(|s| s.starts_with("pen ")).unwrap();
+        assert!(pen.starts_with("pen I "), "{pen}");
+    }
+    let out = r.feed(pen_up(400, 500.0, 300.0, PRIMARY));
+    assert!(out.iter().all(|s| !s.starts_with("pen IC")), "{out:?}");
+}
+
+#[test]
+fn step_zoom_hover_drag_zooms_in_the_air() {
+    let mut r = step_zoom_rig(ButtonAction::StepZoom);
+    let out = r.feed(hover(120, 500.0, 420.0, PRIMARY));
+    assert_eq!(
+        out,
+        [
+            ZOOM_IN_DOWN[0],
+            ZOOM_IN_DOWN[1],
+            "btn L+ 500,500",
+            "btn L- 500,500",
+            ZOOM_IN_UP[0],
+            ZOOM_IN_UP[1],
+            "pen I 500,420"
+        ]
+    );
+}
+
+#[test]
+fn step_zoom_leaves_no_keys_down_on_release_or_leaving_range() {
+    let down = |out: &[String]| {
+        let mut held = 0i32;
+        for s in out.iter().filter(|s| s.starts_with("key ")) {
+            held += if s.ends_with("down") { 1 } else { -1 };
+        }
+        held
+    };
+    let mut r = step_zoom_touching();
+    let mut all = r.feed(pen_move(120, 500.0, 300.0, PRIMARY));
+    all.extend(r.feed(release(130, 500.0, 300.0)));
+    assert_eq!(down(&all), 0, "{all:?}");
+
+    let mut r = step_zoom_touching();
+    let mut all = r.feed(pen_move(120, 500.0, 300.0, PRIMARY));
+    all.extend(r.feed(exit(130, 500.0, 300.0)));
+    all.extend(r.tick(200));
+    assert_eq!(down(&all), 0, "{all:?}");
+    r.e.release_all(ms(300), &mut r.out);
+    let out: Vec<String> = r.raw().iter().map(show).collect();
+    assert!(keys_of(&out).is_empty(), "{out:?}");
+}
+
+#[test]
+fn step_zoom_with_one_direction_unset_only_steps_the_other() {
+    let mut r = custom_keys(
+        ButtonMap {
+            hold_drag_contact: ButtonAction::StepZoom,
+            ..ButtonMap::for_profile(Profile::Raw)
+        },
+        KeyBindings {
+            zoom_out: KeyCombo::default(),
+            ..KeyBindings::default()
+        },
+    );
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(pen_down(110, 500.0, 500.0, PRIMARY));
+    let out = r.feed(pen_move(120, 500.0, 600.0, PRIMARY));
+    assert!(
+        keys_of(&out).is_empty() && !out.iter().any(|s| s.starts_with("btn")),
+        "{out:?}"
+    );
+    let out = r.feed(pen_move(200, 500.0, 500.0, PRIMARY));
+    assert_eq!(keys_of(&out).len(), 4, "{out:?}");
+}
+
+#[test]
+fn step_zoom_config_json_and_sanitizing() {
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"hold_drag_contact":"step_zoom","hold_drag_hover":"step_zoom"},
+            "keys":{"zoom_in":{"mods":2,"key":4}},"zoom_step_px":120}"#,
+    )
+    .unwrap();
+    let m = c.button_map();
+    assert_eq!(m.hold_drag_contact, ButtonAction::StepZoom);
+    assert_eq!(m.hold_drag_hover, ButtonAction::StepZoom);
+    assert_eq!(c.keys.zoom_in, KeyCombo { mods: 2, key: 4 });
+    assert_eq!(
+        c.keys.zoom_out,
+        KeyCombo {
+            mods: KeyCombo::CTRL | KeyCombo::ALT,
+            key: 0x2C
+        }
+    );
+    assert_eq!(crate::config::Params::from_config(&c).zoom_step, 120.0);
+
+    // Only valid on the drag triggers.
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"click":"step_zoom","double_click":"step_zoom",
+            "hold":"step_zoom","double_hold":"step_zoom"}}"#,
+    )
+    .unwrap();
+    let m = c.button_map();
+    assert_eq!(
+        [m.click, m.double_click, m.hold, m.double_hold],
+        [ButtonAction::None; 4]
+    );
+
+    // Both combinations empty: None; one empty: kept.
+    let both = |zin: u8, zout: u8| {
+        InputConfig::from_json(&format!(
+            r#"{{"profile":"custom","custom":{{"hold_drag_hover":"step_zoom"}},
+                "keys":{{"zoom_in":{{"mods":{zin},"key":0}},"zoom_out":{{"mods":{zout},"key":0}}}}}}"#
+        ))
+        .unwrap()
+        .button_map()
+        .hold_drag_hover
+    };
+    assert_eq!(both(0, 0), ButtonAction::None);
+    assert_eq!(both(1, 0), ButtonAction::StepZoom);
+    assert_eq!(both(0, 1), ButtonAction::StepZoom);
+
+    // The step distance is clamped; a non-finite value falls back.
+    let step = |v: f32| {
+        crate::config::Params::from_config(&InputConfig {
+            zoom_step_px: v,
+            ..InputConfig::default()
+        })
+        .zoom_step
+    };
+    assert_eq!(step(1.0), 20.0);
+    assert_eq!(step(9999.0), 400.0);
+    assert_eq!(step(f32::NAN), 80.0);
+    assert_eq!(step(100.0), 100.0);
+    assert_eq!(InputConfig::default().zoom_step_px, 80.0);
+}
+
+// ---- wheel zoom drag ------------------------------------------------------------
+
+fn wheel_zoom_rig() -> Rig {
+    step_zoom_rig(ButtonAction::WheelZoom)
+}
+
+#[test]
+fn wheel_zoom_hover_drag_gives_one_notch_per_step() {
+    let mut r = wheel_zoom_rig();
+    assert_eq!(
+        r.feed(hover(120, 500.0, 420.0, PRIMARY)),
+        ["scroll 0,120 m0 @500,500", "pen I 500,420"]
+    );
+    // Down: zoom out. 80 px up then 80 px down gives one notch each way.
+    let mut r = wheel_zoom_rig();
+    assert_eq!(
+        r.feed(hover(120, 500.0, 580.0, PRIMARY)),
+        ["scroll 0,-120 m0 @500,500", "pen I 500,580"]
+    );
+    // Less than a step: nothing, and no keys or clicks ever.
+    let mut r = wheel_zoom_rig();
+    assert_eq!(r.feed(hover(120, 500.0, 430.0, PRIMARY)), ["pen I 500,430"]);
+}
+
+#[test]
+fn wheel_zoom_keeps_the_leftover_and_is_rate_limited() {
+    let mut r = wheel_zoom_rig();
+    assert_eq!(r.feed(hover(120, 500.0, 421.0, PRIMARY)), ["pen I 500,421"]);
+    // 79 px so far; 2 more complete the step. Horizontal travel is ignored.
+    let out = r.feed(hover(130, 900.0, 419.0, PRIMARY));
+    assert_eq!(out[0], "scroll 0,120 m0 @500,500", "{out:?}");
+    // The leftover is 1 px: 79 more are needed.
+    assert_eq!(r.feed(hover(300, 900.0, 341.0, PRIMARY)), ["pen I 900,341"]);
+    assert_eq!(
+        r.feed(hover(310, 900.0, 339.0, PRIMARY))[0],
+        "scroll 0,120 m0 @500,500"
+    );
+
+    // 400 px up at once: one notch now, the backlog is capped to 3 steps.
+    let mut r = wheel_zoom_rig();
+    let count = |out: &[String]| out.iter().filter(|s| s.starts_with("scroll ")).count();
+    assert_eq!(count(&r.feed(hover(120, 500.0, 100.0, PRIMARY))), 1);
+    assert_eq!(count(&r.feed(hover(150, 500.0, 99.0, PRIMARY))), 0);
+    assert_eq!(count(&r.feed(hover(180, 500.0, 98.0, PRIMARY))), 1);
+    assert_eq!(count(&r.feed(hover(240, 500.0, 97.0, PRIMARY))), 1);
+    assert_eq!(count(&r.feed(hover(300, 500.0, 96.0, PRIMARY))), 0);
+}
+
+#[test]
+fn wheel_zoom_contact_drag_forwards_no_contact_and_no_keys() {
+    let mut r = wheel_zoom_rig();
+    assert_eq!(
+        r.feed(pen_down(110, 500.0, 500.0, PRIMARY)),
+        ["pen I 500,500"]
+    );
+    let out = r.feed(pen_move(120, 500.0, 420.0, PRIMARY));
+    assert_eq!(out, ["scroll 0,120 m0 @500,500", "pen I 500,420"]);
+    let out = r.feed(pen_up(130, 500.0, 420.0, PRIMARY));
+    assert_eq!(out, ["pen I 500,420"]);
+}
+
+#[test]
+fn wheel_zoom_config_json() {
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"hold_drag_contact":"wheel_zoom","hold_drag_hover":"wheel_zoom"}}"#,
+    )
+    .unwrap();
+    let m = c.button_map();
+    assert_eq!(m.hold_drag_contact, ButtonAction::WheelZoom);
+    assert_eq!(m.hold_drag_hover, ButtonAction::WheelZoom);
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"click":"wheel_zoom","hold":"wheel_zoom"}}"#,
+    )
+    .unwrap();
+    assert_eq!(c.button_map().click, ButtonAction::None);
+    assert_eq!(c.button_map().hold, ButtonAction::None);
+}
+
+// ---- pan drag -----------------------------------------------------------------------
+
+const SPACE_DOWN: &str = "key 0x2c down";
+const SPACE_UP: &str = "key 0x2c up";
+
+/// A Custom rig with Pan on the contact drag and the barrel pressed at (500,500).
+fn pan_rig(hold: ButtonAction, hover_drag: ButtonAction) -> Rig {
+    let mut r = custom_keys(
+        ButtonMap {
+            click: ButtonAction::None,
+            double_click: ButtonAction::None,
+            hold,
+            double_hold: ButtonAction::None,
+            hold_drag_contact: ButtonAction::Pan,
+            hold_drag_hover: hover_drag,
+        },
+        KeyBindings::default(),
+    );
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r
+}
+
+#[test]
+fn pan_presses_space_before_the_contact_and_releases_after_the_lift() {
+    let mut r = pan_rig(ButtonAction::None, ButtonAction::None);
+    assert_eq!(
+        r.feed(pen_down(110, 500.0, 500.0, PRIMARY)),
+        [SPACE_DOWN, "pen IC 500,500 p=32768"]
+    );
+    // The drag carries the contact.
+    let out = r.feed(pen_move(120, 540.0, 500.0, PRIMARY));
+    assert_eq!(out, ["pen IC 540,500 p=32768"]);
+    assert_eq!(
+        r.feed(pen_up(130, 540.0, 500.0, PRIMARY)),
+        ["pen I 540,500", SPACE_UP]
+    );
+    // The barrel is still held: the next touch pans again.
+    assert_eq!(
+        r.feed(pen_down(200, 540.0, 500.0, PRIMARY)),
+        [SPACE_DOWN, "pen IC 540,500 p=32768"]
+    );
+    assert_eq!(
+        r.feed(pen_up(210, 540.0, 500.0, PRIMARY)),
+        ["pen I 540,500", SPACE_UP]
+    );
+    assert!(
+        r.feed(release(300, 540.0, 500.0))
+            .iter()
+            .all(|s| !s.starts_with("key "))
+    );
+}
+
+#[test]
+fn pan_starts_at_the_tip_touch_after_the_hold_time_and_over_a_hover_drag() {
+    // A deferred hold (right click) does not delay the pan.
+    let mut r = pan_rig(ButtonAction::RightClick, ButtonAction::None);
+    assert!(r.tick(400).is_empty());
+    assert_eq!(r.feed(pen_down(410, 500.0, 500.0, PRIMARY))[0], SPACE_DOWN);
+    // A hover drag in progress hands over to the pan.
+    let mut r = pan_rig(ButtonAction::None, ButtonAction::WheelZoom);
+    r.feed(hover(110, 500.0, 420.0, PRIMARY));
+    let out = r.feed(pen_down(120, 500.0, 420.0, PRIMARY));
+    assert_eq!(out, [SPACE_DOWN, "pen IC 500,420 p=32768"]);
+}
+
+#[test]
+fn pan_keeps_the_keys_when_the_barrel_is_released_mid_touch() {
+    let mut r = pan_rig(ButtonAction::None, ButtonAction::None);
+    r.feed(pen_down(110, 500.0, 500.0, PRIMARY));
+    let out = r.feed(release(120, 520.0, 500.0));
+    assert!(out.iter().all(|s| !s.starts_with("key ")), "{out:?}");
+    assert_eq!(
+        r.feed(pen_up(130, 520.0, 500.0, 0)),
+        ["pen I 520,500", SPACE_UP]
+    );
+    // Nothing is released twice.
+    assert!(keys_of(&r.feed(exit(200, 520.0, 500.0))).is_empty());
+}
+
+#[test]
+fn pan_releases_the_keys_on_cancel_and_leaving_range() {
+    let mut r = pan_rig(ButtonAction::None, ButtonAction::None);
+    r.feed(pen_down(110, 500.0, 500.0, PRIMARY));
+    let out = r.feed(pen_at(ACTION_CANCEL, 120, 500.0, 500.0, PRIMARY));
+    assert_eq!(keys_of(&out), [SPACE_UP]);
+
+    let mut r = pan_rig(ButtonAction::None, ButtonAction::None);
+    r.feed(pen_down(110, 500.0, 500.0, PRIMARY));
+    let mut all = r.feed(exit(120, 500.0, 500.0));
+    all.extend(r.tick(200));
+    assert_eq!(keys_of(&all), [SPACE_UP]);
+
+    let mut r = pan_rig(ButtonAction::None, ButtonAction::None);
+    r.feed(pen_down(110, 500.0, 500.0, PRIMARY));
+    let mut out = Vec::new();
+    r.e.release_all(ms(130), &mut out);
+    let out: Vec<String> = out.iter().map(show).collect();
+    assert_eq!(keys_of(&out), [SPACE_UP]);
+}
+
+#[test]
+fn pan_yields_to_a_keys_hold() {
+    let mut r = pan_rig(ButtonAction::Keys, ButtonAction::None);
+    // Hold keys (Ctrl+Space) are pressed at the touch, not the pan combination.
+    let out = r.feed(pen_down(110, 500.0, 500.0, PRIMARY));
+    assert_eq!(keys_of(&out), CTRL_SPACE_DOWN);
+}
+
+#[test]
+fn pan_config_json_and_sanitizing() {
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"hold_drag_contact":"pan","hold_drag_hover":"pan"}}"#,
+    )
+    .unwrap();
+    assert_eq!(c.keys.pan, KeyCombo { mods: 0, key: 0x2C });
+    let m = c.button_map();
+    assert_eq!(m.hold_drag_contact, ButtonAction::Pan);
+    assert_eq!(m.hold_drag_hover, ButtonAction::None);
+
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"click":"pan","hold":"pan","double_hold":"pan"},
+            "keys":{"pan":{"mods":1,"key":4}}}"#,
+    )
+    .unwrap();
+    assert_eq!(c.keys.pan, KeyCombo { mods: 1, key: 4 });
+    let m = c.button_map();
+    assert_eq!([m.click, m.hold, m.double_hold], [ButtonAction::None; 3]);
+
+    // An empty combination disables the pan.
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"hold_drag_contact":"pan"},"keys":{"pan":{"mods":0,"key":0}}}"#,
+    )
+    .unwrap();
+    assert_eq!(c.button_map().hold_drag_contact, ButtonAction::None);
+}
+
+// ---- pan / zoom drag ----------------------------------------------------------------
+
+/// A Custom rig with `contact` on the contact drag, the barrel pressed in the air at (500,500).
+fn pz_rig(contact: ButtonAction) -> Rig {
+    let mut r = custom_keys(
+        ButtonMap {
+            click: ButtonAction::None,
+            double_click: ButtonAction::None,
+            hold: ButtonAction::None,
+            double_hold: ButtonAction::None,
+            hold_drag_contact: contact,
+            hold_drag_hover: ButtonAction::None,
+        },
+        KeyBindings::default(),
+    );
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r
+}
+
+fn pz_touching() -> Rig {
+    let mut r = pz_rig(ButtonAction::PanZoom);
+    assert_eq!(
+        r.feed(pen_down(110, 500.0, 500.0, PRIMARY)),
+        ["pen I 500,500"]
+    );
+    r
+}
+
+#[test]
+fn pan_zoom_vertical_drag_zooms_without_contact_or_keys() {
+    let mut r = pz_touching();
+    // Under the slop: nothing but hover.
+    assert_eq!(
+        r.feed(pen_move(120, 500.0, 490.0, PRIMARY)),
+        ["pen I 500,490"]
+    );
+    // Past the slop (24 px) and 80 px of travel counted from the anchor.
+    assert_eq!(
+        r.feed(pen_move(130, 510.0, 420.0, PRIMARY)),
+        ["scroll 0,120 m0 @500,500", "pen I 510,420"]
+    );
+    // Locked: a sideways move keeps zooming (down = zoom out), still no contact.
+    let out = r.feed(pen_move(200, 900.0, 500.0, PRIMARY));
+    assert_eq!(out, ["scroll 0,-120 m0 @500,500", "pen I 900,500"]);
+    let out = r.feed(pen_move(300, 100.0, 500.0, PRIMARY));
+    assert_eq!(out, ["pen I 100,500"]);
+    assert_eq!(
+        r.feed(pen_up(310, 100.0, 500.0, PRIMARY)),
+        ["pen I 100,500"]
+    );
+}
+
+#[test]
+fn pan_zoom_first_step_counts_the_slop_distance() {
+    let mut r = pz_touching();
+    // 40 px up in one sample: past the slop but under one step: nothing yet.
+    assert_eq!(
+        r.feed(pen_move(120, 500.0, 460.0, PRIMARY)),
+        ["pen I 500,460"]
+    );
+    // 40 px more: the step is due.
+    assert_eq!(
+        r.feed(pen_move(130, 500.0, 420.0, PRIMARY))[0],
+        "scroll 0,120 m0 @500,500"
+    );
+}
+
+#[test]
+fn pan_zoom_other_drags_pan_from_the_anchor_and_stay_locked() {
+    for (x, y) in [(560.0, 500.0), (560.0, 530.0)] {
+        let mut r = pz_touching();
+        assert_eq!(
+            r.feed(pen_move(120, x, y, PRIMARY)),
+            [
+                SPACE_DOWN,
+                "pen IC 500,500 p=32768",
+                &format!("pen IC {x},{y} p=32768"),
+            ]
+        );
+        // Locked: a vertical move now keeps panning.
+        assert_eq!(
+            r.feed(pen_move(200, x, y - 300.0, PRIMARY)),
+            [format!("pen IC {x},{} p=32768", y - 300.0)]
+        );
+        assert_eq!(
+            r.feed(pen_up(210, x, y - 300.0, PRIMARY)),
+            [format!("pen I {x},{}", y - 300.0), SPACE_UP.to_string()]
+        );
+    }
+}
+
+#[test]
+fn pan_zoom_tap_under_the_slop_does_nothing_and_the_next_touch_reclassifies() {
+    let mut r = pz_touching();
+    assert_eq!(
+        r.feed(pen_move(120, 510.0, 505.0, PRIMARY)),
+        ["pen I 510,505"]
+    );
+    assert_eq!(
+        r.feed(pen_up(130, 510.0, 505.0, PRIMARY)),
+        ["pen I 510,505"]
+    );
+    r.feed(pen_down(200, 510.0, 505.0, PRIMARY));
+    let out = r.feed(pen_move(210, 600.0, 505.0, PRIMARY));
+    assert_eq!(out[0], SPACE_DOWN, "{out:?}");
+    assert_eq!(out[1], "pen IC 510,505 p=32768");
+}
+
+#[test]
+fn pan_zoom_barrel_released_mid_touch_keeps_the_mode_until_the_lift() {
+    // Pan: the keys stay until the lift and the contact keeps flowing.
+    let mut r = pz_touching();
+    r.feed(pen_move(120, 600.0, 500.0, PRIMARY));
+    let out = r.feed(release(130, 610.0, 500.0));
+    assert!(keys_of(&out).is_empty(), "{out:?}");
+    assert_eq!(
+        r.feed(pen_move(140, 620.0, 500.0, 0)),
+        ["pen IC 620,500 p=32768"]
+    );
+    assert_eq!(
+        r.feed(pen_up(150, 620.0, 500.0, 0)),
+        ["pen I 620,500", SPACE_UP]
+    );
+    // Before the mode was picked: no contact until the lift, no keys.
+    let mut r = pz_touching();
+    r.feed(release(120, 500.0, 500.0));
+    let out = r.feed(pen_move(130, 700.0, 500.0, 0));
+    assert_eq!(out, ["pen I 700,500"]);
+    assert_eq!(r.feed(pen_up(140, 700.0, 500.0, 0)), ["pen I 700,500"]);
+}
+
+#[test]
+fn pan_zoom_releases_the_keys_on_cancel_pen_out_and_release_all() {
+    let panning = || {
+        let mut r = pz_touching();
+        r.feed(pen_move(120, 600.0, 500.0, PRIMARY));
+        r
+    };
+    let mut r = panning();
+    let out = r.feed(pen_at(ACTION_CANCEL, 130, 600.0, 500.0, PRIMARY));
+    assert_eq!(keys_of(&out), [SPACE_UP]);
+    let mut r = panning();
+    let mut all = r.feed(exit(130, 600.0, 500.0));
+    all.extend(r.tick(200));
+    assert_eq!(keys_of(&all), [SPACE_UP]);
+    let mut r = panning();
+    let mut out = Vec::new();
+    r.e.release_all(ms(130), &mut out);
+    let out: Vec<String> = out.iter().map(show).collect();
+    assert_eq!(keys_of(&out), [SPACE_UP]);
+}
+
+#[test]
+fn pan_zoom_with_an_empty_pan_combo_still_zooms_and_pans_without_keys() {
+    let mut r = custom_keys(
+        ButtonMap {
+            hold_drag_contact: ButtonAction::PanZoom,
+            ..ButtonMap::for_profile(Profile::Raw)
+        },
+        KeyBindings {
+            pan: KeyCombo::default(),
+            ..KeyBindings::default()
+        },
+    );
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    r.feed(pen_down(110, 500.0, 500.0, PRIMARY));
+    let out = r.feed(pen_move(120, 600.0, 500.0, PRIMARY));
+    assert_eq!(out, ["pen IC 500,500 p=32768", "pen IC 600,500 p=32768"]);
+}
+
+#[test]
+fn pan_zoom_yields_to_a_keys_hold() {
+    let mut r = custom_keys(
+        ButtonMap {
+            hold: ButtonAction::Keys,
+            hold_drag_contact: ButtonAction::PanZoom,
+            ..ButtonMap::for_profile(Profile::Raw)
+        },
+        KeyBindings::default(),
+    );
+    r.feed(hover(0, 500.0, 500.0, 0));
+    r.feed(press(100, 500.0, 500.0));
+    let out = r.feed(pen_down(110, 500.0, 500.0, PRIMARY));
+    assert_eq!(keys_of(&out), CTRL_SPACE_DOWN);
+}
+
+/// A rig with the tip already down (drawing) at (500,500) and the barrel not pressed.
+fn touching_first(contact: ButtonAction) -> Rig {
+    let mut r = custom_keys(
+        ButtonMap {
+            hold_drag_contact: contact,
+            ..ButtonMap::for_profile(Profile::Raw)
+        },
+        KeyBindings::default(),
+    );
+    r.feed(hover(0, 500.0, 500.0, 0));
+    assert_eq!(
+        r.feed(pen_down(50, 500.0, 500.0, 0)),
+        ["pen IC 500,500 p=32768"]
+    );
+    r
+}
+
+#[test]
+fn barrel_while_touching_starts_pan_zoom_with_a_lift_sample() {
+    let mut r = touching_first(ButtonAction::PanZoom);
+    // The stroke ends (lift sample), then the drag classifies as usual.
+    assert_eq!(r.feed(press(100, 500.0, 500.0)), ["pen I 500,500"]);
+    assert_eq!(
+        r.feed(pen_move(110, 540.0, 420.0, PRIMARY)),
+        ["scroll 0,120 m0 @500,500", "pen I 540,420"]
+    );
+    // The real lift sends no key or release, just hover.
+    assert_eq!(
+        r.feed(pen_up(120, 540.0, 420.0, PRIMARY)),
+        ["pen I 540,420"]
+    );
+
+    let mut r = touching_first(ButtonAction::PanZoom);
+    r.feed(press(100, 500.0, 500.0));
+    assert_eq!(
+        r.feed(pen_move(110, 600.0, 500.0, PRIMARY)),
+        [
+            SPACE_DOWN,
+            "pen IC 500,500 p=32768",
+            "pen IC 600,500 p=32768"
+        ]
+    );
+    assert_eq!(
+        r.feed(pen_up(120, 600.0, 500.0, PRIMARY)),
+        ["pen I 600,500", SPACE_UP]
+    );
+}
+
+#[test]
+fn barrel_while_touching_starts_pan_with_the_keys_between_lift_and_contact() {
+    let mut r = touching_first(ButtonAction::Pan);
+    assert_eq!(
+        r.feed(press(100, 520.0, 500.0)),
+        ["pen I 520,500", SPACE_DOWN, "pen IC 520,500"]
+    );
+    assert_eq!(
+        r.feed(pen_move(110, 560.0, 500.0, PRIMARY)),
+        ["pen IC 560,500 p=32768"]
+    );
+    // Barrel released before the lift: the keys stay until the lift.
+    let out = r.feed(release(120, 560.0, 500.0));
+    assert!(keys_of(&out).is_empty(), "{out:?}");
+    assert_eq!(
+        r.feed(pen_up(130, 560.0, 500.0, 0)),
+        ["pen I 560,500", SPACE_UP]
+    );
+}
+
+#[test]
+fn barrel_while_touching_pan_releases_the_keys_on_cancel() {
+    let mut r = touching_first(ButtonAction::Pan);
+    r.feed(press(100, 520.0, 500.0));
+    let out = r.feed(pen_at(ACTION_CANCEL, 110, 520.0, 500.0, PRIMARY));
+    assert_eq!(keys_of(&out), [SPACE_UP]);
+}
+
+#[test]
+fn barrel_while_touching_stays_raw_for_other_configs() {
+    for contact in [
+        ButtonAction::Raw,
+        ButtonAction::Scroll,
+        ButtonAction::WheelZoom,
+    ] {
+        let mut r = touching_first(contact);
+        let out = r.feed(press(100, 500.0, 500.0));
+        assert_eq!(out, ["pen ICB 500,500"], "{contact:?}");
+    }
+}
+
+#[test]
+fn pan_zoom_config_json_and_sanitizing() {
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"hold_drag_contact":"pan_zoom","hold_drag_hover":"pan_zoom"}}"#,
+    )
+    .unwrap();
+    let m = c.button_map();
+    assert_eq!(m.hold_drag_contact, ButtonAction::PanZoom);
+    assert_eq!(m.hold_drag_hover, ButtonAction::None);
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"click":"pan_zoom","hold":"pan_zoom","double_hold":"pan_zoom"}}"#,
+    )
+    .unwrap();
+    let m = c.button_map();
+    assert_eq!([m.click, m.hold, m.double_hold], [ButtonAction::None; 3]);
+    let c = InputConfig::from_json(
+        r#"{"profile":"custom","custom":{"hold_drag_contact":"pan_zoom"},"keys":{"pan":{"mods":0,"key":0}}}"#,
+    )
+    .unwrap();
+    assert_eq!(c.button_map().hold_drag_contact, ButtonAction::PanZoom);
+}
+
 // ---- 9. drags win over the hold ----------------------------------------------
 
 fn custom_map(hold: ButtonAction, contact: ButtonAction, hover: ButtonAction) -> Rig {
@@ -1737,6 +2746,7 @@ fn custom_map(hold: ButtonAction, contact: ButtonAction, hover: ButtonAction) ->
             click: ButtonAction::Raw,
             double_click: ButtonAction::LocalZoom,
             hold,
+            double_hold: ButtonAction::None,
             hold_drag_contact: contact,
             hold_drag_hover: hover,
         },
@@ -1822,6 +2832,7 @@ fn tap_during_a_hover_drag_converted_to_a_contact_drag_clicks() {
             click: ButtonAction::RightClick,
             double_click: ButtonAction::None,
             hold: ButtonAction::Raw,
+            double_hold: ButtonAction::None,
             hold_drag_contact: ButtonAction::Scroll,
             hold_drag_hover: ButtonAction::PcZoom,
         },

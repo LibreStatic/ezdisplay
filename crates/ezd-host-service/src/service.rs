@@ -367,6 +367,7 @@ impl HostService {
                 tracing::error!("service task failed: {e}");
             }
         }
+        crate::platform::release_virtual_display();
         self.inner.addr.send_replace(None);
         self.inner.wifi_info.send_replace(None);
         self.inner.update(|st| st.phase = Phase::Stopped);
