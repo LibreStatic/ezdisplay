@@ -12,7 +12,7 @@
         android:theme="@style/Theme.EzDisplay">
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density"
             android:exported="true"
             android:screenOrientation="sensorLandscape">
             <intent-filter>

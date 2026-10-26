@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -16,6 +17,7 @@ import android.util.TypedValue
 import android.view.Choreographer
 import android.view.Gravity
 import android.view.InputDevice
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
 import android.view.SurfaceHolder
@@ -85,6 +87,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private var telemetryOn = false
     private var lastInputNote = ""
     private var keysHintShown = false
+    private var hostLacksKeys = false // the host reported input_caps without the KEYS bit
+    private val keysDown = LinkedHashSet<Int>() // hardware key codes currently down on the host
     private var airHintShown = false
     private var barrelDown = false
     private var barrelPressAt = 0L
@@ -215,6 +219,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) releaseAllKeys()
         if (hasFocus) {
             hideSystemBars()
             if (Build.VERSION.SDK_INT >= 31) root.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_POINTER)
@@ -226,6 +231,19 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
                 showTransient(getString(R.string.status_air_actions_hint), AIR_HINT_SHOW_MS)
             }
         }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        pushKeyboardState(newConfig)
+    }
+
+    /** Tells the native side (and through it the host) whether a hardware keyboard is attached. */
+    private fun pushKeyboardState(config: Configuration = resources.configuration) {
+        NativeBridge.setKeyboardAttached(
+            config.keyboard == Configuration.KEYBOARD_QWERTY &&
+                config.hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO,
+        )
     }
 
     override fun onResume() {
@@ -244,6 +262,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         setStatus(getString(R.string.status_waiting, "$HOST:$PORT"))
         Choreographer.getInstance().postFrameCallback(this)
         scheduleConnect(0)
+    }
+
+    override fun onPause() {
+        releaseAllKeys()
+        super.onPause()
     }
 
     override fun onStop() {
@@ -283,6 +306,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         if (!started || sessionActive) return
         if (!surfaceReady) return // surfaceCreated reschedules
         val caps = capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it }
+        pushKeyboardState()
         val err = NativeBridge.start(surfaceView.holder.surface, HOST, PORT, caps)
         if (err != null) {
             Log.w(TAG, "start failed: $err")
@@ -296,6 +320,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         wasStreaming = false
         lastInputNote = ""
         keysHintShown = false
+        hostLacksKeys = false
         airHintShown = false
         streamW = 0
         streamH = 0
@@ -307,6 +332,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     }
 
     private fun stopSession() {
+        releaseAllKeys()
         if (sessionActive) {
             NativeBridge.stop()
             sessionActive = false
@@ -490,6 +516,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         telemetryOn = (flags and 1) != 0
         telemetryView.visibility = if (telemetryOn) View.VISIBLE else View.GONE
         if (telemetryOn) showTelemetry(j)
+        hostLacksKeys = !j.isNull("input_caps") && (j.optInt("input_caps") and 8) == 0
         val note = if (j.isNull("input_note")) "" else j.optString("input_note")
         if (note != lastInputNote) {
             lastInputNote = note
@@ -573,6 +600,50 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             return true
         }
         return super.dispatchGenericMotionEvent(ev)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (inputActive() && isHardwareKey(event)) {
+            val code = event.keyCode
+            val nanos = event.eventTime * 1_000_000L
+            when (event.action) {
+                // repeatCount > 0 is an autorepeat: the host treats a press of a key already down as one.
+                KeyEvent.ACTION_DOWN -> if (NativeBridge.keyEvent(code, true, nanos)) {
+                    keysDown.add(code)
+                    if (hostLacksKeys && !keysHintShown) {
+                        keysHintShown = true
+                        showTransient(getString(R.string.status_keys_unsupported), NOTE_SHOW_MS)
+                    }
+                    return true
+                }
+                KeyEvent.ACTION_UP -> if (keysDown.remove(code)) {
+                    NativeBridge.keyEvent(code, false, nanos)
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /** A key from a physical keyboard that Android does not need for itself. */
+    private fun isHardwareKey(event: KeyEvent): Boolean {
+        if (event.source and InputDevice.SOURCE_KEYBOARD != InputDevice.SOURCE_KEYBOARD) return false
+        val device = event.device ?: return false
+        if (device.isVirtual || device.keyboardType != InputDevice.KEYBOARD_TYPE_ALPHABETIC) return false
+        return when (event.keyCode) {
+            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_MUTE,
+            KeyEvent.KEYCODE_POWER, KeyEvent.KEYCODE_HOME, KeyEvent.KEYCODE_APP_SWITCH,
+            KeyEvent.KEYCODE_BRIGHTNESS_UP, KeyEvent.KEYCODE_BRIGHTNESS_DOWN -> false
+            else -> true // media keys have no HID usage, so they fall through to Android
+        }
+    }
+
+    /** Releases every forwarded key so none stays stuck on the PC. */
+    private fun releaseAllKeys() {
+        if (keysDown.isEmpty()) return
+        val nanos = SystemClock.uptimeMillis() * 1_000_000L
+        keysDown.toList().asReversed().forEach { NativeBridge.keyEvent(it, false, nanos) }
+        keysDown.clear()
     }
 
     /** Packs [ev] (with its history) for [NativeBridge.inputEvent]; buffers are reused. */

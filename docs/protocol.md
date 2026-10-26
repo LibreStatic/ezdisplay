@@ -1,4 +1,4 @@
-# ezdisplay wire protocol (version 0.5)
+# ezdisplay wire protocol (version 0.6)
 
 All integers are little endian. The protocol runs over any reliable ordered byte stream (TCP
 through `adb reverse` today; AOA bulk endpoints later). It is implemented in the `ezd-proto`
@@ -56,6 +56,7 @@ flowchart LR
 | Control | 14 | `ClientOptions` | host to client | postcard (0.3) |
 | Control | 15 | `ClientHdr` | client to host | postcard (0.5) |
 | Control | 16 | `StreamColor` | host to client | postcard (0.5) |
+| Control | 17 | `ClientKeyboard` | client to host | postcard (0.6) |
 | Input | 1 | `Pen` (`PenSample`) | client to host | postcard (0.3) |
 | Input | 2 | `Touch` (`TouchFrame`) | client to host | postcard (0.3) |
 | Input | 3 | `PointerButton` | client to host | postcard (0.3) |
@@ -111,9 +112,9 @@ per push) and yields complete messages.
 
 ### Versioning
 
-`Hello` carries `proto_major` and `proto_minor` (currently 0 and 5; 0.2 added `FrameAck`, 0.3
+`Hello` carries `proto_major` and `proto_minor` (currently 0 and 6; 0.2 added `FrameAck`, 0.3
 the input messages, `InputStatus` and `ClientOptions`, 0.4 the `Key` message, 0.5 `ClientHdr` and
-`StreamColor` for HDR10). A different major version is fatal: the
+`StreamColor` for HDR10, 0.6 `ClientKeyboard`). A different major version is fatal: the
 receiver answers `Reject` and closes. Minor versions only add new `(channel,
 kind)` pairs, so peers with different minors interoperate. `Hello::supports_input()` is true
 when the peer's minor is at least `MINOR_INPUT` = 3; a host must not send `InputStatus` or
@@ -122,6 +123,8 @@ Input messages to an older host. `Key` needs no minor gate: a client sends it on
 host's `InputStatus.caps` has `KEYS`, and an older host would skip the unknown pair anyway.
 `Hello::supports_hdr()` is true when the peer's minor is at least `MINOR_HDR` = 5: a client sends
 `ClientHdr` only to such a host, and a host sends `StreamColor` only to such a client.
+`Hello::supports_keyboard()` is true when the peer's minor is at least `MINOR_KEYBOARD` = 6: a
+client sends `ClientKeyboard` only to such a host.
 
 ## Handshake and session
 
@@ -319,6 +322,14 @@ Host to client, on the Control channel: `InputStatus { caps: u32, note: String }
 bits `TOUCH` = 1, `PEN` = 2, `ACTIONS` = 4, `KEYS` = 8 (what the host can inject) and a human-readable
 `note` explaining what is unavailable (empty when all is fine); `ClientOptions { flags: u32 }`
 with `TELEMETRY` = 1 (show the telemetry overlay).
+
+### Hardware keyboard (0.6)
+
+Client to host, on the Control channel: `ClientKeyboard { attached: bool }`, sent right after the
+handshake (when the host minor is at least 6) and whenever a hardware keyboard is attached or
+detached on the client. The host may use it to adapt its desktop; the Windows host stops the touch
+keyboard from popping up while `attached` is true and restores the setting when it becomes false or
+the session ends. A host that does not care ignores it.
 
 ### HDR10 (0.5)
 

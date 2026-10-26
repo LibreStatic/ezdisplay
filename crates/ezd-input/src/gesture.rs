@@ -306,7 +306,13 @@ impl InputEngine {
             .filter(|(bit, _)| c.mods & bit != 0)
             .map(|(_, usage)| *usage)
             .chain((c.key != 0).then_some(c.key));
+        let mut sent = Vec::new();
         for usage in keys {
+            // A repeated usage (key equal to a modifier) would be an autorepeat on the host.
+            if sent.contains(&usage) {
+                continue;
+            }
+            sent.push(usage);
             out.push(Message::Key(Key {
                 t_us: t,
                 usage,
