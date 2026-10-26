@@ -76,6 +76,9 @@
     <string name="settings_zoom_summary">%1$s× · %2$d ms</string>
     <string name="settings_palm_title">Palm rejection</string>
     <string name="settings_palm_desc">Ignores fingers while the pen is near</string>
+    <string name="section_audio">Audio</string>
+    <string name="settings_audio_title">Audio</string>
+    <string name="settings_audio_desc">Play the PC\'s audio on the tablet</string>
     <string name="settings_on">On</string>
     <string name="settings_off">Off</string>
     <string name="keys_current_combination">Current combination</string>

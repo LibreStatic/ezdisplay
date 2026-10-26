@@ -125,6 +125,16 @@ class SettingsStoreTest {
         assertFalse(s.palmRejection)
     }
 
+    @Test fun audioIsOnByDefaultAndPersists() {
+        assertTrue(s.audioEnabled)
+        store.setAudioEnabled(false)
+        assertFalse(prefs.getBoolean(SettingsStore.AUDIO_ENABLED, true))
+        assertFalse(s.audioEnabled)
+        assertFalse(SettingsStore(prefs, AirActions.Off).state.value.audioEnabled)
+        store.setAudioEnabled(true)
+        assertTrue(prefs.getBoolean(SettingsStore.AUDIO_ENABLED, false))
+    }
+
     @Test fun toJsonContract() {
         store.setProfile("custom")
         store.setCustomAction(InputPrefs.CUSTOM_CLICK, "keys")

@@ -451,7 +451,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private fun connect() {
         if (!started || sessionActive) return
         if (!surfaceReady) return // surfaceCreated reschedules
-        val caps = capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it }
+        val caps = Capabilities.withAudio(
+            capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it },
+            InputPrefs.prefs(this).getBoolean(SettingsStore.AUDIO_ENABLED, true),
+        )
         val acc = accessory?.takeIf { usbManager.hasPermission(it) }
         val wifiChoice = if (tryWifiNext) wifiTarget() else null
         val route = chooseRoute(acc != null, tryWifiNext, wifiChoice != null)

@@ -1,6 +1,7 @@
 package com.librestatic.ezdisplay.settings
 
 import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -520,6 +521,30 @@ private fun DoubleClickSlider(ms: Int, actions: SettingsActions, shape: Shape) {
 /** Palm rejection toggle. */
 @Composable
 fun PalmRow(on: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    SwitchRow(
+        on, onChange, R.drawable.ic_back_hand, R.string.settings_palm_title, R.string.settings_palm_desc,
+        modifier.testTag("palm_row"),
+    )
+}
+
+/** Audio toggle: play the PC's audio on this device. */
+@Composable
+fun AudioRow(on: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    SwitchRow(
+        on, onChange, R.drawable.ic_volume_up, R.string.settings_audio_title, R.string.settings_audio_desc,
+        modifier.testTag("audio_row"),
+    )
+}
+
+@Composable
+private fun SwitchRow(
+    on: Boolean,
+    onChange: (Boolean) -> Unit,
+    @DrawableRes icon: Int,
+    @StringRes title: Int,
+    @StringRes desc: Int,
+    modifier: Modifier,
+) {
     val colors = MaterialTheme.colorScheme
     // The whole row is the switch, so TalkBack reads one control.
     Surface(
@@ -527,21 +552,21 @@ fun PalmRow(on: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modif
         onCheckedChange = onChange,
         shape = RoundedCornerShape(GroupEnd),
         color = colors.surfaceBright,
-        modifier = modifier.fillMaxWidth().semantics { role = Role.Switch }.testTag("palm_row"),
+        modifier = modifier.fillMaxWidth().semantics { role = Role.Switch },
     ) {
         Row(
             Modifier.heightIn(min = RowMinHeight).padding(RowPadding),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Symbol(R.drawable.ic_back_hand, tint = colors.secondary)
+            Symbol(icon, tint = colors.secondary)
             Column(Modifier.weight(1f)) {
                 Text(
-                    stringResource(R.string.settings_palm_title),
+                    stringResource(title),
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    stringResource(R.string.settings_palm_desc),
+                    stringResource(desc),
                     style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
                 )
             }
