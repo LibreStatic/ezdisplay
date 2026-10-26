@@ -57,6 +57,9 @@ struct Core {
 }
 
 /// Plays one negotiated audio stream until dropped.
+/// Packets between two debug lines with the playback counters (about 5 s of 10 ms packets).
+const STATS_EVERY: u64 = 500;
+
 pub struct AudioPlayer {
     core: Arc<Core>,
     format: SampleFormat,
@@ -120,7 +123,15 @@ impl AudioPlayer {
     /// Handles one packet from the host without blocking.
     pub fn on_packet(&mut self, pkt: AudioPacket) {
         use std::sync::atomic::Ordering::Relaxed;
-        self.core.stats.packets.fetch_add(1, Relaxed);
+        let n = self.core.stats.packets.fetch_add(1, Relaxed) + 1;
+        if n % STATS_EVERY == 0 {
+            let (_, underruns, dropped) = self.core.stats.snapshot();
+            let buffered = lock(&self.core.jitter).len() / self.core.channels;
+            tracing::debug!(
+                "audio: {n} packets, {underruns} underruns, {dropped} frames dropped, {} ms buffered",
+                buffered as u64 * 1000 / u64::from(SAMPLE_RATE)
+            );
+        }
         match &self.opus {
             Some(opus) => opus.send(pkt),
             None => {
