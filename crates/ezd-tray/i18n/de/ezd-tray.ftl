@@ -96,6 +96,20 @@ hdr-reason-old-client = Die Tablet-App ist zu alt für HDR; aktualisiere sie
 hdr-reason-display-not-hdr = Der Bildschirm des Tablets unterstützt kein HDR10
 hdr-reason-no-main10-decoder = Das Tablet kann kein 10-Bit-HDR-Video dekodieren
 hdr-reason-no-main10-encoder = Diese Grafikkarte kann kein 10-Bit-HEVC kodieren; Umwandlung in SDR
+setting-audio = Audio
+audio-description = Streamt den Ton dieses Computers zum Tablet. Automatisch sendet unkomprimiertes Audio, wenn die Verbindung es erlaubt.
+audio-auto = Automatisch
+audio-pcm = PCM (unkomprimiert)
+audio-opus = Opus (komprimiert)
+audio-off = Aus
+stat-audio = Audio
+audio-value-none = Keins
+audio-value-pcm = PCM { $format }, { $khz } kHz, { $layout }
+audio-value-opus = Opus, { $khz } kHz, { $layout }
+audio-mono = Mono
+audio-stereo = Stereo
+audio-format-s16 = 16 Bit
+audio-format-f32 = 32 Bit Float
 
 ## Fenster: Eingabe
 input-enabled = Touch- und Stifteingaben an diesen Computer senden

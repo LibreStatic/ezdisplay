@@ -1,7 +1,7 @@
 //! Thin dispatch to the platform crate of the current target.
 
 use crate::error::ServiceError;
-use ezd_host_core::{InputBackend, PlatformOptions, VideoSource};
+use ezd_host_core::{AudioSource, InputBackend, PlatformOptions, VideoSource};
 use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
@@ -27,6 +27,19 @@ pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
     #[cfg(any(target_os = "linux", windows))]
     {
         imp::input_backend()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        None
+    }
+}
+
+/// A PC audio capture source of this platform, if it has one. Cheap: capture starts in
+/// [`AudioSource::start`].
+pub fn audio_source() -> Option<Box<dyn AudioSource>> {
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        imp::audio_source()
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {

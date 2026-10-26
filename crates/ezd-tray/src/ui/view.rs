@@ -12,10 +12,10 @@ use crate::state::Lifecycle;
 use crate::text;
 use eframe::egui::{self, ComboBox, Margin, RichText, Ui};
 use ezd_host_service::{
-    AdbMode, AoaMode, DeviceInfo, DeviceState, HdrChoice, HostStatus, LiveSession, PenChoice,
-    Transport, WifiInfo,
+    AdbMode, AoaMode, AudioChoice, DeviceInfo, DeviceState, HdrChoice, HostStatus, LiveSession,
+    PenChoice, Transport, WifiInfo,
 };
-use ezd_proto::{DynamicRange, SdrReason};
+use ezd_proto::{AudioCodec, AudioStream, DynamicRange, SampleFormat, SdrReason};
 use i18n_embed::fluent::FluentLanguageLoader;
 use i18n_embed_fl::fl;
 use std::path::PathBuf;
@@ -532,6 +532,7 @@ impl SettingsView {
         if let DynamicRange::SdrToneMapped(reason) = live.dynamic_range {
             session.push((fl!(l, "stat-hdr"), sdr_reason_text(l, reason)));
         }
+        session.push((fl!(l, "stat-audio"), audio_text(l, live.audio.as_ref())));
         session.push((
             fl!(l, "stat-encoder"),
             fl!(
@@ -744,6 +745,13 @@ impl SettingsView {
             HdrChoice::Auto => fl!(l, "hdr-auto"),
             HdrChoice::Off => fl!(l, "hdr-off"),
         };
+        let audio_text = |c: AudioChoice| match c {
+            AudioChoice::Auto => fl!(l, "audio-auto"),
+            AudioChoice::Pcm => fl!(l, "audio-pcm"),
+            AudioChoice::Opus => fl!(l, "audio-opus"),
+            AudioChoice::Off => fl!(l, "audio-off"),
+        };
+        let audio_now = cfg.audio;
         let hdr_now = cfg.hdr;
         let hdr_description = if cfg!(target_os = "linux") {
             fl!(l, "hdr-hint-linux")
@@ -790,6 +798,30 @@ impl SettingsView {
                                 }
                                 for n in names {
                                     ui.selectable_value(&mut cfg.encoder, Some(n.clone()), n);
+                                }
+                            })
+                            .response
+                    },
+                );
+                widgets::row_divider(ui, pal);
+                widgets::labelled_row(
+                    ui,
+                    pal,
+                    &fl!(l, "setting-audio"),
+                    Some(&fl!(l, "audio-description")),
+                    None,
+                    |ui| {
+                        ComboBox::from_id_salt("audio")
+                            .width(COMBO_WIDTH)
+                            .selected_text(audio_text(audio_now))
+                            .show_ui(ui, |ui| {
+                                for c in [
+                                    AudioChoice::Auto,
+                                    AudioChoice::Pcm,
+                                    AudioChoice::Opus,
+                                    AudioChoice::Off,
+                                ] {
+                                    ui.selectable_value(&mut cfg.audio, c, audio_text(c));
                                 }
                             })
                             .response
@@ -1587,6 +1619,35 @@ fn tile_grid(ui: &mut Ui, pal: Palette, tiles: &[Tile]) {
             }
         });
         ui.add_space(CARD_GAP);
+    }
+}
+
+/// The negotiated PC audio of the session, for the status rows.
+fn audio_text(l: &FluentLanguageLoader, audio: Option<&AudioStream>) -> String {
+    let Some(a) = audio else {
+        return fl!(l, "audio-value-none");
+    };
+    let khz = text::decimal(l, format!("{}", f64::from(a.sample_rate) / 1000.0));
+    let layout = if a.channels == 1 {
+        fl!(l, "audio-mono")
+    } else {
+        fl!(l, "audio-stereo")
+    };
+    match a.codec {
+        AudioCodec::Pcm => {
+            let format = match a.format {
+                SampleFormat::S16 => fl!(l, "audio-format-s16"),
+                SampleFormat::F32 => fl!(l, "audio-format-f32"),
+            };
+            fl!(
+                l,
+                "audio-value-pcm",
+                format = format,
+                khz = khz,
+                layout = layout
+            )
+        }
+        AudioCodec::Opus => fl!(l, "audio-value-opus", khz = khz, layout = layout),
     }
 }
 
