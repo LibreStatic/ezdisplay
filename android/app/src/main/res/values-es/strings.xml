@@ -25,6 +25,7 @@
     <string name="trigger_click">Clic</string>
     <string name="trigger_double_click">Doble clic</string>
     <string name="trigger_hold">Mantener</string>
+    <string name="trigger_double_hold">Doble clic + mantener</string>
     <string name="trigger_hold_drag_contact">Mantener + arrastrar tocando</string>
     <string name="trigger_hold_drag_hover">Mantener + mover en el aire</string>
     <string name="action_raw">Botón directo</string>
@@ -34,19 +35,28 @@
     <string name="action_eraser">Goma</string>
     <string name="action_scroll">Desplazar</string>
     <string name="action_pc_zoom">Zoom en la PC</string>
+    <string name="action_step_zoom">Zoom por pasos</string>
+    <string name="action_wheel_zoom">Zoom con la rueda, por pasos</string>
+    <string name="action_pan">Mover el lienzo</string>
+    <string name="action_pan_zoom">Mover o hacer zoom</string>
     <string name="action_none">Nada</string>
     <string name="settings_zoom_factor">Nivel de zoom</string>
     <string name="settings_air_actions_on">Las acciones aéreas de Samsung están activadas. Pueden reaccionar a pulsaciones del botón que empiezan con la punta apoyada. Desactivalas en Ajustes → Funciones avanzadas → S Pen → Acciones aéreas.</string>
     <string name="settings_air_actions_unknown">Si el botón del lápiz dispara las acciones aéreas de Samsung, desactivalas en Ajustes → Funciones avanzadas → S Pen → Acciones aéreas.</string>
     <string name="profile_graphics_tablet">Tableta gráfica</string>
-    <string name="profile_graphics_tablet_desc">Mantener el botón aprieta un atajo de teclado (Ctrl+Espacio por defecto), como el botón de una tableta gráfica; clic = clic derecho; doble clic = zoom local.</string>
+    <string name="profile_graphics_tablet_desc">Mantener el botón aprieta un atajo de teclado (Ctrl+Espacio por defecto), como el botón de una tableta gráfica; clic = clic derecho; doble clic = zoom local. Doble clic + mantener aprieta un segundo atajo (Ctrl+Alt+Espacio por defecto).</string>
     <string name="action_keys">Atajo de teclado</string>
     <string name="keys_title_hold">Atajo al mantener</string>
+    <string name="keys_title_double_hold">Atajo al hacer doble clic y mantener</string>
+    <string name="keys_title_zoom_in">Atajo para acercar</string>
+    <string name="keys_title_zoom_out">Atajo para alejar</string>
+    <string name="keys_title_pan">Atajo para mover el lienzo</string>
     <string name="keys_title_click">Atajo al hacer clic</string>
     <string name="keys_title_double_click">Atajo al hacer doble clic</string>
     <string name="keys_preset_ctrl_space">Ctrl + Espacio</string>
     <string name="keys_preset_space">Espacio</string>
     <string name="keys_preset_alt_space">Alt + Espacio</string>
+    <string name="keys_preset_ctrl_alt_space">Ctrl + Alt + Espacio</string>
     <string name="keys_preset_ctrl_z">Ctrl + Z</string>
     <string name="keys_preset_ctrl_shift_z">Ctrl + Shift + Z</string>
     <string name="keys_mod_ctrl">Ctrl</string>

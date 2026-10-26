@@ -61,6 +61,8 @@ pub struct FakeClientConfig {
     pub stop_after_script: bool,
     /// Protocol minor to advertise in `Hello` instead of ours (to test older clients).
     pub proto_minor: Option<u16>,
+    /// Hardware keyboard state to report with `ClientKeyboard` (`None` = never set).
+    pub keyboard_attached: Option<bool>,
 }
 
 impl Default for FakeClientConfig {
@@ -81,6 +83,7 @@ impl Default for FakeClientConfig {
             input_script: None,
             stop_after_script: false,
             proto_minor: None,
+            keyboard_attached: None,
         }
     }
 }
@@ -421,6 +424,9 @@ pub async fn run_fake_client(
     core_cfg.proto_minor = cfg.proto_minor;
 
     let handle = ClientHandle::new();
+    if let Some(a) = cfg.keyboard_attached {
+        handle.set_keyboard_attached(a);
+    }
     let (start_script, script_task) = match cfg.input_script {
         Some(script) => {
             let (tx, rx) = tokio::sync::oneshot::channel();

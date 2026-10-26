@@ -3,8 +3,8 @@
 use crate::percentile;
 use ezd_link::MuxSender;
 use ezd_proto::{
-    ClientOptions, ClientStats, ClockSync, CursorShape, CursorState, InputStatus, Message,
-    StreamColor,
+    ClientKeyboard, ClientOptions, ClientStats, ClockSync, CursorShape, CursorState, InputStatus,
+    Message, StreamColor,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -80,10 +80,37 @@ pub(crate) struct Inner {
     snapshot: Mutex<ClientSnapshot>,
     /// Set while connected to a host that understands input.
     input_tx: Mutex<Option<MuxSender>>,
+    keyboard: Mutex<KeyboardState>,
+}
+
+/// Hardware keyboard state reported by the application.
+#[derive(Default)]
+struct KeyboardState {
+    /// Latest state set by the application (survives reconnects).
+    attached: bool,
+    /// Set while connected to a host that understands `ClientKeyboard`.
+    tx: Option<MuxSender>,
+    /// What the host was last told in this connection.
+    sent: Option<bool>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl KeyboardState {
+    fn send_if_changed(&mut self) {
+        let Some(tx) = &self.tx else { return };
+        if self.sent == Some(self.attached) {
+            return;
+        }
+        let msg = Message::ClientKeyboard(ClientKeyboard {
+            attached: self.attached,
+        });
+        if tx.send_control(msg).is_ok() {
+            self.sent = Some(self.attached);
+        }
+    }
 }
 
 /// Cheaply cloneable handle to a running (or about to run) client session.
@@ -117,6 +144,7 @@ impl ClientHandle {
             cursor: Mutex::new(Cursor::default()),
             snapshot: Mutex::new(ClientSnapshot::default()),
             input_tx: Mutex::new(None),
+            keyboard: Mutex::new(KeyboardState::default()),
         }))
     }
 
@@ -237,6 +265,25 @@ impl ClientHandle {
     /// when the host sent no `StreamColor`.
     pub fn stream_color(&self) -> StreamColor {
         lock(&self.0.snapshot).stream_color
+    }
+
+    /// Tells the host whether a hardware keyboard is attached (`ClientKeyboard`, protocol 0.6).
+    ///
+    /// The latest state is kept, also while not connected, and sent right after every handshake.
+    /// While connected, a call that does not change what the host knows sends nothing. Callable
+    /// from any thread; never blocks.
+    pub fn set_keyboard_attached(&self, attached: bool) {
+        let mut k = lock(&self.0.keyboard);
+        k.attached = attached;
+        k.send_if_changed();
+    }
+
+    /// Sets (or clears) the link used for `ClientKeyboard` and, when set, sends the current state.
+    pub(crate) fn set_keyboard_sender(&self, tx: Option<MuxSender>) {
+        let mut k = lock(&self.0.keyboard);
+        k.tx = tx;
+        k.sent = None;
+        k.send_if_changed();
     }
 
     pub(crate) fn set_input_sender(&self, tx: Option<MuxSender>) {
@@ -360,5 +407,49 @@ mod tests {
         assert!(h.send_input(&key()));
         assert!(h.send_input(&pen));
         assert_eq!(h.snapshot().inputs_sent, 3);
+    }
+
+    async fn read_keyboard_messages(
+        h: &ClientHandle,
+        act: impl FnOnce(&ClientHandle),
+    ) -> Vec<bool> {
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let (tx, _task) = ezd_link::mux::spawn_mux(Box::new(a), MuxOptions::default());
+        h.set_keyboard_sender(Some(tx));
+        act(h);
+        h.set_keyboard_sender(None);
+        let mut rx = ezd_link::mux::MuxReceiver::new(Box::new(b));
+        let mut got = Vec::new();
+        while let Ok(Ok(Some(m))) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await
+        {
+            if let Message::ClientKeyboard(k) = m {
+                got.push(k.attached);
+            }
+        }
+        got
+    }
+
+    #[tokio::test]
+    async fn keyboard_state_is_sent_on_connect_and_only_on_change() {
+        let h = ClientHandle::new();
+        h.set_keyboard_attached(true); // not connected: stored only
+        let got = read_keyboard_messages(&h, |h| {
+            h.set_keyboard_attached(true); // unchanged
+            h.set_keyboard_attached(false);
+            h.set_keyboard_attached(false); // unchanged
+            h.set_keyboard_attached(true);
+        })
+        .await;
+        assert_eq!(got, vec![true, false, true]);
+    }
+
+    #[tokio::test]
+    async fn keyboard_state_survives_reconnects() {
+        let h = ClientHandle::new();
+        h.set_keyboard_attached(true);
+        assert_eq!(read_keyboard_messages(&h, |_| {}).await, vec![true]);
+        // A new connection is told again even though the state did not change.
+        assert_eq!(read_keyboard_messages(&h, |_| {}).await, vec![true]);
     }
 }

@@ -554,8 +554,8 @@ pub fn hid_to_scancode(usage: u16) -> Option<(u16, bool)> {
     }
 }
 
-/// Tracks the keys that are down; duplicate presses, releases of keys that are not down and
-/// unmapped usages produce nothing.
+/// Tracks the keys that are down. A press of a key already down is an autorepeat and gives
+/// another key-down; releases of keys that are not down and unmapped usages produce nothing.
 #[derive(Debug, Default)]
 pub struct KeyTracker {
     /// `(usage, scancode, extended)` in press order.
@@ -575,8 +575,10 @@ impl KeyTracker {
         };
         let pos = self.down.iter().position(|d| d.0 == k.usage);
         match (k.pressed, pos) {
-            (true, None) => {
-                self.down.push((k.usage, scan, extended));
+            (true, found) => {
+                if found.is_none() {
+                    self.down.push((k.usage, scan, extended));
+                }
                 vec![MouseOrKey::Scan {
                     scan,
                     extended,
@@ -1345,7 +1347,11 @@ mod tests {
             vec![scan(0x1D, false, true)]
         );
         assert_eq!(t.key(&k(Key::LEFT_GUI, true)), vec![scan(0x5B, true, true)]);
-        assert!(t.key(&k(Key::LEFT_GUI, true)).is_empty(), "duplicate press");
+        assert_eq!(
+            t.key(&k(Key::LEFT_GUI, true)),
+            vec![scan(0x5B, true, true)],
+            "press of a key already down is an autorepeat"
+        );
         assert!(t.key(&k(0x03, true)).is_empty(), "unmapped");
         assert_eq!(t.key(&k(Key::SPACE, true)), vec![scan(0x39, false, true)]);
         assert_eq!(t.key(&k(Key::SPACE, false)), vec![scan(0x39, false, false)]);

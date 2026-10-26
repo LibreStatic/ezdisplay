@@ -16,6 +16,39 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 
 ## Components
 
+```mermaid
+flowchart TB
+  subgraph PC["PC"]
+    TRAY["ezd-tray<br/>tray app"] --> SVC["ezd-host-service<br/>host loop"]
+    CLI["ezd-host<br/>CLI"] --> SVC
+    SVC --> WIN["ezd-host-windows"]
+    SVC --> LIN["ezd-host-linux"]
+    WIN --> FF["ezd-ffmpeg"]
+    LIN --> FF
+    FF --> CORE["ezd-host-core<br/>session, traits"]
+    FAKE["ezd-fake-client<br/>desktop test client"] --> FF
+  end
+  subgraph TAB["Tablet"]
+    APP["android/<br/>Kotlin app (UI, SurfaceView)"] -- JNI --> AND["ezd-android<br/>native lib, AMediaCodec"]
+  end
+  subgraph SHARED["Shared"]
+    CLC["ezd-client-core<br/>client session"]
+    INP["ezd-input<br/>motion events → input messages"]
+    LINK["ezd-link<br/>links, mux, video credit"]
+    PROTO["ezd-proto<br/>wire protocol, no I/O"]
+    CLC --> LINK
+    LINK --> PROTO
+    INP --> PROTO
+  end
+  CORE --> LINK
+  FAKE --> CLC
+  AND --> CLC
+  AND --> INP
+```
+
+Arrows point from a crate to the crates it uses; dependencies already implied by another arrow are
+left out. The platform backends are only built on their own OS.
+
 | Crate / dir | Role |
 |---|---|
 | `crates/ezd-proto` | Wire protocol: framing, messages, capabilities negotiation, clock sync. Pure, no I/O. |
@@ -37,6 +70,31 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 | `tools/input-test` | Web page and logger to check injected pen, touch, buttons and scroll as text. |
 
 ## Platform notes
+
+The video path on each host, from the virtual output to the tablet's screen. Every box up to the
+encoder runs on the same GPU:
+
+```mermaid
+flowchart TB
+  subgraph W["Windows"]
+    direction TB
+    VDD["Virtual Display Driver<br/>(IddCx, render adapter set)"] --> DD["Desktop Duplication<br/>D3D11 device on the same adapter"]
+    DD --> WENC["FFmpeg d3d11va frames<br/>h264_nvenc / h264_qsv / h264_amf"]
+  end
+  subgraph L["Linux (KDE Plasma 6)"]
+    direction TB
+    KVO["KWin virtual output<br/>(portal VIRTUAL, custom mode)"] --> PW["PipeWire DMA-BUF"]
+    PW -- "Intel / AMD" --> VA["VAAPI encode"]
+    PW -- "NVIDIA" --> VK["Vulkan import<br/>(dedicated allocation)"]
+    VK --> SV["scale_vulkan → NV12"] --> CU["copy to CUDA,<br/>same GPU"] --> NV["NVENC"]
+    PW -. "no DMA-BUF" .-> SHM["shared-memory fallback"]
+  end
+  WENC --> MUX["ezd-link mux<br/>(1 frame in flight)"]
+  VA --> MUX
+  NV --> MUX
+  SHM -.-> MUX
+  MUX -- "ADB over USB" --> DEC["Tablet: AMediaCodec<br/>async decode → SurfaceView"]
+```
 
 ### Windows
 

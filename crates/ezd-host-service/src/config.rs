@@ -191,6 +191,9 @@ pub struct ServiceConfig {
     /// whatever `link` says.
     #[cfg(feature = "wifi")]
     pub wifi: Option<WifiConfig>,
+    /// Milliseconds the virtual monitor stays after the tablet sleeps, turns off or disconnects
+    /// (Windows; on Linux it goes with the session).
+    pub detach_grace_ms: u32,
 }
 
 impl Default for ServiceConfig {
@@ -216,6 +219,7 @@ impl Default for ServiceConfig {
             hdr: HdrChoice::default(),
             #[cfg(feature = "wifi")]
             wifi: None,
+            detach_grace_ms: ezd_host_core::DEFAULT_DETACH_GRACE.as_millis() as u32,
         }
     }
 }
@@ -251,6 +255,7 @@ impl ServiceConfig {
             adapter: self.adapter.clone(),
             prefer_dgpu: self.prefer_dgpu,
             output_name: self.output_name.clone(),
+            detach_grace: Duration::from_millis(self.detach_grace_ms.into()),
         }
     }
 
@@ -343,6 +348,7 @@ mod tests {
             adapter: Some("card1".into()),
             prefer_dgpu: true,
             output_name: Some("DP-1".into()),
+            detach_grace_ms: 5000,
             ..ServiceConfig::default()
         };
         assert_eq!(
@@ -351,6 +357,7 @@ mod tests {
                 adapter: Some("card1".into()),
                 prefer_dgpu: true,
                 output_name: Some("DP-1".into()),
+                detach_grace: Duration::from_secs(5),
             }
         );
     }

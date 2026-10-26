@@ -4,6 +4,30 @@ The tablet sends pen, touch, button, scroll and key events; the host injects the
 `ezd-host run` does this by default; `--no-input` turns it off. Without a working backend the
 stream still runs and the tablet is told why (`InputStatus.note`).
 
+```mermaid
+flowchart LR
+  subgraph TAB["Tablet (ezd-input)"]
+    EV["S Pen and finger<br/>motion events"] --> PALM["palm rejection,<br/>local zoom"]
+    PALM --> GES["pen button gestures<br/>(below)"]
+  end
+  GES -- "Input channel: Pen, Touch,<br/>PointerButton, Scroll, Key" --> HOST["Host input thread<br/>keys settle 8 ms before pen events"]
+  subgraph LNX["Linux: uinput devices"]
+    LT["ezdisplay touch / pen<br/>mapped to the virtual output"]
+    LP["ezdisplay pointer<br/>over the whole workspace"]
+    LK["ezdisplay keyboard<br/>global"]
+  end
+  subgraph WIN["Windows"]
+    WP["synthetic PT_PEN / PT_TOUCH<br/>on the virtual display"]
+    WS["SendInput<br/>buttons, wheel, scancodes"]
+  end
+  HOST --> LT
+  HOST --> LP
+  HOST --> LK
+  HOST --> WP
+  HOST --> WS
+  HOST -. "InputStatus (caps, note)" .-> TAB
+```
+
 ## Host flags
 
 - `--no-input`: do not inject anything.
@@ -22,12 +46,114 @@ Like a graphics-tablet driver, the tablet can send a key combination from the S 
   like on a graphics tablet. A quick click in the air is a right click and a double click toggles the local
   zoom. Ctrl + Space is a common drag-zoom shortcut in drawing apps; the combination can be changed in
   the app.
+  Double click + hold (a second press within the double-click time, kept down) keeps a second
+  combination pressed, Ctrl + Alt + Space by default, a common zoom-out shortcut in drawing apps. A quick
+  double click keeps its action (local zoom), now fired when the button is released.
 - **Custom profile.** Click, double click and hold can each tap or hold their own combination.
-  With hold = shortcut, the two drag triggers are ignored.
+  With hold = shortcut, the two drag triggers are ignored. Double click + hold (off by default) can hold
+  its own combination or switch to the eraser; it only applies when click and double click are both set.
 
-The hold is resolved at the first of: the hold time, the tip touching, or the pen moving in hover.
+The hold, and the second press of a double click + hold, are resolved at the first of: the hold time,
+the tip touching, or the pen moving in hover (a release before that is a plain click or double click).
 The keys are released when the button is released, when the pen leaves range and when the session
 ends, so a key cannot stay stuck on the PC.
+
+How a button press resolves:
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> Idle
+  Idle --> Pending: press in the air
+  Idle --> Held: press while touching
+  Pending --> ClickFired: release
+  Pending --> Waiting: release, double click set
+  Pending --> Held: hold time, touch or move
+  Waiting --> ClickFired: time out, touch or out of range
+  Waiting --> Held: second press, double click fires
+  Waiting --> DoublePending: second press, double click + hold set
+  DoublePending --> DoubleFired: release
+  DoublePending --> Held: hold time, touch or move
+  ClickFired --> Idle
+  DoubleFired --> Idle
+  Held --> Idle: release
+  ClickFired: Click fires
+  DoubleFired: Double click fires
+  Held: Held (button down)
+  note right of Held
+    Runs the hold, a drag (scroll, zoom, pan),
+    a key combination or the raw barrel.
+    Keys are released with the button,
+    pan keys at the lift.
+  end note
+```
+
+When a drag is configured, the hold time alone does not fire the hold: the press waits for a drag or the
+release. With the view locally zoomed, moving in the air with the button held pans the view.
+
+### Zoom in steps
+
+Some drawing apps have no wheel or continuous zoom: their zoom is a shortcut plus a click (for example Ctrl + Space
+and a click zooms in, Ctrl + Alt + Space and a click zooms out). In the Custom profile, set "Zoom in steps" on
+"Hold + drag touching" and/or "Hold + move in the air": hold the button, then drag up to zoom in or down to zoom
+out. For every 80 view pixels of vertical travel (horizontal travel is ignored) the tablet taps the zoom shortcut
+and clicks the left button, then releases the shortcut, all at the point where the drag started, because these
+apps zoom around the click. Steps are at least 60 ms apart and at most three are queued, so a long fast drag
+stays bounded. While the drag lasts the tip touch reaches the PC as hover, so nothing is drawn. The two shortcuts
+(Ctrl + Space and Ctrl + Alt + Space by default) are edited in the app; with one of them empty, steps in that
+direction do nothing. If hold is set to a shortcut, the drags are ignored as usual.
+
+### Zoom with the wheel, in steps
+
+Some drawing apps zoom one level per mouse wheel message, whatever its size, so the continuous scroll zoom is
+far too fast. In the Custom profile, set "Zoom with the wheel, in steps" on "Hold + drag touching" and/or
+"Hold + move in the air": hold the button, then drag up to zoom in or down to zoom out. For every 80 view pixels
+of vertical travel (the same step distance, 60 ms gap and queue of three as "Zoom in steps") the tablet sends
+exactly one wheel notch, up or down, at the point where the drag started. No keys or clicks are sent. While the
+drag lasts the tip touch reaches the PC as hover.
+
+### Pan the canvas
+
+Many drawing apps pan the canvas with Space and a drag. In the Custom profile, set "Pan the canvas" on
+"Hold + drag touching" (it is not available in the air): hold the button and touch with the tip. The pan
+shortcut (Space by default, edited in the app) is pressed before the contact reaches the PC, then the pen is
+forwarded as usual, so the app sees the shortcut plus a drag. The shortcut is released after the tip lifts; if
+the button is released first, the shortcut stays down until the lift. It is also released when the pen leaves
+range, on cancel and when the session ends. The pan starts at the touch, without waiting for the drag
+distance. If hold is set to a shortcut, the drags are ignored as usual.
+
+### Pan or zoom with one drag
+
+"Pan or zoom" on "Hold + drag touching" (Custom profile, not available in the air) works like the pan/zoom
+button of a graphics-tablet driver: hold the button, touch and drag. The touch is first reported as hover. Once
+the pen has moved farther than the movement tolerance from the touch point, the direction decides, once, until
+the lift: a mostly vertical drag (within about 27 degrees of vertical) zooms like "Zoom with the wheel, in
+steps" (the travel from the touch point counts, so the first step is not delayed), and any other drag pans like
+"Pan the canvas": the pan shortcut is pressed, the contact starts at the point where the tip first touched,
+and the shortcut is released after the lift. A touch that never leaves the tolerance does nothing. With an
+empty pan shortcut the pan branch just forwards the contact. If the button is released mid-touch the mode
+stays until the lift (the pan shortcut stays down, a zoom just stops, and an undecided touch stays hover).
+
+```mermaid
+flowchart TD
+  T["Button held, tip touches"] --> H["touch reported as hover"]
+  H --> M{"moved past the<br/>movement tolerance?"}
+  M -- "no, lifted" --> N["nothing sent"]
+  M -- yes --> D{"|dy| ≥ 2·|dx|<br/>(within ~27° of vertical)"}
+  D -- "yes" --> Z["Zoom: one wheel notch per 80 px,<br/>up = in, down = out,<br/>touch stays hover"]
+  D -- "no" --> P["Pan: press the pan shortcut,<br/>contact starts at the first touch point"]
+  Z --> L["lift"]
+  P --> L
+  L --> R["pan shortcut released,<br/>next touch decides again"]
+```
+
+### Button pressed while touching
+
+For "Pan the canvas" and "Pan or zoom" the button may also be pressed while the tip already touches (for
+example while drawing). The stroke ends with a lift sample, then the drag goes on as if the tip had just
+touched with the button held: Pan presses its shortcut and continues the contact from the current point, Pan or
+zoom starts deciding from the current point. The real lift later sends nothing extra. For every other
+configuration the button pressed while touching is still forwarded as is. A shortcut hold still wins.
 
 Keys are physical positions (USB HID usages of a US keyboard); the PC applies its own layout, as
 with a real USB keyboard. The host announces the `KEYS` capability; an older host does not, and

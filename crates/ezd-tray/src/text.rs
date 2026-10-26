@@ -29,6 +29,11 @@ pub fn hz(refresh_mhz: u32) -> String {
     }
 }
 
+/// Seconds without trailing zeros: 2000 -> "2", 1500 -> "1.5".
+pub fn seconds(ms: u32) -> String {
+    hz(ms)
+}
+
 /// The one-line state: "Streaming to Tab S9 · 2960×1848 at 120 Hz", "Waiting for the tablet", ...
 pub fn status_line(l: &FluentLanguageLoader, life: Lifecycle, status: &HostStatus) -> String {
     if matches!(life, Lifecycle::Stopping { .. }) {

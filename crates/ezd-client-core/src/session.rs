@@ -218,6 +218,7 @@ pub async fn run_client<H: ClientHandler>(
         my_hello.proto_minor = minor;
     }
     let my_minor_supports_hdr = my_hello.supports_hdr();
+    let my_minor_supports_keyboard = my_hello.supports_keyboard();
     tx.send_control(Message::Hello(my_hello))?;
     tx.send_control(Message::ClientCaps(cfg.caps.clone()))?;
     let hello = wait_for(&mut rx, &tx, "Hello", wait, |m| match m {
@@ -267,6 +268,9 @@ pub async fn run_client<H: ClientHandler>(
     tx.send_control(Message::ConfigAck)?;
     if hello.supports_input() {
         handle.set_input_sender(Some(tx.clone()));
+    }
+    if hello.supports_keyboard() && my_minor_supports_keyboard {
+        handle.set_keyboard_sender(Some(tx.clone()));
     }
 
     // Streaming.
@@ -332,6 +336,7 @@ pub async fn run_client<H: ClientHandler>(
     };
 
     handle.set_input_sender(None);
+    handle.set_keyboard_sender(None);
     let outcome = ClientOutcome {
         stream,
         color,

@@ -1,43 +1,94 @@
+<div align="center">
+
+<img src="packaging/linux/com.librestatic.ezdisplay.svg" width="112" alt="ezdisplay icon">
+
 # ezdisplay
 
-Use an Android tablet as an extended monitor for your PC over USB, with very low latency.
+**Turn your Android tablet into a real extended monitor and pen display for your PC, over a USB cable, with very low latency.**
 
-The host (Linux and Windows, Rust) renders a virtual display and encodes it on the same GPU
-without copies; the tablet (Kotlin UI + Rust native library) decodes and shows it. The mouse
-cursor is sent separately and drawn locally on the tablet, so pointer movement never waits
-for a video frame.
+[![CI](https://github.com/LibreStatic/ezdisplay/actions/workflows/ci.yml/badge.svg)](https://github.com/LibreStatic/ezdisplay/actions/workflows/ci.yml)
+[![Android](https://github.com/LibreStatic/ezdisplay/actions/workflows/android.yml/badge.svg)](https://github.com/LibreStatic/ezdisplay/actions/workflows/android.yml)
+[![Linux packages](https://github.com/LibreStatic/ezdisplay/actions/workflows/linux-packages.yml/badge.svg)](https://github.com/LibreStatic/ezdisplay/actions/workflows/linux-packages.yml)
+[![Release](https://img.shields.io/github/v/release/LibreStatic/ezdisplay?include_prereleases&label=release)](https://github.com/LibreStatic/ezdisplay/releases)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+
+Windows · KDE Plasma 6 (Wayland) · Android tablets · Rust + Kotlin
+
+[Download](https://github.com/LibreStatic/ezdisplay/releases) ·
+[Install](#install) ·
+[How it works](#how-it-works) ·
+[Architecture](docs/architecture.md) ·
+[Protocol](docs/protocol.md)
+
+</div>
+
+---
+
+ezdisplay creates a **real virtual monitor** on your PC (not a mirror), streams it to the tablet at
+the tablet's **native resolution and refresh rate (up to 120 Hz)**, and sends touch and pen input
+back as real touch-screen and stylus devices. It is free, open source, has no account, no cloud
+and no telemetry, and everything travels through the cable.
+
+## Why ezdisplay?
+
+- **A real second monitor.** The tablet shows up in your display settings like any other screen;
+  drag windows onto it and arrange it next to your other monitors.
+- **The cursor never lags.** The pointer travels on its own channel and is drawn on the tablet
+  itself, so moving the mouse never waits for a video frame.
+- **Zero-copy, same-GPU pipeline.** The virtual display is rendered, captured and encoded on one
+  GPU with no CPU or cross-GPU copies. On hybrid laptops ezdisplay picks the GPU that avoids
+  shuttling frames across PCIe, and tells you when the system disagrees.
+- **Frames are never queued.** The link carries at most one video frame in flight; when it is busy,
+  the host waits and encodes the newest picture instead of piling up stale ones.
+- **A pen display, too.** Pressure, tilt and hover reach drawing apps such as Krita as a real
+  stylus, with palm rejection and configurable S Pen button gestures.
+- **Measured, not guessed.** About **26 ms median from host capture to decoded frame** at
+  2960×1848 / 120 Hz over USB 2.0 on the development tablet
+  ([method and numbers](docs/phase0-findings.md)). The design target is ~30 ms glass to glass.
+- **Plug in and it works.** The tray app finds the tablet over ADB, opens the app on it and starts
+  streaming. The Windows installer sets up the virtual display driver for you.
+- **Speaks your language.** Both apps are fully localized into English, Spanish, French,
+  Portuguese, Italian and German.
 
 ## Status
 
+ezdisplay is in **alpha** (see the [releases](https://github.com/LibreStatic/ezdisplay/releases); every change merged to `main` is published as a pre-release).
 Working today, over USB with ADB:
 
-- extended display from KDE Plasma (Wayland) and Windows, at the tablet's native resolution and
-  refresh rate, with the cursor drawn locally;
-- touch, pen pressure, tilt and hover, and configurable S Pen button gestures (tested on KDE; the
-  Windows input path still needs testing on hardware);
-- the PC tray app with a settings and statistics window, and a Windows installer that sets up the
-  virtual display driver.
+| | Windows | KDE Plasma 6 (Wayland) |
+| --- | :---: | :---: |
+| Extended display at native resolution and refresh rate | ✅ | ✅ |
+| Locally drawn cursor | ✅ | ✅ |
+| Zero-copy hardware encode | ✅ | ✅ |
+| Touch, pen pressure, tilt and hover | ✅ | ✅ |
+| Tray app with settings and live statistics | ✅ | ✅ |
+| Installer / packages | ✅ `.exe` | ✅ AppImage, `.deb`, Arch |
 
-Not yet: the Wi-Fi transport, audio, GNOME and wlroots backends.
+**Not yet:** audio, GNOME and wlroots backends, X11.
 
-| Crate | Purpose |
-| --- | --- |
-| `ezd-proto` | Wire framing, messages, capability negotiation, clock sync. Pure, builds for Android. |
-| `ezd-link` | `Link` byte streams (TCP, in-memory), ADB helper, prioritized mux. |
-| `ezd-host-core` | `VideoSource` / `VirtualDisplay` traits, host session, synthetic test frames. |
-| `ezd-host-service` | The host loop as a library, with live status for the CLI and the tray app. |
-| `ezd-host-linux` | KDE virtual output, PipeWire capture, VAAPI/NVENC encode, uinput input. |
-| `ezd-host-windows` | GPU policy, Virtual Display Driver, Desktop Duplication, D3D11 encode, input injection. |
-| `ezd-ffmpeg` | Safe FFmpeg wrapper: low-latency `Encoder`, `Decoder`, `SwVideoSource`, encoder probing. |
-| `ezd-host` | The host CLI: `run`, `diag` and `vdd`. |
-| `ezd-tray` | The PC app (`ezdisplay`): tray icon and menu, settings and statistics window. |
-| `ezd-client-core` | Client session shared by the Android library and the fake client. |
-| `ezd-input` | Client input engine: palm rejection, S Pen gestures, local zoom. |
-| `ezd-android` | Android native library (JNI, AMediaCodec); the app itself is in `android/`. |
-| `ezd-fake-client` | Desktop stand-in for the Android client (decodes, measures latency). |
+## How it works
 
-The protocol is specified in [docs/protocol.md](docs/protocol.md) and the design in
-[docs/architecture.md](docs/architecture.md).
+```mermaid
+flowchart LR
+  subgraph PC["PC (Rust)"]
+    VD["Virtual display<br/>(IddCx driver / KWin virtual output)"] --> CAP["Capture<br/>(Desktop Duplication / PipeWire DMA-BUF)"]
+    CAP --> ENC["Hardware encode on the same GPU<br/>(D3D11 / VAAPI / Vulkan → NVENC)"]
+    CUR["Cursor shape + position"]
+    INJ["Input injection<br/>(synthetic pointer / uinput)"]
+  end
+  subgraph TAB["Android tablet (Kotlin + Rust)"]
+    DEC["Low-latency MediaCodec decode<br/>→ SurfaceView"]
+    DRAW["Cursor drawn locally"]
+    IN["Touch, pen, palm rejection,<br/>S Pen gestures"]
+  end
+  ENC -- "video (1 frame in flight)" --> DEC
+  CUR -- "own channel" --> DRAW
+  IN -- "input events" --> INJ
+```
+
+All channels share one prioritized, multiplexed link (ADB over USB today), so input and cursor
+updates are never stuck behind a video frame. Details: [docs/architecture.md](docs/architecture.md),
+wire format: [docs/protocol.md](docs/protocol.md), input path: [docs/input.md](docs/input.md).
 
 ## USB without developer mode
 
@@ -58,24 +109,33 @@ which does not need developer mode or USB debugging.
 
 ## Install
 
-**Tablet.** Install the APK (artifact `ezdisplay-android-apks` of the *Android* workflow; there are
-no releases yet) and turn on USB debugging.
+Everything is on the [Releases page](https://github.com/LibreStatic/ezdisplay/releases)
+(checksums in `SHA256SUMS`). Development builds are also attached as artifacts to the
+*CI*, *Android* and *Linux packages* workflows.
 
-**Windows.** Run `ezdisplay-setup-<version>-x64.exe` (artifact `ezdisplay-windows-installer` of the
-*CI* workflow). It downloads FFmpeg, installs the virtual display driver (Windows asks once
-whether to install the device software) and starts ezdisplay in the notification area. Connect the
-tablet over USB: the app opens on the tablet and streaming starts. The installer is not signed yet,
-so SmartScreen asks for confirmation (*More info*, *Run anyway*) and Smart App Control blocks it.
-See [docs/windows-testing.md](docs/windows-testing.md) and
-[packaging/windows/README.md](packaging/windows/README.md).
+### 1. Tablet
 
-**Linux (KDE Plasma 6, Wayland).** Plasma 6 on Wayland is required; X11 and other desktops are not
-supported yet. The packages are in the artifacts of the *Linux packages* workflow and, once there
-is a release, in the GitHub Release (see [docs/releasing.md](docs/releasing.md)). Pick one:
+Install `ezdisplay-<version>-full-debug.apk` and turn on **USB debugging** in the developer
+options.
+
+### 2. PC: Windows
+
+Run `ezdisplay-setup-<version>-x64.exe`. It downloads FFmpeg, installs the virtual display driver
+(Windows asks once whether to install the device software) and starts ezdisplay in the
+notification area. Connect the tablet over USB: the app opens on the tablet and streaming starts.
+
+> [!NOTE]
+> The installer is not signed yet, so SmartScreen asks for confirmation (*More info*, *Run anyway*)
+> and Smart App Control blocks it. See [docs/windows-testing.md](docs/windows-testing.md) and
+> [packaging/windows/README.md](packaging/windows/README.md).
+
+### 2. PC: Linux (KDE Plasma 6, Wayland)
+
+Plasma 6 on Wayland is required; X11 and other desktops are not supported yet. Pick one:
 
 - **Arch Linux**: `sudo pacman -U ezdisplay-*.pkg.tar.zst`.
 - **Debian and Ubuntu**: `sudo apt install ./ezdisplay_*.deb`, using the file for your release:
-  `~ubuntu24.04` (Ubuntu 24.04, KDE neon), `~debian13` (Debian 13 "trixie") or `~ubuntu26.04`
+  `ubuntu24.04` (Ubuntu 24.04, KDE neon), `debian13` (Debian 13 "trixie") or `ubuntu26.04`
   (Ubuntu 26.04). Kubuntu 24.04 ships Plasma 5.27 and is not supported; KDE neon is.
 - **Any other distro (AppImage)**: any x86_64 distro with glibc 2.39 or newer and Plasma 6
   (KDE neon, Debian 13, Fedora 40+, Arch, openSUSE Tumbleweed, Kubuntu 24.10+).
@@ -85,6 +145,9 @@ is a release, in the GitHub Release (see [docs/releasing.md](docs/releasing.md))
   ./ezdisplay-*.AppImage
   ```
 
+  <details>
+  <summary>AppImage notes</summary>
+
   It needs `fusermount3` (fuse3) to mount itself; without it run
   `./ezdisplay-*.AppImage --appimage-extract-and-run`. FFmpeg and `adb` are bundled; `libva`,
   `libdrm`, Vulkan and PipeWire come from the system. On first run the tray offers *Enable input*,
@@ -93,13 +156,18 @@ is a release, in the GitHub Release (see [docs/releasing.md](docs/releasing.md))
   again. For menu integration use Gear Lever or AppImageLauncher. Diagnostics:
   `./ezdisplay-*.AppImage host diag`.
 
+  </details>
+
 The packages install `ezdisplay` (the tray app) and `ezd-host`, the udev rule, the desktop entry and
 the icon, and pull in `adb`. Start *ezdisplay* from the application launcher: it lives in the
 system tray, and *Start with the session* in its menu adds it to autostart. On GNOME the tray needs
 the AppIndicator extension. How the packages are built:
 [packaging/linux/README.md](packaging/linux/README.md).
 
-**Linux, from source.** Build it (below), then:
+<details>
+<summary><b>Linux, from source</b></summary>
+
+Build it (see [Building](#building)), then:
 
 1. For touch and pen input, install the udev rule for `/dev/uinput` once (see
    [docs/input.md](docs/input.md)):
@@ -124,6 +192,8 @@ the AppIndicator extension. How the packages are built:
 
 `adb` comes from the Android SDK platform-tools (`adb` on the `PATH`).
 
+</details>
+
 ## Building
 
 Requirements: Rust (the pinned toolchain installs itself through `rustup`), FFmpeg 7 or 8
@@ -135,7 +205,8 @@ cargo build --workspace --release
 cargo test --workspace
 ```
 
-The tray app (`ezd-tray`) needs Rust 1.95 or later; the other crates build with 1.85.
+The tray app (`ezd-tray`) needs Rust 1.95 or later; the other crates build with 1.85. The Android
+app builds with Gradle from [`android/`](android/).
 
 Cross-checks of the platform-independent crates:
 
@@ -144,6 +215,24 @@ cargo check --target x86_64-pc-windows-msvc --no-default-features \
   -p ezd-proto -p ezd-link -p ezd-host-core -p ezd-host-windows -p ezd-host-service -p ezd-host -p ezd-tray
 cargo check --target aarch64-linux-android -p ezd-proto -p ezd-link
 ```
+
+### Workspace
+
+| Crate | Purpose |
+| --- | --- |
+| `ezd-proto` | Wire framing, messages, capability negotiation, clock sync. Pure, builds for Android. |
+| `ezd-link` | `Link` byte streams (TCP, in-memory), ADB helper, prioritized mux. |
+| `ezd-host-core` | `VideoSource` / `VirtualDisplay` traits, host session, synthetic test frames. |
+| `ezd-host-service` | The host loop as a library, with live status for the CLI and the tray app. |
+| `ezd-host-linux` | KDE virtual output, PipeWire capture, VAAPI/NVENC encode, uinput input. |
+| `ezd-host-windows` | GPU policy, Virtual Display Driver, Desktop Duplication, D3D11 encode, input injection. |
+| `ezd-ffmpeg` | Safe FFmpeg wrapper: low-latency `Encoder`, `Decoder`, `SwVideoSource`, encoder probing. |
+| `ezd-host` | The host CLI: `run`, `diag` and `vdd`. |
+| `ezd-tray` | The PC app (`ezdisplay`): tray icon and menu, settings and statistics window. |
+| `ezd-client-core` | Client session shared by the Android library and the fake client. |
+| `ezd-input` | Client input engine: palm rejection, S Pen gestures, local zoom. |
+| `ezd-android` | Android native library (JNI, AMediaCodec); the app itself is in `android/`. |
+| `ezd-fake-client` | Desktop stand-in for the Android client (decodes, measures latency). |
 
 ## Trying it without a tablet (fake loopback)
 
@@ -228,6 +317,35 @@ cargo run --release -p ezd-host -- diag | python3 -m json.tool
 
 prints OS, desktop session, GPUs, which encoders actually work on this machine (software,
 NVENC, VAAPI per render node, QSV, AMF) and attached adb devices. Failures are reported as data.
+For glass-to-glass measurements with a slow-motion camera there is a web page in
+[`tools/latency`](tools/latency), and [`tools/input-test`](tools/input-test) checks injected pen
+and touch input.
+
+## Related projects
+
+ezdisplay stands on the shoulders of a lively ecosystem. If it does not fit your setup, one of
+these might:
+
+- [Weylus](https://github.com/H-M-H/Weylus): use any tablet with a browser as a touch screen or
+  graphics tablet for your computer.
+- [Deskreen](https://github.com/pavlobu/deskreen): turn any device with a web browser into a
+  secondary screen, over Wi-Fi with WebRTC.
+- [scrcpy](https://github.com/Genymobile/scrcpy): the opposite direction, mirroring and
+  controlling an Android device from the PC.
+- [VirtScreen](https://github.com/kbumsik/VirtScreen) and
+  [linux-extend-screen](https://github.com/santiagofdezg/linux-extend-screen): a second monitor on
+  Linux through VNC.
+- [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver): the signed
+  IddCx driver ezdisplay uses for the virtual monitor on Windows.
+
+What sets ezdisplay apart is the combination: a native client instead of a browser or VNC, a
+real virtual monitor on both Windows and Wayland, a same-GPU zero-copy pipeline, a locally drawn
+cursor and a full pen path.
+
+## Contributing
+
+Issues and pull requests are welcome. Read [AGENTS.md](AGENTS.md) first: it covers the project's
+language, localization and naming rules. Release steps are in [docs/releasing.md](docs/releasing.md).
 
 ## License
 

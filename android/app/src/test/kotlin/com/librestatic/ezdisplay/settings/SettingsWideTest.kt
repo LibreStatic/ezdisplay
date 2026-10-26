@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.R
 import org.junit.Assert.assertEquals
@@ -26,6 +27,7 @@ class SettingsWideTest : SettingsUiTestBase() {
         tag("section_Pen").assertDoesNotExist()
         listOf("rail_Pen", "rail_Zoom", "rail_Touch").forEach { tag(it).assertDoesNotExist() }
         rule.onNode(inPane(str(R.string.keys_title_hold))).assertExists()
+        tag("shortcut_keys_double_hold").assertExists()
         rule.onNodeWithText(str(R.string.profile_desktop)).assertExists()
         rule.onNodeWithText(str(R.string.settings_air_actions_unknown)).assertExists()
         tag("double_click_slider").assertExists()
@@ -65,6 +67,36 @@ class SettingsWideTest : SettingsUiTestBase() {
         tag("shortcut_keys_hold").performClick()
         rule.onNode(inPane(str(R.string.keys_title_hold))).assertExists()
         rule.onNode(inPane(str(R.string.keys_title_click))).assertDoesNotExist()
+    }
+
+    @Test fun customStepZoomShowsTheZoomShortcuts() {
+        launch(AirActions.On) {
+            putString(InputPrefs.PROFILE, "custom")
+            putString(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "step_zoom")
+            putString(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "step_zoom")
+        }
+        tag("shortcut_keys_zoom_in").assertExists()
+        tag("shortcut_keys_zoom_out").performScrollTo().performClick()
+        rule.onNode(inPane(str(R.string.keys_title_zoom_out))).assertExists()
+    }
+
+    @Test fun customPanShowsThePanShortcut() {
+        launch(AirActions.On) {
+            putString(InputPrefs.PROFILE, "custom")
+            putString(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "pan_zoom")
+            putString(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "wheel_zoom")
+        }
+        tag("shortcut_keys_zoom_in").assertDoesNotExist()
+        tag("shortcut_keys_pan").performScrollTo().performClick()
+        rule.onNode(inPane(str(R.string.keys_title_pan))).assertExists()
+    }
+
+    @Test fun graphicsTabletPaneFollowsTappedShortcut() {
+        launch { putString(InputPrefs.PROFILE, "graphics_tablet") }
+        rule.onNode(inPane(str(R.string.keys_title_hold))).assertExists()
+        tag("shortcut_keys_double_hold").performClick()
+        rule.onNode(inPane(str(R.string.keys_title_double_hold))).assertExists()
+        rule.onNode(inPane(str(R.string.keys_title_hold))).assertDoesNotExist()
     }
 
     @Test fun customWithoutKeysHasNoPane() {

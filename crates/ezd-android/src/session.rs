@@ -311,6 +311,11 @@ impl Session {
         self.handle.send_input(msg)
     }
 
+    /// Reports the hardware keyboard state to the host (kept for the whole session).
+    pub fn set_keyboard_attached(&self, attached: bool) {
+        self.handle.set_keyboard_attached(attached);
+    }
+
     /// Latest cursor state.
     pub fn cursor(&self) -> Option<CursorSnapshot> {
         self.handle.cursor()
