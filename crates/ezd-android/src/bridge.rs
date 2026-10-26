@@ -6,14 +6,16 @@ use crate::caps::parse_caps;
 use crate::decoder::SendWindow;
 use crate::input::{mono_to_now_us, unpack_motion};
 use crate::keys::keycode_to_hid;
-use crate::session::Session;
+use crate::session::{Session, Target};
+use crate::wifi;
 use ezd_client_core::now_us;
 use ezd_input::{InputConfig, InputEngine, ViewTransform};
+use ezd_link::identity::parse_fingerprint;
 use ezd_proto::{Key, Message};
 use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteArray, JClass, JFloatArray, JIntArray, JLongArray, JObject, JString};
-use jni::sys::jint;
+use jni::sys::{jboolean, jint};
 use ndk::native_window::NativeWindow;
 use std::cell::RefCell;
 use std::sync::Mutex;
@@ -119,6 +121,18 @@ fn window_from(env: &jni::Env<'_>, surface: &JObject<'_>) -> Option<SendWindow> 
         .map(SendWindow)
 }
 
+/// Replaces the running session (if any) with one connecting to `target`.
+fn start_session(window: Option<SendWindow>, target: Target, caps: crate::caps::ParsedCaps) {
+    let mut guard = session();
+    if let Some(old) = guard.take() {
+        old.stop();
+    }
+    log::info!("start {target:?} surface={}", window.is_some());
+    let s = Session::start(window, target, caps);
+    s.set_keyboard_attached(KEYBOARD_ATTACHED.load(Ordering::Relaxed));
+    *guard = Some(s);
+}
+
 /// `external fun start(surface: Surface?, host: String, port: Int, capsJson: String): String?`
 /// Returns null on success or an error message.
 #[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
@@ -143,15 +157,121 @@ pub extern "system" fn start<'local>(
             Err(e) => return err(e),
         };
         let window = window_from(env, &surface);
-        let mut guard = session();
-        if let Some(old) = guard.take() {
-            old.stop();
-        }
-        log::info!("start {host}:{port} surface={}", window.is_some());
-        let s = Session::start(window, host, port, caps);
-        s.set_keyboard_attached(KEYBOARD_ATTACHED.load(Ordering::Relaxed));
-        *guard = Some(s);
+        start_session(window, Target::Tcp { host, port }, caps);
         Ok(JString::null())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `external fun startWifi(surface: Surface?, addr: String, fingerprintHex: String,
+/// stateDir: String, capsJson: String): String?`
+/// Connects over Wi-Fi to the paired host with this certificate fingerprint. `addr` is
+/// `ip:port` (a bare IP uses the default port). Returns null on success or an error message.
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
+pub extern "system" fn startWifi<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    surface: JObject<'local>,
+    addr: JString<'local>,
+    fingerprint_hex: JString<'local>,
+    state_dir: JString<'local>,
+    caps_json: JString<'local>,
+) -> JString<'local> {
+    init_logging();
+    env.with_env(|env| -> jni::errors::Result<JString<'local>> {
+        let addr = addr.try_to_string(env)?;
+        let fingerprint_hex = fingerprint_hex.try_to_string(env)?;
+        let state_dir = state_dir.try_to_string(env)?;
+        let caps_json = caps_json.try_to_string(env)?;
+        let mut err = |m: String| env.new_string(m);
+        let Some(addr) = wifi::parse_addr(&addr) else {
+            return err(format!("bad address {addr}"));
+        };
+        let Some(fingerprint) = parse_fingerprint(&fingerprint_hex) else {
+            return err("bad fingerprint".into());
+        };
+        let caps = match parse_caps(&caps_json) {
+            Ok(c) => c,
+            Err(e) => return err(e),
+        };
+        let window = window_from(env, &surface);
+        let target = Target::Wifi {
+            addr,
+            fingerprint,
+            state_dir: state_dir.into(),
+        };
+        start_session(window, target, caps);
+        Ok(JString::null())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `external fun wifiPair(addr: String, pinOrUri: String, deviceName: String, stateDir: String):
+/// String` Blocks (call off the main thread). JSON, see [`wifi::pair_json`].
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
+pub extern "system" fn wifiPair<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    addr: JString<'local>,
+    pin_or_uri: JString<'local>,
+    device_name: JString<'local>,
+    state_dir: JString<'local>,
+) -> JString<'local> {
+    init_logging();
+    env.with_env(|env| -> jni::errors::Result<JString<'local>> {
+        let addr = addr.try_to_string(env)?;
+        let pin_or_uri = pin_or_uri.try_to_string(env)?;
+        let device_name = device_name.try_to_string(env)?;
+        let state_dir = state_dir.try_to_string(env)?;
+        let json = wifi::pair_json(&addr, &pin_or_uri, &device_name, state_dir.as_ref());
+        env.new_string(json)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `external fun wifiHosts(stateDir: String): String` JSON array of paired hosts.
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
+pub extern "system" fn wifiHosts<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_dir: JString<'local>,
+) -> JString<'local> {
+    init_logging();
+    env.with_env(|env| -> jni::errors::Result<JString<'local>> {
+        let state_dir = state_dir.try_to_string(env)?;
+        env.new_string(wifi::hosts_json(state_dir.as_ref()))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `external fun wifiForget(stateDir: String, fingerprint: String): Boolean`
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
+pub extern "system" fn wifiForget<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_dir: JString<'local>,
+    fingerprint: JString<'local>,
+) -> jboolean {
+    init_logging();
+    env.with_env(|env| -> jni::errors::Result<jboolean> {
+        let state_dir = state_dir.try_to_string(env)?;
+        let fingerprint = fingerprint.try_to_string(env)?;
+        Ok(wifi::forget(state_dir.as_ref(), &fingerprint))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `external fun wifiIdentity(stateDir: String): String` Short fingerprint of this device.
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
+pub extern "system" fn wifiIdentity<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_dir: JString<'local>,
+) -> JString<'local> {
+    init_logging();
+    env.with_env(|env| -> jni::errors::Result<JString<'local>> {
+        let state_dir = state_dir.try_to_string(env)?;
+        env.new_string(wifi::identity_short(state_dir.as_ref()))
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }

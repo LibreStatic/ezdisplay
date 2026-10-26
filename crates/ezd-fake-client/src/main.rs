@@ -40,6 +40,18 @@ struct Args {
     exit_after_script: bool,
     #[arg(long, hide = true)]
     proto_minor: Option<u16>,
+    #[cfg(feature = "wifi")]
+    #[arg(long, value_name = "ADDR", conflicts_with = "connect")]
+    wifi: Option<String>,
+    #[cfg(feature = "wifi")]
+    #[arg(long, value_name = "PIN", conflicts_with = "uri")]
+    pin: Option<String>,
+    #[cfg(feature = "wifi")]
+    #[arg(long, value_name = "URI", conflicts_with = "connect")]
+    uri: Option<String>,
+    #[cfg(feature = "wifi")]
+    #[arg(long, value_name = "DIR")]
+    state_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -74,6 +86,12 @@ fn command(l: &FluentLanguageLoader) -> Command {
         .mut_arg("exit_after_script", |a| {
             a.help(fl!(l, "arg-exit-after-script"))
         });
+    #[cfg(feature = "wifi")]
+    let cmd = cmd
+        .mut_arg("wifi", |a| a.help(fl!(l, "arg-wifi")))
+        .mut_arg("pin", |a| a.help(fl!(l, "arg-pin")))
+        .mut_arg("uri", |a| a.help(fl!(l, "arg-uri")))
+        .mut_arg("state_dir", |a| a.help(fl!(l, "arg-state-dir")));
     i18n::localize_version(i18n::localize_chrome(cmd, l), l)
 }
 
@@ -90,6 +108,8 @@ async fn main() -> Result<()> {
         )
         .init();
     let a = parse(&command(&i18n::LANGUAGE_LOADER).get_matches());
+    #[cfg(feature = "wifi")]
+    let wifi = wifi_options(&a)?;
     let dump_frame = match a.dump_frame {
         Some(v) => {
             let n: u64 = v[0].parse().with_context(|| fl!("err-dump-frame"))?;
@@ -98,7 +118,7 @@ async fn main() -> Result<()> {
         None => None,
     };
     let cfg = FakeClientConfig {
-        device_name: a.name,
+        device_name: a.name.clone(),
         width: a.width,
         height: a.height,
         refresh_rates_mhz: a.refresh_rates_mhz,
@@ -119,6 +139,27 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
+    #[cfg(feature = "wifi")]
+    if let Some(opts) = wifi {
+        let (link, outcome) = ezd_fake_client::wifi::connect_wifi(&opts)
+            .await
+            .map_err(|e| wifi_error(&e))?;
+        if let Some(host) = outcome.paired_with {
+            println!(
+                "{}",
+                fl!(
+                    "paired-with",
+                    host = host.name.as_str(),
+                    fingerprint = host.fingerprint.as_str()
+                )
+            );
+        }
+        tracing::info!("connected over Wi-Fi");
+        let report = run_fake_client(link, cfg).await?;
+        println!("{}", report.summary());
+        return Ok(());
+    }
+
     let start = Instant::now();
     let link = loop {
         match Link::connect_tcp(&a.connect).await {
@@ -136,6 +177,67 @@ async fn main() -> Result<()> {
     let report = run_fake_client(link, cfg).await?;
     println!("{}", report.summary());
     Ok(())
+}
+
+/// The Wi-Fi options the command line describes, if any.
+#[cfg(feature = "wifi")]
+fn wifi_options(a: &Args) -> Result<Option<ezd_fake_client::wifi::WifiOptions>> {
+    use std::net::ToSocketAddrs;
+    if a.wifi.is_none() && a.uri.is_none() {
+        if a.pin.is_some() {
+            anyhow::bail!(fl!("err-pin-needs-wifi"));
+        }
+        return Ok(None);
+    }
+    let uri = match &a.uri {
+        Some(u) => Some(ezd_link::pair::PairUri::parse(u).with_context(|| fl!("err-uri-invalid"))?),
+        None => None,
+    };
+    let addr = match &a.wifi {
+        Some(addr) => Some(
+            addr.to_socket_addrs()
+                .ok()
+                .and_then(|mut x| x.next())
+                .with_context(|| fl!("err-connecting", addr = addr.as_str()))?,
+        ),
+        None => None,
+    };
+    let state_dir = a
+        .state_dir
+        .clone()
+        .or_else(ezd_fake_client::wifi::default_state_dir)
+        .with_context(|| fl!("err-no-state-dir"))?;
+    Ok(Some(ezd_fake_client::wifi::WifiOptions {
+        addr,
+        pin: a.pin.clone(),
+        uri,
+        state_dir,
+        device_name: a.name.clone(),
+        connect_timeout: Duration::from_secs(a.connect_timeout),
+    }))
+}
+
+/// User-facing text of a Wi-Fi failure.
+#[cfg(feature = "wifi")]
+fn wifi_error(e: &ezd_fake_client::wifi::WifiError) -> anyhow::Error {
+    use ezd_fake_client::wifi::WifiError;
+    use ezd_link::quic::QuicError;
+    use ezd_proto::pair::Refusal;
+    match e {
+        WifiError::NoAddress => anyhow::anyhow!(fl!("err-wifi-no-address")),
+        WifiError::NotPaired => anyhow::anyhow!(fl!("err-wifi-not-paired")),
+        WifiError::Quic(QuicError::Refused(r)) => anyhow::anyhow!(match r {
+            Refusal::NotPaired => fl!("err-refused-not-paired"),
+            Refusal::PairingClosed => fl!("err-refused-closed"),
+            Refusal::TooManyAttempts => fl!("err-refused-attempts"),
+            Refusal::WrongPin => fl!("err-refused-wrong-pin"),
+            Refusal::Busy => fl!("err-refused-busy"),
+        }),
+        WifiError::Quic(QuicError::FingerprintMismatch) => {
+            anyhow::anyhow!(fl!("err-wifi-fingerprint"))
+        }
+        other => anyhow::anyhow!(fl!("err-wifi", reason = other.to_string())),
+    }
 }
 
 #[cfg(test)]

@@ -62,12 +62,25 @@ pub struct RunArgs {
     no_input: bool,
     #[arg(long, value_enum, default_value = "tablet")]
     pen_mode: PenModeArg,
+    #[cfg(feature = "wifi")]
+    #[arg(long, num_args = 0..=1, value_name = "ADDR", default_missing_value = "0.0.0.0:27183")]
+    wifi: Option<String>,
+    #[cfg(feature = "wifi")]
+    #[arg(long, requires = "wifi")]
+    pair: bool,
+    #[cfg(feature = "wifi")]
+    #[arg(long, value_enum, hide = true, requires = "wifi")]
+    congestion: Option<crate::wifi::CongestionArg>,
+    #[cfg(feature = "wifi")]
+    #[arg(long, hide = true, requires = "wifi", value_name = "DIR")]
+    config_dir: Option<std::path::PathBuf>,
 }
 
 /// Applies the localized help of every `run` option.
 pub fn localize(cmd: Command, l: &FluentLanguageLoader) -> Command {
     use i18n_embed_fl::fl;
-    cmd.mut_arg("source", |a| a.help(fl!(l, "run-source")))
+    let cmd = cmd
+        .mut_arg("source", |a| a.help(fl!(l, "run-source")))
         .mut_arg("listen", |a| a.help(fl!(l, "run-listen")))
         .mut_arg("adb", |a| a.help(fl!(l, "run-adb")))
         .mut_arg("link", |a| a.help(fl!(l, "run-link")))
@@ -81,7 +94,12 @@ pub fn localize(cmd: Command, l: &FluentLanguageLoader) -> Command {
         .mut_arg("video_window", |a| a.help(fl!(l, "run-video-window")))
         .mut_arg("telemetry", |a| a.help(fl!(l, "run-telemetry")))
         .mut_arg("no_input", |a| a.help(fl!(l, "run-no-input")))
-        .mut_arg("pen_mode", |a| a.help(fl!(l, "run-pen-mode")))
+        .mut_arg("pen_mode", |a| a.help(fl!(l, "run-pen-mode")));
+    #[cfg(feature = "wifi")]
+    let cmd = cmd
+        .mut_arg("wifi", |a| a.help(fl!(l, "run-wifi")))
+        .mut_arg("pair", |a| a.help(fl!(l, "run-pair")));
+    cmd
 }
 
 fn parse_scale(s: &str) -> Result<f32, String> {
@@ -93,19 +111,26 @@ fn parse_scale(s: &str) -> Result<f32, String> {
     }
 }
 
+/// The first socket address `addr` resolves to.
+fn resolve(addr: &str) -> Result<std::net::SocketAddr> {
+    addr.to_socket_addrs()
+        .and_then(|mut a| a.next().ok_or_else(|| std::io::Error::other("no address")))
+        .map_err(|e| anyhow!(fl!("err-binding", addr = addr, reason = e.to_string())))
+}
+
 /// The service configuration the command line describes.
 fn config(args: &RunArgs) -> Result<ServiceConfig> {
-    let listen = args
-        .listen
-        .to_socket_addrs()
-        .and_then(|mut a| a.next().ok_or_else(|| std::io::Error::other("no address")))
-        .map_err(|e| {
-            anyhow!(fl!(
-                "err-binding",
-                addr = args.listen.as_str(),
-                reason = e.to_string()
-            ))
-        })?;
+    let listen = resolve(&args.listen)?;
+    #[cfg(feature = "wifi")]
+    let wifi = match &args.wifi {
+        None => None,
+        Some(addr) => Some(ezd_host_service::WifiConfig {
+            listen: resolve(addr)?,
+            pair_on_start: args.pair,
+            congestion: args.congestion.map(Into::into).unwrap_or_default(),
+            config_dir: args.config_dir.clone(),
+        }),
+    };
     Ok(ServiceConfig {
         listen,
         source: match args.source {
@@ -138,6 +163,8 @@ fn config(args: &RunArgs) -> Result<ServiceConfig> {
         },
         // The command line never starts the app: that is the tray's convenience.
         open_app_on_connect: false,
+        #[cfg(feature = "wifi")]
+        wifi,
         // The command line has no HDR switch: it streams HDR10 whenever everything supports it.
         ..ServiceConfig::default()
     })
@@ -162,6 +189,7 @@ pub fn localize_error(e: &ServiceError) -> String {
             )
         }
         ServiceError::UnsupportedPlatform => fl!("err-no-backend"),
+        ServiceError::Wifi(reason) => fl!("err-wifi", reason = reason.as_str()),
         ServiceError::Source(reason) => fl!("err-source", reason = reason.as_str()),
     }
 }
@@ -170,12 +198,21 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let service = HostService::start(&tokio::runtime::Handle::current(), config(&args)?)
         .map_err(|e| anyhow!(localize_error(&e)))?;
     let mut events = service.events();
+    #[cfg(feature = "wifi")]
+    {
+        if let Some(info) = service.wifi().borrow().clone() {
+            crate::wifi::print_listening(info.addr, &info.fingerprint_short);
+        }
+        // The window may have opened before the subscription above.
+        service.refresh_pairing();
+    }
+    let mut shown: Shown = None;
     let reporter = tokio::spawn(report_errors(service.status()));
 
     // The service owns the event sender, so the channel stays open until `stop`.
     loop {
         tokio::select! {
-            ev = events.recv() => log_event(ev),
+            ev = events.recv() => log_event(ev, &mut shown),
             _ = tokio::signal::ctrl_c() => break,
         }
     }
@@ -187,7 +224,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     loop {
         tokio::select! {
             () = &mut stop => break,
-            ev = events.recv() => log_event(ev),
+            ev = events.recv() => log_event(ev, &mut shown),
             _ = tokio::signal::ctrl_c() => {
                 tracing::warn!("interrupted again, exiting now");
                 return Ok(());
@@ -196,15 +233,46 @@ pub async fn run(args: RunArgs) -> Result<()> {
     }
     // Whatever the session reported while stopping.
     while let Ok(ev) = events.try_recv() {
-        log_event(Ok(ev));
+        log_event(Ok(ev), &mut shown);
     }
     reporter.abort();
     Ok(())
 }
 
-fn log_event(ev: Result<HostEvent, tokio::sync::broadcast::error::RecvError>) {
+/// The pairing window last shown, to not print it twice.
+type Shown = Option<(String, std::time::Instant)>;
+
+#[cfg_attr(not(feature = "wifi"), allow(unused_variables))]
+fn log_event(ev: Result<HostEvent, tokio::sync::broadcast::error::RecvError>, shown: &mut Shown) {
     match ev {
         Ok(HostEvent::SessionEnded(r)) => log_session_end(r),
+        #[cfg(feature = "wifi")]
+        Ok(HostEvent::PairingOpen {
+            pin,
+            uri,
+            fingerprint,
+            expires,
+        }) => {
+            // The service may announce the same window twice (late subscription).
+            if shown.replace((pin.clone(), expires)) != Some((pin.clone(), expires)) {
+                crate::wifi::print_pairing_open(&pin, &uri, &fingerprint, expires);
+            }
+        }
+        #[cfg(feature = "wifi")]
+        Ok(HostEvent::PairingClosed { reason }) => {
+            *shown = None;
+            crate::wifi::print_pairing_closed(reason);
+        }
+        #[cfg(feature = "wifi")]
+        Ok(HostEvent::Paired { device }) => crate::wifi::print_paired(&device),
+        #[cfg(feature = "wifi")]
+        Ok(HostEvent::PairingFailed { peer, reason }) => {
+            tracing::warn!(%peer, "pairing failed: {reason}")
+        }
+        #[cfg(feature = "wifi")]
+        Ok(HostEvent::SessionRefused { peer, why }) => {
+            tracing::info!(%peer, ?why, "Wi-Fi session refused")
+        }
         Ok(_) => {}
         Err(e) => tracing::debug!("missed service events: {e}"),
     }

@@ -8,9 +8,16 @@ authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Wi-Fi (QUIC) client: paired host store, pairing and session connection (`wifi` module).
+wifi = ["ezd-link/quic", "dep:serde", "dep:serde_json"]
+
 [dependencies]
 ezd-link.workspace = true
 ezd-proto.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

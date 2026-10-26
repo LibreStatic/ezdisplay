@@ -194,3 +194,28 @@ logs-description = Ouvre le dossier où ezdisplay écrit ses journaux.
 about-description = Écran USB open source pour tablettes Android.
 repository = Code source
 driver-reinstall = Réinstaller le pilote
+
+## Window: Wi-Fi
+card-wifi = Wi-Fi
+wifi-enable = Se connecter par Wi-Fi
+wifi-latency-warning = Le Wi-Fi ajoute de la latence et de la gigue ; l'USB est préférable pour dessiner.
+wifi-starts-with-stream = Le Wi-Fi s'active quand la diffusion démarre.
+wifi-address = Adresse
+wifi-fingerprint = Empreinte de l'hôte
+wifi-pair = Appairer un appareil
+wifi-pair-cancel = Annuler
+wifi-pair-hint = Sur la tablette, scannez ce QR code ou saisissez le code PIN.
+wifi-pin = Code PIN
+wifi-qr-label = QR code d'appairage
+wifi-pair-expires = Se ferme dans { $seconds } s
+wifi-notice-paired = Appairage réussi avec { $device }.
+wifi-notice-attempts = L'appairage est fermé : trop de codes PIN incorrects.
+wifi-notice-expired = L'appairage est fermé : le temps est écoulé.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } appareil appairé
+       *[other] { $count } appareils appairés
+    }
+wifi-paired-none = Aucun appareil n'est encore appairé.
+wifi-forget = Oublier
+error-wifi = Impossible de démarrer le Wi-Fi : { $reason }

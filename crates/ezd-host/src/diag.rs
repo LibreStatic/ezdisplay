@@ -25,6 +25,7 @@ pub fn sections() -> Vec<Box<dyn Section>> {
     {
         v.push(Box::new(LinuxSession));
         v.push(Box::new(LinuxGpus));
+        v.push(Box::new(LinuxFirewall));
     }
     v.push(Box::new(Platform));
     v.push(Box::new(Encoders));
@@ -134,6 +135,18 @@ impl Section for LinuxGpus {
             })
             .collect();
         Value::Array(gpus)
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxFirewall;
+#[cfg(target_os = "linux")]
+impl Section for LinuxFirewall {
+    fn name(&self) -> &'static str {
+        "firewall"
+    }
+    fn collect(&self) -> Value {
+        crate::firewall::diag_value(crate::firewall::detect())
     }
 }
 

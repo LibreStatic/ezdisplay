@@ -15,7 +15,13 @@ name = "ezd_fake_client"
 name = "ezd-fake-client"
 path = "src/main.rs"
 
+[features]
+default = ["wifi"]
+# Wi-Fi (QUIC) transport: `--wifi`, `--pin`, `--uri`.
+wifi = ["ezd-client-core/wifi", "ezd-link/quic", "dep:dirs"]
+
 [dependencies]
+dirs = { workspace = true, optional = true }
 anyhow.workspace = true
 clap.workspace = true
 ezd-client-core = { path = "../ezd-client-core" }

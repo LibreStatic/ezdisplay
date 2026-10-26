@@ -85,6 +85,8 @@ pub struct Controller {
     want_settings: bool,
     focus_window: bool,
     quitting: Option<Quitting>,
+    #[cfg_attr(not(feature = "wifi"), allow(dead_code))]
+    wifi: wifi::WifiRuntime,
 }
 
 impl Controller {
@@ -117,6 +119,7 @@ impl Controller {
             want_settings: false,
             focus_window: false,
             quitting: None,
+            wifi: wifi::WifiRuntime::default(),
         }
     }
 
@@ -214,6 +217,7 @@ impl Controller {
                 self.status = rx.borrow().clone();
                 self.status_rx = Some(rx);
                 self.service = Some(svc);
+                self.wifi_started();
             }
             Err(e) => {
                 tracing::warn!("cannot start the service: {e}");
@@ -226,6 +230,7 @@ impl Controller {
     fn stop_service(&mut self) {
         self.status_rx = None;
         self.status = HostStatus::Stopped;
+        self.wifi_stopped();
         let Some(svc) = self.service.take() else {
             // Nothing to wait for.
             let _ = self.tx.send(Event::ServiceStopped);
@@ -330,6 +335,7 @@ impl Controller {
             input_access,
             input_fix,
             has_licenses_dir: paths::licenses_dir().is_some(),
+            wifi: self.wifi_state(),
             windows: cfg!(windows),
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
@@ -342,6 +348,7 @@ impl Controller {
         snap.status = self.status.clone();
         snap.config = self.config.clone();
         snap.autostart = self.autostart;
+        snap.wifi = self.wifi_state();
         snap.repair = self
             .repair
             .lock()
@@ -381,6 +388,10 @@ impl Controller {
                 Action::OpenUrl(u) => platform::open(&u),
                 Action::Repair => self.repair_driver(),
                 Action::EnableInput => self.enable_input(),
+                Action::SetWifi(on) => self.set_wifi(on),
+                Action::PairDevice => self.pair_device(),
+                Action::ClosePairing => self.close_pairing(),
+                Action::ForgetDevice(fp) => self.forget_device(&fp),
             }
         }
     }
@@ -493,6 +504,7 @@ impl Controller {
             self.handle(ev);
         }
         self.poll_status();
+        self.poll_wifi();
         if let Some(q) = &mut self.quitting
             && !q.timed_out
             && q.since.elapsed() > QUIT_TIMEOUT
@@ -598,6 +610,8 @@ pub fn forward_tray_events(tx: Sender<Event>, waker: Waker) {
         waker.wake();
     });
 }
+
+mod wifi;
 
 #[cfg(test)]
 mod tests;

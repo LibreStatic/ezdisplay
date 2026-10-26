@@ -194,3 +194,28 @@ logs-description = Öffnet den Ordner, in den ezdisplay seine Protokolle schreib
 about-description = Open-Source-USB-Display für Android-Tablets.
 repository = Quellcode
 driver-reinstall = Treiber neu installieren
+
+## Window: Wi-Fi
+card-wifi = WLAN
+wifi-enable = Über WLAN verbinden
+wifi-latency-warning = WLAN erhöht Latenz und Jitter; zum Zeichnen ist USB am besten.
+wifi-starts-with-stream = Das WLAN wird eingeschaltet, sobald das Streaming startet.
+wifi-address = Adresse
+wifi-fingerprint = Fingerabdruck des Hosts
+wifi-pair = Gerät koppeln
+wifi-pair-cancel = Abbrechen
+wifi-pair-hint = Scanne auf dem Tablet diesen QR-Code oder gib die PIN ein.
+wifi-pin = PIN
+wifi-qr-label = QR-Code zum Koppeln
+wifi-pair-expires = Schließt in { $seconds } s
+wifi-notice-paired = Mit { $device } gekoppelt.
+wifi-notice-attempts = Kopplung geschlossen: zu viele falsche PINs.
+wifi-notice-expired = Kopplung geschlossen: die Zeit ist abgelaufen.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } gekoppeltes Gerät
+       *[other] { $count } gekoppelte Geräte
+    }
+wifi-paired-none = Noch keine Geräte gekoppelt.
+wifi-forget = Entfernen
+error-wifi = Das WLAN kann nicht gestartet werden: { $reason }

@@ -97,6 +97,9 @@ the MUX mode) and, if possible, in a third pass that forces the GPU.
 - **Autostart:** sign out and back in; ezdisplay must start in the notification area (unless the
   "Start ezdisplay when you sign in" task was unchecked), elevated and without a UAC prompt. It is the
   logon trigger of the `ezdisplay` scheduled task (Task Scheduler Library); uninstalling deletes the task.
+- **Firewall (Wi-Fi):** after installing, `netsh advfirewall firewall show rule name=all` must list
+  the two "ezdisplay Wi-Fi" inbound rules (UDP 27183, private profile); a reinstall must not
+  duplicate them and the uninstall must remove them.
 - **Uninstall** from *Settings*, *Apps*: afterwards Device Manager (*Display adapters*, with
   *View*, *Show hidden devices*) must not list "Virtual Display Driver", and
   `C:\Program Files\ezdisplay` must be gone.

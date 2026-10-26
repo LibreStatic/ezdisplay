@@ -194,3 +194,28 @@ logs-description = Open the folder where ezdisplay writes its logs.
 about-description = Open-source USB display for Android tablets.
 repository = Source code
 driver-reinstall = Reinstall the driver
+
+## Window: Wi-Fi
+card-wifi = Wi-Fi
+wifi-enable = Connect over Wi-Fi
+wifi-latency-warning = Wi-Fi adds latency and jitter; USB is best for drawing.
+wifi-starts-with-stream = Wi-Fi turns on when streaming starts.
+wifi-address = Address
+wifi-fingerprint = Host fingerprint
+wifi-pair = Pair a device
+wifi-pair-cancel = Cancel
+wifi-pair-hint = On the tablet, scan this QR code or type the PIN.
+wifi-pin = PIN
+wifi-qr-label = Pairing QR code
+wifi-pair-expires = Closes in { $seconds } s
+wifi-notice-paired = Paired with { $device }.
+wifi-notice-attempts = Pairing closed: too many wrong PINs.
+wifi-notice-expired = Pairing closed: time ran out.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } paired device
+       *[other] { $count } paired devices
+    }
+wifi-paired-none = No devices are paired yet.
+wifi-forget = Forget
+error-wifi = Wi-Fi cannot start: { $reason }

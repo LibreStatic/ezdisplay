@@ -3,17 +3,54 @@
 use crate::caps::ParsedCaps;
 use crate::decoder::{Cmd, DecoderCtl, SendWindow};
 use crate::status::{Phase, Shared};
+use crate::wifi::error_code;
+use ezd_client_core::wifi::connect_paired;
 use ezd_client_core::{
     ClientConfig, ClientEnd, ClientHandle, ClientHandler, CursorSnapshot, Flow, HandlerResult,
     run_client,
 };
 use ezd_link::Link;
+use ezd_proto::pair::Fingerprint;
 use ezd_proto::{CursorShape, StreamColor, StreamConfig, VideoFrame};
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Wi-Fi sessions retry while the host is busy or not reachable yet, up to this long.
+const WIFI_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Where a session connects to.
+#[derive(Debug, Clone)]
+pub enum Target {
+    /// Raw TCP (the adb-reversed loopback port).
+    Tcp {
+        /// Host name or IP.
+        host: String,
+        /// TCP port.
+        port: u16,
+    },
+    /// QUIC to a paired host, pinned to its certificate.
+    Wifi {
+        /// Host address.
+        addr: SocketAddr,
+        /// Fingerprint of the paired host certificate.
+        fingerprint: Fingerprint,
+        /// Directory with this device's identity and the paired hosts.
+        state_dir: PathBuf,
+    },
+}
+
+impl Target {
+    fn label(&self) -> String {
+        match self {
+            Target::Tcp { host, port } => format!("{host}:{port}"),
+            Target::Wifi { addr, .. } => addr.to_string(),
+        }
+    }
+}
 
 /// A running (or finished) session.
 pub struct Session {
@@ -84,17 +121,17 @@ impl ClientHandler for Handler {
 }
 
 impl Session {
-    /// Starts connecting to `host:port`. `window` may be `None` until the surface exists.
-    pub fn start(window: Option<SendWindow>, host: String, port: u16, caps: ParsedCaps) -> Session {
+    /// Starts connecting to `target`. `window` may be `None` until the surface exists.
+    pub fn start(window: Option<SendWindow>, target: Target, caps: ParsedCaps) -> Session {
         let handle = ClientHandle::new();
         let shared = Arc::new(Shared::default());
-        shared.set_phase(Phase::Connecting, format!("{host}:{port}"));
+        shared.set_phase(Phase::Connecting, target.label());
         let dec = DecoderCtl::spawn(caps.caps.clone(), handle.clone(), shared.clone(), window);
         let thread = {
             let (handle, shared, dec) = (handle.clone(), shared.clone(), dec.clone());
             std::thread::Builder::new()
                 .name("ezd-client".into())
-                .spawn(move || run(handle, shared, dec, host, port, caps))
+                .spawn(move || run(handle, shared, dec, target, caps))
                 .expect("spawn client thread")
         };
         Session {
@@ -165,12 +202,48 @@ impl Session {
     }
 }
 
+/// Why a connection failed: English text for the status detail and logs, plus a stable code
+/// Kotlin localizes (Wi-Fi only).
+struct ConnectError {
+    detail: String,
+    code: Option<&'static str>,
+}
+
+impl From<String> for ConnectError {
+    fn from(detail: String) -> Self {
+        ConnectError { detail, code: None }
+    }
+}
+
+/// Opens the link to `target`.
+async fn connect(target: &Target) -> Result<Link, ConnectError> {
+    match target {
+        Target::Tcp { host, port } => {
+            let addr = format!("{host}:{port}");
+            match tokio::time::timeout(CONNECT_TIMEOUT, Link::connect_tcp(addr.as_str())).await {
+                Ok(Ok(l)) => Ok(l),
+                Ok(Err(e)) => Err(format!("connect {addr}: {e}").into()),
+                Err(_) => Err(format!("connect {addr}: timed out").into()),
+            }
+        }
+        Target::Wifi {
+            addr,
+            fingerprint,
+            state_dir,
+        } => connect_paired(state_dir, *addr, *fingerprint, WIFI_CONNECT_TIMEOUT)
+            .await
+            .map_err(|e| ConnectError {
+                detail: format!("connect {addr}: {e}"),
+                code: Some(error_code(&e)),
+            }),
+    }
+}
+
 fn run(
     handle: ClientHandle,
     shared: Arc<Shared>,
     dec: Arc<DecoderCtl>,
-    host: String,
-    port: u16,
+    target: Target,
     caps: ParsedCaps,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -184,19 +257,18 @@ fn run(
         }
     };
     rt.block_on(async {
-        let addr = format!("{host}:{port}");
-        let link =
-            match tokio::time::timeout(CONNECT_TIMEOUT, Link::connect_tcp(addr.as_str())).await {
-                Ok(Ok(l)) => l,
-                Ok(Err(e)) => {
-                    shared.set_phase(Phase::Failed, format!("connect {addr}: {e}"));
-                    return;
+        let addr = target.label();
+        let link = match connect(&target).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!("{}", e.detail);
+                match e.code {
+                    Some(code) => shared.set_failed_code(e.detail, code),
+                    None => shared.set_phase(Phase::Failed, e.detail),
                 }
-                Err(_) => {
-                    shared.set_phase(Phase::Failed, format!("connect {addr}: timed out"));
-                    return;
-                }
-            };
+                return;
+            }
+        };
         if handle.is_stopped() {
             shared.set_phase(Phase::Ended, "stopped");
             return;

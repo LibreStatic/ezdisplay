@@ -218,6 +218,11 @@ jobs:
           targets: aarch64-linux-android, x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
       - name: Protocol and link crates build for Android
-        run: cargo check --target aarch64-linux-android -p ezd-proto -p ezd-link
+        # ring (QUIC/TLS) compiles C code, so it needs the NDK's clang.
+        run: |
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$bin/aarch64-linux-android26-clang"
+          export AR_aarch64_linux_android="$bin/llvm-ar"
+          cargo check --target aarch64-linux-android -p ezd-proto -p ezd-link
       - name: Platform-independent crates build for Windows
         run: cargo check --target x86_64-pc-windows-msvc -p ezd-proto -p ezd-link -p ezd-host-core -p ezd-host-windows -p ezd-host-service -p ezd-host -p ezd-tray --no-default-features

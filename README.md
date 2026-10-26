@@ -234,6 +234,62 @@ cargo run --release -p ezd-fake-client -- --connect 127.0.0.1:27183 --frames 300
 With a real device, `ezd-host run --source synthetic --adb` sets up
 `adb reverse tcp:27183 tcp:27183` for the attached device(s) and removes it on exit.
 
+## Wi-Fi
+
+`--wifi` also listens for tablets on the local network (QUIC over UDP port 27183, encrypted,
+paired devices only). The host advertises itself over mDNS so tablets can find it:
+
+```sh
+ezd-host run --wifi
+```
+
+The first time, or with `--pair`, the host prints a QR code and a 6-digit PIN that are valid for
+5 minutes. Once paired, a device reconnects without a PIN. `ezd-host paired list` shows the
+paired devices and `ezd-host paired forget <name>` removes one. (The Android app's Wi-Fi
+connect screen is in progress.)
+
+The fake client pairs the same way, then streams:
+
+```sh
+cargo run --release -p ezd-fake-client -- --wifi 127.0.0.1:27183 --pin 123456 --frames 300
+```
+
+### Firewall (Linux)
+
+A host firewall such as ufw or firewalld usually blocks inbound UDP 27183, so tablets cannot
+connect. `ezd-host diag` reports the state (`firewall` key) and `ezd-host run --wifi` prints a hint
+when one is active. The Arch package and the `.deb` install a ufw application profile and a firewalld
+service named `ezdisplay` but never open the port: that is your decision. Allow it only for your LAN.
+
+ufw (replace the network with yours):
+
+```sh
+sudo ufw allow from 192.168.0.0/24 to any app ezdisplay
+# without the profile (AppImage, source builds):
+sudo ufw allow from <your LAN>/24 to any port 27183 proto udp
+```
+
+firewalld:
+
+```sh
+sudo firewall-cmd --permanent --add-service=ezdisplay && sudo firewall-cmd --reload
+```
+
+The service is added to the default zone; to limit it to your home network, add `--zone=home` (or
+`trusted`) to both commands, and make sure your Wi-Fi interface is in that zone. Without the
+packaged service, use `--add-port=27183/udp` instead. The AppImage cannot install the profiles; copy
+them from `packaging/linux/` (see its README) or use the port forms above.
+
+### Firewall (Windows)
+
+The Windows installer already adds an inbound UDP 27183 rule for private networks. For a portable
+build, allow that port in Windows Defender Firewall for private networks.
+
+Wi-Fi also works without pairing through ADB wireless debugging:
+`ezd-host run --adb <ip:port> --link network`.
+
+How the link and the pairing work: [docs/protocol.md](docs/protocol.md#transports).
+
 ## Diagnostics
 
 ```sh

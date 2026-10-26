@@ -155,6 +155,13 @@ Name: "{autodesktop}\ezdisplay"; Filename: "{app}\ezdisplay.exe"; Tasks: desktop
 ; level follows "run_elevated" in an existing config.toml (elevated by default).
 Filename: "{app}\ezdisplay.exe"; Parameters: "--autostart on"; Tasks: autostart; Flags: runhidden waituntilterminated
 Filename: "{app}\ezdisplay.exe"; Parameters: "--autostart off"; Tasks: not autostart; Flags: runhidden waituntilterminated
+; Wi-Fi: tablets reach the host on UDP 27183. One inbound rule per executable, for the private
+; profile only (a public network never gets the port). The delete first keeps a reinstall from
+; stacking duplicates; it fails harmlessly on a first install.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ezdisplay Wi-Fi (ezdisplay.exe)"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ezdisplay Wi-Fi (ezd-host.exe)"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ezdisplay Wi-Fi (ezdisplay.exe)"" dir=in action=allow protocol=UDP localport=27183 profile=private program=""{app}\ezdisplay.exe"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ezdisplay Wi-Fi (ezd-host.exe)"" dir=in action=allow protocol=UDP localport=27183 profile=private program=""{app}\ezd-host.exe"""; Flags: runhidden waituntilterminated
 ; Unelevated on purpose: the app asks the task to start its elevated copy.
 Filename: "{app}\ezdisplay.exe"; Description: "{cm:LaunchProgram,ezdisplay}"; Flags: postinstall nowait runasoriginaluser skipifsilent
 
@@ -164,6 +171,9 @@ Filename: "{app}\ezdisplay.exe"; Description: "{cm:LaunchProgram,ezdisplay}"; Fl
 Filename: "{app}\ezdisplay.exe"; Parameters: "--quit"; RunOnceId: "QuitTray"; Flags: runhidden waituntilterminated
 ; The task launches the app elevated and carries the autostart trigger.
 Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ezdisplay /f"; RunOnceId: "DeleteTask"; Flags: runhidden waituntilterminated
+; The Wi-Fi firewall rules of [Run].
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ezdisplay Wi-Fi (ezdisplay.exe)"""; RunOnceId: "FirewallTray"; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ezdisplay Wi-Fi (ezd-host.exe)"""; RunOnceId: "FirewallHost"; Flags: runhidden waituntilterminated
 Filename: "{app}\adb\adb.exe"; Parameters: "kill-server"; RunOnceId: "KillAdb"; Flags: runhidden waituntilterminated
 ; Only removes the driver if ezdisplay installed it. Exit code 3010 (reboot required) cannot be
 ; read from [UninstallRun], so no restart prompt is shown for it.
