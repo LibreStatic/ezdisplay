@@ -220,6 +220,14 @@ class SettingsPhoneTest : SettingsUiTestBase() {
         assertEquals(800, prefs.getInt(InputPrefs.DOUBLE_CLICK_MS, 0))
     }
 
+    @Test fun audioRowTogglesAudio() {
+        launch()
+        rule.onNodeWithText(str(R.string.settings_audio_desc)).performScrollTo().performClick()
+        assertEquals(false, prefs.getBoolean(SettingsStore.AUDIO_ENABLED, true))
+        rule.onNodeWithText(str(R.string.settings_audio_desc)).performClick()
+        assertEquals(true, prefs.getBoolean(SettingsStore.AUDIO_ENABLED, false))
+    }
+
     @Test fun palmRowTogglesRejection() {
         launch()
         rule.onNodeWithText(str(R.string.settings_palm_title)).performScrollTo().performClick()
