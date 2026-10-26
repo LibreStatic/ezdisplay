@@ -8,6 +8,7 @@
 
 mod adapter;
 mod ahead;
+mod audio;
 mod cursor;
 mod cursor_meta;
 mod diag;
@@ -26,7 +27,7 @@ mod uinput_sink;
 mod vkdma;
 
 pub use ezd_host_core::PlatformOptions;
-use ezd_host_core::{InputBackend, PlatformError, UnavailableBackend, VideoSource};
+use ezd_host_core::{AudioSource, InputBackend, PlatformError, UnavailableBackend, VideoSource};
 use std::sync::Arc;
 
 /// Creates the capture + encode source for one client connection.
@@ -62,6 +63,12 @@ pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
             None
         }
     }
+}
+
+/// System audio capture (a PipeWire null sink made the default output while the session runs).
+/// Cheap: PipeWire is only contacted by `AudioSource::start`.
+pub fn audio_source() -> Option<Box<dyn AudioSource>> {
+    audio::audio_source()
 }
 
 /// Platform section of `ezd-host diag`.
