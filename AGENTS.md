@@ -25,6 +25,19 @@ Do not name pen-tablet vendors or commercial drawing apps in code, strings, docs
 the behaviour instead (for example "graphics tablet", "drawing apps"). The platforms the app runs on or talks to
 (Android, Samsung and the S Pen, KDE, Windows) and open-source apps used as test examples (Krita) are fine.
 
+## Diagrams
+- Diagrams in documentation (`README.md`, `docs/`, component READMEs) are Mermaid code blocks (` ```mermaid `),
+  like "How it works" in `README.md` and the diagrams in `docs/protocol.md`. Do not draw them in ASCII art (box
+  drawing, `|---->|` message ladders, `+---+` boxes); when you edit a section that still has one, convert it.
+- Pick the type by content: `sequenceDiagram` for message exchanges and handshakes, `stateDiagram-v2` for state
+  machines, `flowchart` for pipelines, components, data paths and decisions. Name real messages, fields and states
+  from the code, and update the diagram in the same change as the behaviour it shows.
+- GitHub renders with a recent Mermaid (11.8 or later). Quote labels that contain punctuation, do not start a label
+  with `1.` or `-` (it becomes a Markdown list), and do not use keywords such as `click`, `end`, `class`, `style` or
+  `default` as node or state ids. Render every new or changed diagram (Mermaid CLI or a browser) before committing.
+- Not diagrams, so they stay plain code blocks: formulas, URI and file formats, command output. Rust doc comments
+  keep ASCII diagrams, because rustdoc does not render Mermaid.
+
 ## Versioning
 - The version is `version` in `[workspace.package]` of the root `Cargo.toml` (crates, packages and the Android app
   follow it). Every push to `main` publishes a GitHub pre-release `v<version>+<run number>`; a `vX.Y.Z` tag publishes
