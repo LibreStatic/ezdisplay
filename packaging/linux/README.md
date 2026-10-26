@@ -80,7 +80,7 @@ cached file with the right hash is not downloaded again. The result is
 sources, see [docs/releasing.md](../../docs/releasing.md)).
 
 The build refuses to produce an AppImage whose binaries need any library outside the bundle other
-than glibc, libgcc_s, libva, libva-drm, libdrm, libvulkan, libusb-1.0 and PipeWire (libusb is a host dependency, present on practically every desktop distro), or glibc symbols newer than
+than glibc, libgcc_s, libva, libva-drm, libdrm, libvulkan, libusb-1.0 (with its libudev and libcap dependencies) and PipeWire (libusb is a host dependency, present on practically every desktop distro), or glibc symbols newer than
 2.39. Smoke test on a machine without FFmpeg (needs `jq`):
 
 ```sh
