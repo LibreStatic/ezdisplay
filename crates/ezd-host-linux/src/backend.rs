@@ -7,16 +7,17 @@
 
 use std::fmt;
 
-/// A desktop the Linux host can (or, later, will) drive.
+/// A desktop the Linux host can drive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinuxBackend {
     /// KDE Plasma 6 (KWin): portal VIRTUAL source, `kscreen-doctor`, KWin input mapping.
     Kde,
     /// GNOME (Mutter): `org.gnome.Mutter.ScreenCast` virtual monitor, `DisplayConfig`, gsettings.
     Gnome,
-    /// Sway. Detected, but not implemented yet.
+    /// Sway: i3 IPC headless output, direct Wayland capture, per-device input mapping.
     Sway,
-    /// Hyprland. Detected, but not implemented yet.
+    /// Hyprland: headless output over its command socket, direct Wayland capture, per-device
+    /// input mapping.
     Hyprland,
 }
 
@@ -40,19 +41,6 @@ impl LinuxBackend {
             "hyprland" => Some(LinuxBackend::Hyprland),
             _ => None,
         }
-    }
-
-    /// Whether a virtual output provider exists for this backend.
-    pub fn supported(self) -> bool {
-        matches!(self, LinuxBackend::Kde | LinuxBackend::Gnome)
-    }
-
-    /// Error text for backends that are detected but not written yet.
-    pub fn unsupported_error(self) -> String {
-        format!(
-            "the {} backend is not implemented yet; supported desktops are KDE Plasma and GNOME",
-            self.name()
-        )
     }
 }
 
@@ -282,10 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn only_kde_and_gnome_are_supported() {
-        assert!(LinuxBackend::Kde.supported() && LinuxBackend::Gnome.supported());
-        assert!(!LinuxBackend::Sway.supported() && !LinuxBackend::Hyprland.supported());
-        assert!(LinuxBackend::Sway.unsupported_error().contains("sway"));
+    fn names_round_trip() {
         for b in [
             LinuxBackend::Kde,
             LinuxBackend::Gnome,

@@ -63,7 +63,7 @@ pub fn section() -> Value {
     let name = detected.as_ref().map_or("unknown", |b| b.name());
     let mut v = json!({
         "backend": format!("linux-{name}"),
-        "backend_supported": detected.as_ref().is_ok_and(|b| b.supported()),
+        "backend_supported": detected.is_ok(),
         "backend_error": detected.as_ref().err(),
         "xdg_current_desktop": std::env::var("XDG_CURRENT_DESKTOP").ok(),
         "wayland_display": std::env::var("WAYLAND_DISPLAY").ok(),
@@ -79,6 +79,18 @@ pub fn section() -> Value {
     });
     let extra = match detected {
         Ok(LinuxBackend::Gnome) => json!({ "gnome": crate::gnome::diag() }),
+        Ok(b @ (LinuxBackend::Sway | LinuxBackend::Hyprland)) => {
+            let compositor = if b == LinuxBackend::Sway {
+                crate::sway::diag()
+            } else {
+                crate::hyprland::diag()
+            };
+            json!({
+                "compositor": b.name(),
+                "wlroots": compositor,
+                "wayland_capture": crate::wl_capture::diag(),
+            })
+        }
         _ => json!({
             "kwin_version": kwin_version(),
             "kwin_drm_devices": crate::adapter::kwin_drm_devices(),

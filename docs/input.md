@@ -275,3 +275,26 @@ The Windows host injects the pen and touch through synthetic pointer devices (`C
 - **Mouse pen mode** (`--pen-mode mouse`). No pen device is created. The pen moves the mouse, contact is the left button, the barrel button is the right button, and leaving range releases them.
 - **Limits.** Windows blocks injected input to windows of an elevated (administrator) process (UIPI) unless the host also runs elevated. The tray app therefore runs elevated by default on Windows (through its `ezdisplay` scheduled task, so there is no UAC prompt at launch); the *Control administrator windows (run elevated)* setting turns that off. `ezd-host run` from a normal terminal is not elevated. The host logs a rate-limited warning when `SendInput` injects fewer events than requested.
 - **Status.** `InputStatus` always carries ACTIONS and KEYS, and TOUCH and PEN only when their device was created. If a device cannot be created (Windows older than 1809), the note says so. Without a known virtual display, input is unavailable. `ezd-host diag` has an `input` section that reports whether both devices can be created.
+
+## Linux (Sway and Hyprland)
+
+The same uinput devices are created, plus a fourth absolute pointer, and each one is mapped to the
+virtual output by the compositor, per device. Because the mapping is per device, the pointer needs no
+workspace layout and the host skips the position conversion used on KDE and GNOME.
+
+| Device | Sway identifier | Hyprland name |
+| --- | --- | --- |
+| touch | `4617:60881:ezdisplay_touch` | `ezdisplay-touch` |
+| pen | `4617:60882:ezdisplay_pen` | `ezdisplay-pen` |
+| pointer | `4617:60883:ezdisplay_pointer` | `ezdisplay-pointer` |
+
+- Sway: `swaymsg input <vendor>:<product>:<name> map_to_output <OUTPUT>`. The identifier is built the
+  way sway does it: vendor and product in decimal, and spaces and unprintable characters in the name
+  replaced by `_`. When the session ends the host runs `map_to_output *` to release the device.
+- Hyprland: `hyprctl keyword device[<name>]:output <OUTPUT>`, with lowercase, dash-separated names.
+  When the session ends the host sets the value back to `[[Auto]]`.
+
+Neither restore command has been checked on a live compositor (both are harmless for a device that is
+gone). Sway accepts the `map_to_output` commands for devices that do not exist yet, which is how the
+headless test exercises the path; real device mapping needs a session with udev. `ezd-host diag`
+reports the compositor, its version and the capture protocols it advertises.

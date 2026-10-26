@@ -2,10 +2,11 @@
 //! virtual output, and saying where its frames come from.
 //!
 //! [`crate::source::LinuxSource`] owns the shared half (encoder selection, capture negotiation,
-//! encode pipeline) and talks to one [`VirtualOutputProvider`]: [`crate::kde::KdeProvider`] or
-//! [`crate::gnome::GnomeProvider`]. A provider returns a [`FrameSource`]; PipeWire is the only
-//! one today, and a producer that does not use PipeWire (the wlroots backends capture through
-//! Wayland protocols) becomes another variant there.
+//! encode pipeline) and talks to one [`VirtualOutputProvider`]: [`crate::kde::KdeProvider`],
+//! [`crate::gnome::GnomeProvider`], [`crate::sway::SwayProvider`] or
+//! [`crate::hyprland::HyprlandProvider`]. A provider returns a [`FrameSource`]: PipeWire for KDE
+//! and GNOME; the wlroots providers return a Wayland output that `wl_capture.rs` captures with
+//! the compositor's own protocols.
 
 use crate::portal::SourceKind;
 use crate::pw::Target;
@@ -29,6 +30,9 @@ pub struct OutputRequest {
 pub enum FrameSource {
     /// A PipeWire node, on the remote behind `fd` or, without one, on the user's own daemon.
     PipeWire { fd: Option<OwnedFd>, target: Target },
+    /// A Wayland output captured directly over the compositor's capture protocols
+    /// (`wl_capture.rs`); `output` is its `wl_output` name (`HEADLESS-2`, `ezdisplay-1`).
+    Wayland { output: String },
 }
 
 /// An opened output.
@@ -56,5 +60,29 @@ pub trait VirtualOutputProvider: Send {
     /// [`open`](Self::open) returned.
     fn settle(&mut self, _negotiated: (u32, u32)) -> Option<OutputInfo> {
         None
+    }
+}
+
+/// Refresh rate as compositor mode strings take it (`60`, `59.94`): whole hertz without a
+/// fraction, else three decimals with trailing zeros trimmed.
+pub fn rate_text(refresh_mhz: u32) -> String {
+    if refresh_mhz % 1000 == 0 {
+        (refresh_mhz / 1000).to_string()
+    } else {
+        let s = format!("{:.3}", f64::from(refresh_mhz) / 1000.0);
+        s.trim_end_matches('0').to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rate_text;
+
+    #[test]
+    fn rates() {
+        assert_eq!(rate_text(60_000), "60");
+        assert_eq!(rate_text(59_940), "59.94");
+        assert_eq!(rate_text(143_999), "143.999");
+        assert_eq!(rate_text(29_970), "29.97");
     }
 }

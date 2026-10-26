@@ -1,6 +1,7 @@
-//! Linux (KDE Plasma and GNOME, Wayland) host backend: a virtual output from the compositor (KWin
-//! through the ScreenCast portal, Mutter through its own ScreenCast service), PipeWire capture
-//! (DMA-BUF preferred) and VAAPI / NVENC / x264 encoding.
+//! Linux (KDE Plasma, GNOME, sway and Hyprland, Wayland) host backend: a virtual output from the
+//! compositor (KWin through the ScreenCast portal, Mutter through its own ScreenCast service, sway
+//! and Hyprland through their IPC), PipeWire capture (DMA-BUF preferred) or, on the wlroots
+//! compositors, direct Wayland capture, and VAAPI / NVENC / x264 encoding.
 //!
 //! Exposes the platform contract used by `ezd-host`:
 //! `create_virtual_source(&PlatformOptions)` and `diag_section()`.
@@ -20,6 +21,7 @@ mod gbm_test;
 mod gnome;
 mod gnome_dc;
 mod gnome_input;
+mod hyprland;
 mod input;
 mod kde;
 mod kscreen;
@@ -29,8 +31,12 @@ mod portal;
 mod provider;
 mod pw;
 mod source;
+mod sway;
 mod uinput_sink;
 mod vkdma;
+mod wl_capture;
+#[cfg(test)]
+mod wlroots_test;
 
 use backend::LinuxBackend;
 pub use ezd_host_core::PlatformOptions;
@@ -45,9 +51,8 @@ pub fn create_virtual_source(
     let provider: Box<dyn provider::VirtualOutputProvider> = match backend {
         LinuxBackend::Kde => Box::new(kde::KdeProvider),
         LinuxBackend::Gnome => Box::new(gnome::GnomeProvider::new()),
-        LinuxBackend::Sway | LinuxBackend::Hyprland => {
-            return Err(PlatformError::Other(backend.unsupported_error()));
-        }
+        LinuxBackend::Sway => Box::new(sway::SwayProvider),
+        LinuxBackend::Hyprland => Box::new(hyprland::HyprlandProvider),
     };
     tracing::info!(backend = backend.name(), "Linux backend");
     let src = source::LinuxSource::new(opts, provider);
@@ -60,8 +65,8 @@ pub fn create_virtual_source(
 }
 
 /// Input injection backend for the detected desktop (see [`backend`]): KDE through KWin's input
-/// device interface, GNOME through gsettings. Elsewhere the backend is unavailable with a note
-/// for the tablet.
+/// device interface, GNOME through gsettings, sway and Hyprland through their per-device output
+/// mapping.
 pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
     let backend = match backend::current() {
         Ok(b) => b,
@@ -78,16 +83,12 @@ pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
         LinuxBackend::Gnome => Some(Arc::new(uinput_sink::UinputBackend::new(Arc::new(
             gnome_input::GnomeDesktop::new(),
         )))),
-        LinuxBackend::Sway | LinuxBackend::Hyprland => {
-            tracing::info!(
-                backend = backend.name(),
-                "input injection is not implemented for this desktop"
-            );
-            Some(Arc::new(UnavailableBackend(format!(
-                "input injection: {}",
-                backend.unsupported_error()
-            ))))
-        }
+        LinuxBackend::Sway => Some(Arc::new(uinput_sink::UinputBackend::new(Arc::new(
+            sway::SwayDesktop,
+        )))),
+        LinuxBackend::Hyprland => Some(Arc::new(uinput_sink::UinputBackend::new(Arc::new(
+            hyprland::HyprlandDesktop,
+        )))),
     }
 }
 

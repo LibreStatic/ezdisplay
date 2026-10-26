@@ -25,6 +25,10 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 tokio = { workspace = true }
 serde_json.workspace = true
 tracing.workspace = true
+# Direct Wayland capture for the wlroots compositors (ext-image-copy-capture, wlr-screencopy).
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # Only the bindings: functions are loaded through FFmpeg's Vulkan device.
 ash = { version = "0.38", default-features = false, features = ["std"] }
 
