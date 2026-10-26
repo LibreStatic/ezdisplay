@@ -4,6 +4,7 @@
 // rest is compiled out.
 #![cfg_attr(not(feature = "ffmpeg"), allow(dead_code))]
 
+pub mod audio;
 pub mod capture;
 pub mod diag;
 pub mod display;
