@@ -409,7 +409,7 @@ private fun WideLayout(
                     WideHeading(stringResource(R.string.settings_profile))
                     PenContent(
                         state, actions, if (sideBySide) 3 else 2, setPaneEditor,
-                        selectedEditor = editor, shortcutMinHeight = 80.dp,
+                        selectedEditor = editor, shortcutMinHeight = 64.dp,
                     )
                     Spacer(Modifier.height(20.dp))
                     if (sideBySide) {
