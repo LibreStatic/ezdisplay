@@ -4,7 +4,8 @@ use crate::input::{
     Frame, KeyboardEncoder, MAX_SLOTS, Mapper, PRESSURE_MAX, PenButton, PenEncoder, PointerEncoder,
     TouchEncoder, keyboard_keys, physical_mm, resolution,
 };
-use crate::{kscreen, kwin_input};
+use crate::kscreen::{self, KOutput};
+use crate::kwin_input;
 use evdev::uinput::VirtualDevice;
 use evdev::{
     AbsInfo, AbsoluteAxisCode as Abs, AttributeSet, BusType, InputEvent, InputId, KeyCode as Key,
@@ -171,7 +172,7 @@ struct GeometryRefresh {
 }
 
 impl GeometryRefresh {
-    fn start(output: String, mapper: Arc<Mutex<Mapper>>) -> Self {
+    fn start(desktop: Arc<dyn DesktopInput>, output: String, mapper: Arc<Mutex<Mapper>>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let thread = std::thread::Builder::new()
@@ -184,7 +185,7 @@ impl GeometryRefresh {
                         }
                         std::thread::sleep(Duration::from_millis(100));
                     }
-                    if let Ok(outs) = kscreen::list_outputs() {
+                    if let Some(outs) = desktop.outputs() {
                         let m = Mapper::from_outputs(&outs, &output);
                         if m.is_known() {
                             *mapper.lock().unwrap_or_else(|e| e.into_inner()) = m;
@@ -238,6 +239,8 @@ pub struct UinputSink {
     caps: u32,
     note: String,
     write_failed: bool,
+    /// Undoes the desktop's device mapping. Last field: dropped after the devices are gone.
+    _mapping: Option<Box<dyn Send>>,
 }
 
 impl UinputSink {
@@ -327,25 +330,67 @@ impl Drop for UinputSink {
     }
 }
 
-/// Input injection for KDE Plasma 6: uinput devices mapped to the virtual output through KWin.
-pub struct KdeInputBackend {
+/// The desktop-specific half of input injection: how the touch and pen devices get tied to the
+/// virtual output, and where the outputs are for the pointer.
+pub trait DesktopInput: Send + Sync {
+    /// Maps each `(label, eventN)` device (`touch`, `pen`) to `output`. One result per device,
+    /// in order. Call from a thread outside the runtime.
+    fn map_devices(&self, devices: &[(&str, &str)], output: &str) -> MappedDevices;
+
+    /// The current output layout, `None` when it cannot be read.
+    fn outputs(&self) -> Option<Vec<KOutput>>;
+}
+
+/// Result of [`DesktopInput::map_devices`].
+pub struct MappedDevices {
+    /// One result per device.
+    pub results: Vec<Result<(), String>>,
+    /// Undoes the mapping when dropped (the sink holds it until it ends).
+    pub guard: Option<Box<dyn Send>>,
+}
+
+/// KDE: KWin's input device D-Bus interface and `kscreen-doctor`.
+struct KdeDesktop {
     handle: Handle,
+}
+
+impl DesktopInput for KdeDesktop {
+    fn map_devices(&self, devices: &[(&str, &str)], output: &str) -> MappedDevices {
+        MappedDevices {
+            results: kwin_input::map_devices(&self.handle, devices, output),
+            guard: None,
+        }
+    }
+
+    fn outputs(&self) -> Option<Vec<KOutput>> {
+        kscreen::list_outputs().ok()
+    }
+}
+
+/// Input injection through uinput devices mapped to the virtual output by the desktop.
+pub struct UinputBackend {
+    desktop: Arc<dyn DesktopInput>,
     pen_button: PenButton,
 }
 
-impl KdeInputBackend {
-    /// `handle` runs the D-Bus calls (the input thread has no runtime of its own). The barrel
-    /// button comes from `EZD_PEN_BUTTON` (`stylus` / `stylus2`).
-    pub fn new(handle: Handle) -> Self {
+impl UinputBackend {
+    /// KDE Plasma 6. `handle` runs the D-Bus calls (the input thread has no runtime of its own).
+    /// The barrel button comes from `EZD_PEN_BUTTON` (`stylus` / `stylus2`).
+    pub fn kde(handle: Handle) -> Self {
+        Self::new(Arc::new(KdeDesktop { handle }))
+    }
+
+    /// Any desktop, through its [`DesktopInput`].
+    pub fn new(desktop: Arc<dyn DesktopInput>) -> Self {
         let env = std::env::var("EZD_PEN_BUTTON").ok();
-        KdeInputBackend {
-            handle,
+        UinputBackend {
+            desktop,
             pen_button: PenButton::from_env_value(env.as_deref()),
         }
     }
 }
 
-impl InputBackend for KdeInputBackend {
+impl InputBackend for UinputBackend {
     fn create(&self, target: &InputTarget) -> Result<Box<dyn InputSink>, String> {
         let d = &target.client.display;
         let mm = physical_mm(d.width_px, d.height_px, d.density_dpi);
@@ -360,8 +405,9 @@ impl InputBackend for KdeInputBackend {
             Some(create_pen(mm).map_err(|e| open_error(&e))?)
         };
 
-        // KWin drops touch and tablet events of devices without an output.
+        // The compositor drops touch and tablet events of devices without an output.
         let (mut touch_ok, mut pen_ok) = (false, false);
+        let mut mapping_guard = None;
         match target.output.as_ref().map(|o| o.name.as_str()) {
             None | Some("") => notes.push(
                 "touch and pen need the virtual output name, which the video source did not report"
@@ -381,8 +427,9 @@ impl InputBackend for KdeInputBackend {
                 }
                 let refs: Vec<(&str, &str)> =
                     devices.iter().map(|(l, n)| (*l, n.as_str())).collect();
-                let results = kwin_input::map_devices(&self.handle, &refs, output);
-                for ((label, _), r) in devices.iter().zip(results) {
+                let mapped = self.desktop.map_devices(&refs, output);
+                mapping_guard = mapped.guard;
+                for ((label, _), r) in devices.iter().zip(mapped.results) {
                     match r {
                         Ok(()) => match *label {
                             "touch" => touch_ok = true,
@@ -413,7 +460,7 @@ impl InputBackend for KdeInputBackend {
         let mut mapper = Mapper::identity();
         let mut refresh = None;
         if let Some(o) = target.output.as_ref().filter(|o| !o.name.is_empty()) {
-            if let Ok(outs) = kscreen::list_outputs() {
+            if let Some(outs) = self.desktop.outputs() {
                 mapper = Mapper::from_outputs(&outs, &o.name);
             }
             if mapper.is_known() {
@@ -430,7 +477,8 @@ impl InputBackend for KdeInputBackend {
             Some((_, s)) => s.clone(),
             None => Arc::new(Mutex::new(mapper)),
         };
-        let refresh = refresh.map(|(name, s)| GeometryRefresh::start(name, s));
+        let refresh =
+            refresh.map(|(name, s)| GeometryRefresh::start(self.desktop.clone(), name, s));
 
         let mut caps = InputStatus::ACTIONS;
         if touch_ok {
@@ -465,6 +513,7 @@ impl InputBackend for KdeInputBackend {
             caps,
             note: notes.join("; "),
             write_failed: false,
+            _mapping: mapping_guard,
         }))
     }
 }

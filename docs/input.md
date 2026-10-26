@@ -235,6 +235,35 @@ or above the primary one) the pointer is off by that offset; the host logs a war
 - Touch works but lands on the wrong screen: check `outputName` of the device; the note in the
   tablet's status says if the mapping failed.
 
+## Linux (GNOME)
+
+The same four uinput devices are created; only the mapping differs. Mutter reads the output of a
+touchscreen or tablet from gsettings, in relocatable schemas keyed by `<vendor>:<product>` (lowercase
+hex):
+
+| Device | Schema and path |
+| --- | --- |
+| touch | `org.gnome.desktop.peripherals.touchscreen:/org/gnome/desktop/peripherals/touchscreens/1209:edd1/` |
+| pen | `org.gnome.desktop.peripherals.tablet:/org/gnome/desktop/peripherals/tablets/1209:edd2/` |
+
+The key is `output`, type `as`, and its value is the monitor's EDID triple
+`['vendor', 'product', 'serial']` (`['', '', '']`, the default, means automatic mapping; the schema documents
+no other form). For the virtual monitor Mutter reports `MetaVendor`, `Virtual remote monitor` and a
+serial that changes with every new monitor (`0x000001`, ...), so the host reads the triple from
+`org.gnome.Mutter.DisplayConfig` for the new monitor and sets both keys with `gsettings` every
+session. It remembers the previous values and puts them back (a `reset` when they were the default)
+when the session ends. Touch and pen are only enabled once this worked.
+
+The pointer is an absolute device over the whole desktop. The host reads the layout from
+`DisplayConfig` (`layout-mode` physical or logical, scale and rotation included), refreshes it every
+3 s and converts the stream position the same way as on KDE. `ezd-host diag` reports the Mutter
+version and whether the `ScreenCast` and `DisplayConfig` services answer (`gnome` section).
+
+Check the mapping with `gsettings get <schema>:<path> output`, and with `libinput list-devices`.
+The mapping has been verified to be written and restored against a headless Mutter
+(`tools/gnome-headless-test.sh`); a headless Mutter has no input seat, so touch and pointer routing
+still needs a check on a real GNOME session.
+
 ## Windows
 
 The Windows host injects the pen and touch through synthetic pointer devices (`CreateSyntheticPointerDevice`, Windows 10 1809 or later): a PT_PEN device with pressure, tilt, barrel button and eraser, and a PT_TOUCH device with up to 10 contacts. Pointer buttons and scrolling go through `SendInput`, as absolute mouse moves over the virtual desktop followed by the click or wheel. Ctrl and Shift are pressed around the wheel event, so a pinch (Ctrl + wheel) zooms.

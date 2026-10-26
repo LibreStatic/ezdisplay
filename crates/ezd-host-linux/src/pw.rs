@@ -505,6 +505,8 @@ fn on_process(stream: &pw::stream::Stream, local: &Rc<RefCell<Local>>) {
     }
     // Cursor first, never gated on video.
     if !cursor_shapes.is_empty() || cursor_state.is_some() {
+        static SEEN: std::sync::Once = std::sync::Once::new();
+        SEEN.call_once(|| tracing::info!("the compositor sends cursor metadata"));
         let l = local.borrow();
         for s in cursor_shapes {
             let _ = l.cursor.set_shape(s);
