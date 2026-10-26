@@ -12,7 +12,8 @@ use crate::state::Lifecycle;
 use crate::text;
 use eframe::egui::{self, ComboBox, Margin, RichText, Ui};
 use ezd_host_service::{
-    AdbMode, DeviceInfo, DeviceState, HdrChoice, HostStatus, LiveSession, PenChoice, WifiInfo,
+    AdbMode, AoaMode, DeviceInfo, DeviceState, HdrChoice, HostStatus, LiveSession, PenChoice,
+    Transport, WifiInfo,
 };
 use ezd_proto::{DynamicRange, SdrReason};
 use i18n_embed::fluent::FluentLanguageLoader;
@@ -162,6 +163,8 @@ pub struct Snapshot {
     pub input_fix: InputFixState,
     pub has_licenses_dir: bool,
     pub wifi: WifiState,
+    /// Why USB accessory mode is unavailable; informational (adb still works).
+    pub usb_problem: Option<String>,
     /// GPU choices and the USB driver hint are Windows-only.
     pub windows: bool,
     pub version: String,
@@ -524,6 +527,11 @@ impl SettingsView {
             (fl!(l, "stat-device"), live.device_name.clone()),
             (fl!(l, "stat-mode"), mode),
         ];
+        match live.transport {
+            Transport::Aoa => session.push((fl!(l, "stat-connection"), fl!(l, "transport-aoa"))),
+            Transport::Wifi => session.push((fl!(l, "stat-connection"), fl!(l, "transport-wifi"))),
+            Transport::Tcp => {}
+        }
         if let DynamicRange::SdrToneMapped(reason) = live.dynamic_range {
             session.push((fl!(l, "stat-hdr"), sdr_reason_text(l, reason)));
         }
@@ -1067,15 +1075,39 @@ impl SettingsView {
             _ => Vec::new(),
         };
         let windows = self.snap.windows;
+        let usb_problem = self.snap.usb_problem.clone();
         let cfg = &mut self.snap.config.service;
 
         // Android Debug Bridge.
         let mut use_adb = cfg.adb != AdbMode::Off;
+        let mut use_aoa = cfg.aoa != AoaMode::Off;
         widgets::card(
             ui,
             pal,
             Some((glyphs::PLUG_CONNECTED, &fl!(l, "card-adb"))),
             |ui| {
+                if cfg!(feature = "aoa") {
+                    if widgets::toggle_row(
+                        ui,
+                        pal,
+                        &fl!(l, "use-aoa"),
+                        Some(&fl!(l, "use-aoa-description")),
+                        &mut use_aoa,
+                    )
+                    .changed()
+                    {
+                        cfg.aoa = if use_aoa { AoaMode::Auto } else { AoaMode::Off };
+                    }
+                    if let Some(reason) = usb_problem.as_deref().filter(|_| use_aoa) {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(fl!(l, "usb-unavailable-hint", reason = reason))
+                                .small()
+                                .weak(),
+                        );
+                    }
+                    widgets::row_divider(ui, pal);
+                }
                 widgets::info_row(ui, pal, "adb", &adb_value);
                 widgets::row_divider(ui, pal);
                 if widgets::toggle_row(

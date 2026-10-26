@@ -5,7 +5,7 @@ use anyhow::{Result, anyhow};
 use clap::{Args, Command, ValueEnum};
 use ezd_host_core::SessionSummary;
 use ezd_host_service::{
-    AdbMode, HostEvent, HostService, HostStatus, LinkChoice, PenChoice, ServiceConfig,
+    AdbMode, AoaMode, HostEvent, HostService, HostStatus, LinkChoice, PenChoice, ServiceConfig,
     ServiceError, SourceKind,
 };
 use i18n_embed::fluent::FluentLanguageLoader;
@@ -24,6 +24,12 @@ pub enum LinkArg {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum AoaArg {
+    Auto,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum PenModeArg {
     Tablet,
     Mouse,
@@ -38,6 +44,8 @@ pub struct RunArgs {
     listen: String,
     #[arg(long, num_args = 0..=1, value_name = "SERIAL")]
     adb: Option<Option<String>>,
+    #[arg(long, value_enum, default_value = "auto")]
+    aoa: AoaArg,
     #[arg(long, value_enum, default_value = "usb")]
     link: LinkArg,
     #[arg(long, default_value_t = 120_000)]
@@ -83,6 +91,7 @@ pub fn localize(cmd: Command, l: &FluentLanguageLoader) -> Command {
         .mut_arg("source", |a| a.help(fl!(l, "run-source")))
         .mut_arg("listen", |a| a.help(fl!(l, "run-listen")))
         .mut_arg("adb", |a| a.help(fl!(l, "run-adb")))
+        .mut_arg("aoa", |a| a.help(fl!(l, "run-aoa")))
         .mut_arg("link", |a| a.help(fl!(l, "run-link")))
         .mut_arg("max_refresh_mhz", |a| a.help(fl!(l, "run-max-refresh-mhz")))
         .mut_arg("bitrate_kbps", |a| a.help(fl!(l, "run-bitrate-kbps")))
@@ -142,6 +151,10 @@ fn config(args: &RunArgs) -> Result<ServiceConfig> {
             None => AdbMode::Off,
             Some(None) => AdbMode::Auto,
             Some(Some(serial)) => AdbMode::Serial(serial.clone()),
+        },
+        aoa: match args.aoa {
+            AoaArg::Auto => AoaMode::Auto,
+            AoaArg::Off => AoaMode::Off,
         },
         link: match args.link {
             LinkArg::Usb => LinkChoice::Usb,
@@ -208,6 +221,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     }
     let mut shown: Shown = None;
     let reporter = tokio::spawn(report_errors(service.status()));
+    let aoa_notice = tokio::spawn(report_aoa_problem(service.aoa_problem()));
 
     // The service owns the event sender, so the channel stays open until `stop`.
     loop {
@@ -236,6 +250,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         log_event(Ok(ev), &mut shown);
     }
     reporter.abort();
+    aoa_notice.abort();
     Ok(())
 }
 
@@ -291,6 +306,20 @@ async fn report_errors(mut status: tokio::sync::watch::Receiver<HostStatus>) {
                 eprintln!("{}", localize_error(e));
             }
             last = err;
+        }
+    }
+}
+
+/// Prints a one-line notice whenever USB accessory mode turns out to be unavailable. It is not an
+/// error: adb and the network keep working.
+async fn report_aoa_problem(mut problem: tokio::sync::watch::Receiver<Option<String>>) {
+    loop {
+        let reason = problem.borrow_and_update().clone();
+        if let Some(reason) = reason {
+            eprintln!("{}", fl!("aoa-unavailable", reason = reason.as_str()));
+        }
+        if problem.changed().await.is_err() {
+            break;
         }
     }
 }

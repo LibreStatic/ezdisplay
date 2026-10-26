@@ -10,6 +10,7 @@ version-flag = Exibe a versão
 run-source = Fonte de vídeo: "synthetic" é um padrão de teste gerado por software com um cursor em movimento, "virtual" é uma tela virtual real capturada e codificada pelo backend da plataforma.
 run-listen = Endereço em que escutar.
 run-adb = Executa `adb reverse tcp:27183 tcp:<porta de escuta>` para SERIAL, ou para cada dispositivo USB pronto se nenhum for informado; dispositivos sem fio exigem um SERIAL explícito. Mantido enquanto o host roda e removido ao sair.
+run-aoa = USB sem modo desenvolvedor: "auto" muda um tablet conectado para o modo acessório do Android e transmite por USB, "off" não mexe nos dispositivos USB. O adb continua funcionando como alternativa.
 run-link = Tipo de conexão: define o limite de bitrate padrão (usb 80 Mbps, rede 30 Mbps).
 run-max-refresh-mhz = Maior taxa de atualização a usar, em milihertz.
 run-bitrate-kbps = Bitrate fixo em kbit/s (limitado ao máximo da conexão).
@@ -43,6 +44,7 @@ vdd-err-failed = Driver de vídeo virtual: { $detail }
 
 err-adb-not-found = adb não encontrado; instale as platform-tools do Android para usar USB (o host continua escutando na rede)
 err-adb-reverse = adb reverse para { $serial }: { $reason }
+aoa-unavailable = USB sem modo desenvolvedor indisponível ({ $reason }); a depuração USB continua funcionando.
 err-binding = vinculando { $addr }: { $reason }
 err-scale-nan = `{ $value }` não é um número
 err-scale-range = a escala deve estar entre 0,25 e 1,0, recebido { $value }

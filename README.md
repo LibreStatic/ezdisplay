@@ -64,8 +64,7 @@ Working today, over USB with ADB:
 | Tray app with settings and live statistics | ✅ | ✅ |
 | Installer / packages | ✅ `.exe` | ✅ AppImage, `.deb`, Arch |
 
-**Not yet:** Android Open Accessory and native Wi-Fi transports, audio, GNOME and wlroots backends,
-X11.
+**Not yet:** audio, GNOME and wlroots backends, X11.
 
 ## How it works
 
@@ -90,6 +89,23 @@ flowchart LR
 All channels share one prioritized, multiplexed link (ADB over USB today), so input and cursor
 updates are never stuck behind a video frame. Details: [docs/architecture.md](docs/architecture.md),
 wire format: [docs/protocol.md](docs/protocol.md), input path: [docs/input.md](docs/input.md).
+
+## USB without developer mode
+
+Besides adb, ezdisplay can talk to the tablet over USB with the Android Open Accessory protocol,
+which does not need developer mode or USB debugging.
+
+- **Linux:** needs the udev rule `packaging/linux/70-ezdisplay-usb.rules`, which the packages install
+  (from source or an AppImage, install it yourself, see
+  [packaging/linux/README.md](packaging/linux/README.md)).
+- **Windows:** needs the optional UsbDk driver. The installer offers it as the unchecked task "USB
+  without developer mode (installs the UsbDk driver)". Without it, USB falls back to adb.
+- The first time, Android asks which app should open the accessory. Pick ezdisplay; choosing "always"
+  avoids the question next time.
+- In auto mode the host tries the accessory first and falls back to adb. Turn it off with
+  `--aoa off` or `aoa = "off"` in `config.toml`.
+- A phone or tablet without the app is switched once and then left alone: it is reset back to normal
+  mode and not tried again while the host runs.
 
 ## Install
 
@@ -160,6 +176,9 @@ Build it (see [Building](#building)), then:
    sudo install -m644 packaging/linux/70-ezdisplay-uinput.rules /etc/udev/rules.d/
    sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput
    ```
+
+   For USB without developer mode, install `packaging/linux/70-ezdisplay-usb.rules` the same way and
+   run `sudo udevadm trigger --subsystem-match=usb`.
 
 2. Install the app and its desktop entry:
 

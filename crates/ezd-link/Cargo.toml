@@ -22,13 +22,21 @@ rcgen = { version = "0.14", default-features = false, features = ["ring"], optio
 ring = { version = "0.17", optional = true }
 spake2 = { version = "0.4", optional = true }
 serde = { workspace = true, optional = true }
+# USB accessory (AOA) transport (`aoa` feature, not on Android). libusb comes from the system on
+# Linux; Windows builds it from source.
+rusb = { version = "0.9", optional = true }
 
 [features]
 default = ["quic"]
+# Host side of the Android Open Accessory USB transport (libusb through rusb).
+aoa = ["dep:rusb"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen", "dep:ring", "dep:spake2", "dep:serde"]
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 socket2 = { version = "0.6", features = ["all"] }
+
+[target.'cfg(windows)'.dependencies]
+rusb = { version = "0.9", optional = true, features = ["vendored"] }
 
 [lints]
 workspace = true

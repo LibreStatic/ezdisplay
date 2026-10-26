@@ -97,6 +97,11 @@
     <string name="cd_choose_action">Choose action</string>
     <string name="status_wifi_connecting">Connecting over Wi-Fi to %1$s…</string>
     <string name="status_wifi_handshake">Connected over Wi-Fi to %1$s, negotiating…</string>
+    <string name="status_usb_connecting">Connecting over USB (accessory)…</string>
+    <string name="status_usb_handshake">Connected over USB (accessory), negotiating…</string>
+    <string name="status_ended_usb">Disconnected (%1$s). Reconnecting over USB (accessory)…</string>
+    <string name="status_usb_permission">Allow USB access to connect to the PC.</string>
+    <string name="status_usb_open_failed">Could not open the USB accessory. Retrying…</string>
     <string name="status_wifi_latency">Wi-Fi adds latency; USB is best for drawing.</string>
     <string name="section_connection">Connection</string>
     <string name="connection_summary_usb">USB only</string>

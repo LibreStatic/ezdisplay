@@ -17,6 +17,12 @@ object NativeBridge {
     @JvmStatic external fun start(surface: Surface?, host: String, port: Int, capsJson: String): String?
 
     /**
+     * Starts one connection attempt over the USB accessory file descriptor [fd]. Takes ownership: the caller
+     * detached it from its ParcelFileDescriptor and must not close it. Null on success, else an error.
+     */
+    @JvmStatic external fun startFd(surface: Surface?, fd: Int, capsJson: String): String?
+
+    /**
      * Starts one connection attempt over Wi-Fi to the paired host with certificate [fingerprintHex] at [addr]
      * (`ip:port`). [stateDir] holds this device's identity and the paired hosts. Null on success, else an error.
      */

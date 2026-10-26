@@ -100,6 +100,10 @@ the MUX mode) and, if possible, in a third pass that forces the GPU.
 - **Firewall (Wi-Fi):** after installing, `netsh advfirewall firewall show rule name=all` must list
   the two "ezdisplay Wi-Fi" inbound rules (UDP 27183, private profile); a reinstall must not
   duplicate them and the uninstall must remove them.
+- **UsbDk task:** the "USB without developer mode (installs the UsbDk driver)" task must be
+  unchecked by default. When checked, setup downloads the pinned MSI (SHA-256 checked) and installs it
+  silently; a reinstall must not download it again once the `UsbDk` service exists. Uninstalling
+  ezdisplay leaves UsbDk in place on purpose.
 - **Uninstall** from *Settings*, *Apps*: afterwards Device Manager (*Display adapters*, with
   *View*, *Show hidden devices*) must not list "Virtual Display Driver", and
   `C:\Program Files\ezdisplay` must be gone.
@@ -119,6 +123,16 @@ Repeat steps 3, 4 and 7 once per mode:
 In each case check that the virtual monitor appears to the right of the main one, that the image
 reaches the tablet in the requested mode, that the pointer moves without lag, and that video recovers
 on its own after changing the resolution or locking/unlocking the session.
+
+## USB without developer mode (AOA)
+
+- With UsbDk installed and developer mode (USB debugging) off on the tablet, plugging it in over USB
+  must connect. The first time, Android asks which app should open the accessory: pick ezdisplay;
+  "always" avoids the question later.
+- Without UsbDk, USB must fall back to adb (needs USB debugging on the tablet).
+- A phone or tablet without the app must be switched once and then left alone: it returns to normal
+  mode (MTP) and is not retried while the host runs.
+- `--aoa off` (or `aoa = "off"` in `config.toml`) must skip the accessory attempt and use adb only.
 
 ## Input (pen and touch)
 

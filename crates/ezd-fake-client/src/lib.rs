@@ -125,6 +125,8 @@ pub enum ClientEnd {
     HostEof,
     /// `max_duration` elapsed.
     TimedOut,
+    /// The host stopped answering.
+    HostSilent,
 }
 
 /// Everything the client observed.
@@ -513,6 +515,7 @@ pub async fn run_fake_client(
         ezd_client_core::ClientEnd::HostBye(r) => ClientEnd::HostBye(r),
         ezd_client_core::ClientEnd::HostEof => ClientEnd::HostEof,
         ezd_client_core::ClientEnd::TimedOut => ClientEnd::TimedOut,
+        ezd_client_core::ClientEnd::HostSilent => ClientEnd::HostSilent,
     };
     report.clock_offset_us = outcome.clock_offset_us;
     report.rtt_us = outcome.rtt_us;

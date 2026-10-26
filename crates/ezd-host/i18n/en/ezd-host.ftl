@@ -10,6 +10,7 @@ version-flag = Print version
 run-source = Video source: "synthetic" is a software-generated test pattern with a moving cursor, "virtual" is a real virtual display captured and encoded by the platform backend.
 run-listen = Address to listen on.
 run-adb = Run `adb reverse tcp:27183 tcp:<listen port>` for SERIAL, or for every ready USB device when no serial is given; wireless devices need an explicit SERIAL. Kept up while the host runs and removed on exit.
+run-aoa = USB without developer mode: "auto" switches a connected tablet to Android accessory mode and streams over USB, "off" leaves the USB devices alone. adb keeps working as the fallback.
 run-link = Link kind: selects the default bitrate ceiling (usb 80 Mbps, network 30 Mbps).
 run-max-refresh-mhz = Highest refresh rate to use, in millihertz.
 run-bitrate-kbps = Fixed bitrate in kbit/s (clamped to the link ceiling).
@@ -43,6 +44,7 @@ vdd-err-failed = Virtual Display Driver: { $detail }
 
 err-adb-not-found = adb was not found; install the Android platform-tools to use USB (the host keeps listening on the network)
 err-adb-reverse = adb reverse for { $serial }: { $reason }
+aoa-unavailable = USB without developer mode is unavailable ({ $reason }); USB debugging still works.
 err-binding = binding { $addr }: { $reason }
 err-scale-nan = `{ $value }` is not a number
 err-scale-range = scale must be between 0.25 and 1.0, got { $value }

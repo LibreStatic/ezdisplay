@@ -10,6 +10,7 @@ version-flag = Version anzeigen
 run-source = Videoquelle: "synthetic" ist ein softwaregeneriertes Testbild mit bewegtem Mauszeiger, "virtual" ist ein echter virtueller Bildschirm, der vom Plattform-Backend aufgenommen und kodiert wird.
 run-listen = Adresse, auf der gelauscht wird.
 run-adb = Führt `adb reverse tcp:27183 tcp:<Lauschport>` für SERIAL aus, oder für jedes bereite USB-Gerät, wenn keines angegeben ist; drahtlose Geräte brauchen eine explizite SERIAL. Bleibt aktiv, solange der Host läuft, und wird beim Beenden wieder entfernt.
+run-aoa = USB ohne Entwickleroptionen: "auto" schaltet ein angeschlossenes Tablet in den Android-Zubehörmodus und streamt über USB, "off" lässt die USB-Geräte in Ruhe. adb bleibt als Ausweichlösung nutzbar.
 run-link = Verbindungsart: wählt die Standard-Bitratenobergrenze (usb 80 Mbit/s, Netzwerk 30 Mbit/s).
 run-max-refresh-mhz = Höchste zu verwendende Bildwiederholrate in Millihertz.
 run-bitrate-kbps = Feste Bitrate in kbit/s (auf die Obergrenze der Verbindung begrenzt).
@@ -43,6 +44,7 @@ vdd-err-failed = Treiber für virtuelle Bildschirme: { $detail }
 
 err-adb-not-found = adb wurde nicht gefunden; installiere die Android-Platform-Tools, um USB zu nutzen (der Host lauscht weiter im Netzwerk)
 err-adb-reverse = adb reverse für { $serial }: { $reason }
+aoa-unavailable = USB ohne Entwickleroptionen ist nicht verfügbar ({ $reason }); USB-Debugging funktioniert weiterhin.
 err-binding = Binden von { $addr }: { $reason }
 err-scale-nan = `{ $value }` ist keine Zahl
 err-scale-range = Der Maßstab muss zwischen 0,25 und 1,0 liegen, erhalten: { $value }
