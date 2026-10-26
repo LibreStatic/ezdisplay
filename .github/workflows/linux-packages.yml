@@ -18,7 +18,7 @@ jobs:
     steps:
       - name: Install build tools and runtime libraries
         run: |
-          pacman -Syu --noconfirm --needed base-devel sudo git clang pkgconf rust ffmpeg pipewire libva \
+          pacman -Syu --noconfirm --needed base-devel sudo git clang pkgconf rust ffmpeg pipewire libva libusb \
             android-tools xdg-desktop-portal-kde libkscreen
       - uses: actions/checkout@v4
       - name: Build the package as a regular user
@@ -66,7 +66,7 @@ jobs:
           apt-get install -y --no-install-recommends build-essential clang libclang-dev pkg-config \
             ca-certificates git curl dpkg-dev libavcodec-dev libavformat-dev libavfilter-dev \
             libavutil-dev libswscale-dev libswresample-dev libpipewire-0.3-dev libva-dev \
-            libx11-dev libxkbcommon-dev libwayland-dev
+            libusb-1.0-0-dev libx11-dev libxkbcommon-dev libwayland-dev
       - uses: actions/checkout@v4
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@stable
@@ -111,7 +111,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends build-essential clang libclang-dev pkg-config \
             nasm curl ca-certificates git xz-utils unzip file patchelf binutils \
-            libva-dev libdrm-dev libpipewire-0.3-dev libvulkan-dev libxkbcommon-dev \
+            libva-dev libdrm-dev libpipewire-0.3-dev libvulkan-dev libusb-1.0-0-dev libxkbcommon-dev \
             libwayland-dev libx11-dev glslang-tools glslang-dev spirv-tools
       - uses: actions/checkout@v4
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -149,7 +149,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates git jq libva2 libva-drm2 \
-            libdrm2 libvulkan1 libpipewire-0.3-0t64
+            libdrm2 libvulkan1 libpipewire-0.3-0t64 libusb-1.0-0
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:

@@ -18,6 +18,7 @@ status-streaming = Transmitindo para { $device } · { $width }×{ $height } a { 
 error-bind = Não foi possível escutar em { $addr }: { $reason }
 error-adb-not-found = O adb não foi encontrado
 error-adb-reverse = Falha no adb reverse para { $serial }: { $reason }
+usb-unavailable-hint = USB sem modo desenvolvedor indisponível ({ $reason }); a depuração USB continua funcionando.
 error-unsupported = Este sistema ainda não tem suporte a telas virtuais
 error-source = Não foi possível criar a fonte de vídeo: { $reason }
 
@@ -45,6 +46,9 @@ devices-heading = Dispositivos
 stats-heading = Estatísticas ao vivo
 stats-waiting = Aguardando as primeiras medições…
 stat-device = Tablet
+stat-connection = Conexão
+transport-aoa = USB (acessório)
+transport-wifi = Wi-Fi
 stat-mode = Modo
 stat-encoder = Codificador
 stat-fps = Taxa de quadros
@@ -129,6 +133,7 @@ device-unauthorized = aguardando você aceitar a depuração USB
 device-offline = offline
 open-app = Abrir o app no tablet ao conectar
 use-adb = Conectar por USB com adb
+use-aoa = USB sem modo desenvolvedor
 advanced = Avançado
 setting-port = Porta
 port-hint = O tablet alcança este computador por esta porta. As mudanças valem quando não há sessão em andamento.
@@ -185,6 +190,7 @@ input-description = Use o tablet como tela de toque e caneta neste computador.
 pen-description = Uma mesa digitalizadora adiciona pressão e inclinação.
 telemetry-description = Mostra números de desempenho ao vivo no tablet durante a transmissão.
 use-adb-description = Encontra tablets com a depuração USB ativada.
+use-aoa-description = Muda o tablet para o modo acessório ao conectá-lo, sem precisar da depuração USB. O adb continua como alternativa.
 autostart-description = Inicia o ezdisplay quando você entra na sessão.
 start-on-launch-description = Começa a esperar pelo tablet assim que o ezdisplay abre.
 system-accent = Usar a cor de destaque do sistema
@@ -194,3 +200,28 @@ logs-description = Abre a pasta onde o ezdisplay grava seus logs.
 about-description = Tela USB de código aberto para tablets Android.
 repository = Código-fonte
 driver-reinstall = Reinstalar o driver
+
+## Window: Wi-Fi
+card-wifi = Wi-Fi
+wifi-enable = Conectar por Wi-Fi
+wifi-latency-warning = O Wi-Fi acrescenta latência e jitter; o USB é o melhor para desenhar.
+wifi-starts-with-stream = O Wi-Fi é ativado quando a transmissão começa.
+wifi-address = Endereço
+wifi-fingerprint = Impressão digital do host
+wifi-pair = Parear um dispositivo
+wifi-pair-cancel = Cancelar
+wifi-pair-hint = No tablet, escaneie este QR code ou digite o PIN.
+wifi-pin = PIN
+wifi-qr-label = QR code de pareamento
+wifi-pair-expires = Fecha em { $seconds } s
+wifi-notice-paired = Pareado com { $device }.
+wifi-notice-attempts = O pareamento foi fechado: PINs incorretos demais.
+wifi-notice-expired = O pareamento foi fechado: o tempo acabou.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } dispositivo pareado
+       *[other] { $count } dispositivos pareados
+    }
+wifi-paired-none = Ainda não há dispositivos pareados.
+wifi-forget = Esquecer
+error-wifi = Não foi possível iniciar o Wi-Fi: { $reason }

@@ -11,6 +11,8 @@
 
 mod handle;
 mod session;
+#[cfg(feature = "wifi")]
+pub mod wifi;
 
 pub use handle::{ClientHandle, ClientSnapshot, CursorSnapshot};
 pub use session::{

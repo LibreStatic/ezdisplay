@@ -1,12 +1,19 @@
 package com.librestatic.ezdisplay
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.Typeface
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.Configuration
+import android.hardware.usb.UsbAccessory
+import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -31,6 +38,17 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
+import com.librestatic.ezdisplay.settings.SettingsStore
+import com.librestatic.ezdisplay.settings.wifiErrorText
+import com.librestatic.ezdisplay.usb.Route
+import com.librestatic.ezdisplay.usb.chooseRoute
+import com.librestatic.ezdisplay.usb.isOurAccessory
+import com.librestatic.ezdisplay.usb.shouldSwitchToAccessory
+import com.librestatic.ezdisplay.wifi.HostDiscovery
+import com.librestatic.ezdisplay.wifi.NativeWifiBackend
+import com.librestatic.ezdisplay.wifi.WifiChoice
+import com.librestatic.ezdisplay.wifi.WifiFailures
+import com.librestatic.ezdisplay.wifi.chooseWifiTarget
 import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -43,12 +61,20 @@ import java.util.Locale
  * While streaming, every pointer event is forwarded to the native input engine, which sends
  * touch/pen input to the host and drives the local zoom of the [stage] (surface + cursor).
  * Outside of streaming a settings button is shown.
+ *
+ * Connection order: a USB accessory (AOA, no developer mode needed) first, then the adb-reversed loopback port.
+ * An attached accessory always wins and is retried with the normal backoff while it stays attached; the loopback
+ * port and Wi-Fi are only used when none is attached. When the loopback attempt fails and Wi-Fi is enabled in the settings
+ * with a paired host known, the next attempt goes to that host over Wi-Fi; if the Wi-Fi attempt fails the next one is
+ * USB again, so plugging the cable in always wins.
  */
 class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCallback {
     private companion object {
         const val TAG = "ezdisplay"
         const val HOST = "127.0.0.1"
         const val PORT = 27183
+        const val ACTION_USB_PERMISSION = "com.librestatic.ezdisplay.USB_PERMISSION"
+        const val LAST_WIFI_HOST = "wifi_last_host"
         const val BACKOFF_MIN_MS = 1000L
         const val BACKOFF_MAX_MS = 5000L
         const val STATS_INTERVAL_MS = 250L
@@ -115,8 +141,41 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
 
     private val connectRunnable = Runnable { connect() }
 
+    private lateinit var discovery: HostDiscovery
+    private val wifi by lazy { NativeWifiBackend(this) }
+    private var activeWifi: WifiChoice? = null // set while the current session is over Wi-Fi
+    private val wifiFailures = WifiFailures() // discovered or stored addresses that failed lately: tried last
+    private var tryWifiNext = false // the loopback connection just failed: try the paired host
+    private var pairingLost: String? = null // the host forgot this device: kept above later retry messages
+
+    private val usbManager by lazy { getSystemService(Context.USB_SERVICE) as UsbManager }
+    private var accessory: UsbAccessory? = null // our accessory while it is attached
+    private var activeAccessory = false // the current session runs over the accessory
+    private var accessoryPermissionAsked = false // a permission dialog was shown for the attached accessory
+    private var launchIntent: Intent? = null // the intent that started or re-delivered this activity, read once
+    private var usbReceiverRegistered = false
+
+    private val usbReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val acc = usbAccessoryExtra(intent)
+            when (intent.action) {
+                UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
+                    if (acc == null || isOurAccessory(acc.manufacturer, acc.model)) accessoryGone()
+                }
+                ACTION_USB_PERMISSION -> {
+                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                        checkAccessory()
+                    } else {
+                        Log.w(TAG, "USB accessory permission denied")
+                    }
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        launchIntent = intent
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= 28) {
             window.attributes = window.attributes.also {
@@ -125,6 +184,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             }
         }
         pickDisplayMode()
+        discovery = HostDiscovery(this) { }
         buildUi()
         hideSystemBars()
     }
@@ -249,6 +309,109 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     override fun onResume() {
         super.onResume()
         applyInputConfig()
+        updateDiscovery()
+        checkAccessory()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        launchIntent = intent
+        accessoryPermissionAsked = false
+        checkAccessory()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun usbAccessoryExtra(intent: Intent?): UsbAccessory? =
+        if (Build.VERSION.SDK_INT >= 33) intent?.getParcelableExtra(UsbManager.EXTRA_ACCESSORY, UsbAccessory::class.java)
+        else intent?.getParcelableExtra(UsbManager.EXTRA_ACCESSORY)
+
+    @SuppressLint("InlinedApi")
+    private fun registerUsbReceiver() {
+        if (usbReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_ACCESSORY_DETACHED)
+            addAction(ACTION_USB_PERMISSION)
+        }
+        // The flag is a constant, ignored before Android 13; the permission result is sent as this app.
+        registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        usbReceiverRegistered = true
+    }
+
+    private fun unregisterUsbReceiver() {
+        if (!usbReceiverRegistered) return
+        usbReceiverRegistered = false
+        unregisterReceiver(usbReceiver)
+    }
+
+    /**
+     * Finds our accessory (from the attach intent, else the system's list), asks for permission when the app
+     * was not launched by the attach, and switches to it. Cheap and idempotent: called on start, resume,
+     * new intents and permission results.
+     */
+    private fun checkAccessory() {
+        val fromIntent = launchIntent?.takeIf { it.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED }
+            ?.let { usbAccessoryExtra(it) }
+        launchIntent = null
+        if (!started) {
+            // Keep the intent's accessory for onStart (onNewIntent arrives before onStart when stopped).
+            if (fromIntent != null) launchIntent = intentFor(fromIntent)
+            return
+        }
+        val found = fromIntent?.takeIf { isOurAccessory(it.manufacturer, it.model) }
+            ?: usbManager.accessoryList?.firstOrNull { isOurAccessory(it.manufacturer, it.model) }
+        if (found == null) {
+            if (accessory != null) accessoryGone()
+            return
+        }
+        accessory = found
+        if (!usbManager.hasPermission(found)) {
+            if (!accessoryPermissionAsked) {
+                accessoryPermissionAsked = true
+                val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+                val pi = PendingIntent.getBroadcast(
+                    this, 0, Intent(ACTION_USB_PERMISSION).setPackage(packageName), flags,
+                )
+                setStatus(getString(R.string.status_usb_permission))
+                usbManager.requestPermission(found, pi)
+            }
+            return
+        }
+        if (shouldSwitchToAccessory(true, sessionActive, activeAccessory)) {
+            if (sessionActive) stopSession()
+            backoffMs = BACKOFF_MIN_MS
+            scheduleConnect(0)
+        }
+    }
+
+    private fun intentFor(acc: UsbAccessory) =
+        Intent(UsbManager.ACTION_USB_ACCESSORY_ATTACHED).putExtra(UsbManager.EXTRA_ACCESSORY, acc)
+
+    /** The accessory is gone: end its session and go back to the loopback and Wi-Fi loop. */
+    private fun accessoryGone() {
+        accessory = null
+        accessoryPermissionAsked = false
+        if (!activeAccessory) return
+        stopSession()
+        backoffMs = BACKOFF_MIN_MS
+        tryWifiNext = false
+        setStatus(getString(R.string.status_waiting, "$HOST:$PORT"))
+        scheduleConnect(0)
+    }
+
+    private fun wifiEnabled() = InputPrefs.prefs(this).getBoolean(SettingsStore.WIFI_ENABLED, false)
+
+    /** Looks for hosts on the network while the waiting screen is up and Wi-Fi is enabled. */
+    private fun updateDiscovery() {
+        if (started && !inputActive() && wifiEnabled()) discovery.start() else discovery.stop()
+    }
+
+    /** The paired host to try over Wi-Fi, or null when Wi-Fi is off or no paired host has an address. */
+    private fun wifiTarget(): WifiChoice? {
+        if (!wifiEnabled()) return null
+        val last = InputPrefs.prefs(this).getString(LAST_WIFI_HOST, null)
+        return chooseWifiTarget(wifi.hosts(), discovery.hosts, last, wifiFailures.active(SystemClock.elapsedRealtime()))
     }
 
     private fun applyInputConfig() {
@@ -259,8 +422,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         super.onStart()
         started = true
         backoffMs = BACKOFF_MIN_MS
+        tryWifiNext = false
         setStatus(getString(R.string.status_waiting, "$HOST:$PORT"))
         Choreographer.getInstance().postFrameCallback(this)
+        updateDiscovery()
+        registerUsbReceiver()
+        checkAccessory()
         scheduleConnect(0)
     }
 
@@ -274,6 +441,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         handler.removeCallbacks(connectRunnable)
         Choreographer.getInstance().removeFrameCallback(this)
         stopSession()
+        unregisterUsbReceiver()
+        discovery.stop()
         super.onStop()
     }
 
@@ -307,15 +476,32 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         if (!surfaceReady) return // surfaceCreated reschedules
         val caps = capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it }
         pushKeyboardState()
-        val err = NativeBridge.start(surfaceView.holder.surface, HOST, PORT, caps)
+        val acc = accessory?.takeIf { usbManager.hasPermission(it) }
+        val wifiChoice = if (tryWifiNext) wifiTarget() else null
+        val route = chooseRoute(acc != null, tryWifiNext, wifiChoice != null)
+        tryWifiNext = false
+        val choice = if (route == Route.WIFI) wifiChoice else null
+        val err = when (route) {
+            Route.ACCESSORY -> startAccessory(acc!!, caps)
+            Route.WIFI -> NativeBridge.startWifi(
+                surfaceView.holder.surface, choice!!.addr, choice.host.fingerprint,
+                NativeWifiBackend.stateDir(this).absolutePath, caps,
+            )
+            Route.TCP -> NativeBridge.start(surfaceView.holder.surface, HOST, PORT, caps)
+        }
         if (err != null) {
             Log.w(TAG, "start failed: $err")
-            setStatus(getString(R.string.status_bad_caps, err))
+            setStatus(
+                if (route == Route.ACCESSORY) getString(R.string.status_usb_open_failed)
+                else getString(R.string.status_bad_caps, err),
+            )
             scheduleConnect(backoffMs)
             backoffMs = (backoffMs * 2).coerceAtMost(BACKOFF_MAX_MS)
             return
         }
         sessionActive = true
+        activeWifi = choice
+        activeAccessory = route == Route.ACCESSORY
         applyInputConfig()
         wasStreaming = false
         lastInputNote = ""
@@ -328,8 +514,28 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         bufH = 0
         fitSurface()
         frameRateSet = 0
-        setStatus(getString(R.string.status_waiting, "$HOST:$PORT"))
+        setStatus(
+            when (route) {
+                Route.ACCESSORY -> getString(R.string.status_usb_connecting)
+                Route.WIFI -> getString(R.string.status_wifi_connecting, hostLabel(choice!!))
+                Route.TCP -> getString(R.string.status_waiting, "$HOST:$PORT")
+            },
+        )
     }
+
+    /** Opens [acc] and hands the descriptor to the native layer, which closes it. Null on success, else an error. */
+    private fun startAccessory(acc: UsbAccessory, caps: String): String? {
+        val pfd = try {
+            usbManager.openAccessory(acc)
+        } catch (e: Exception) {
+            return "open accessory: ${e.message}"
+        } ?: return "open accessory failed"
+        // detachFd leaves the descriptor open and ours to close: the native session owns it from here on.
+        val fd = pfd.detachFd()
+        return NativeBridge.startFd(surfaceView.holder.surface, fd, caps)
+    }
+
+    private fun hostLabel(choice: WifiChoice) = choice.host.name.ifEmpty { choice.host.shortFp }
 
     private fun stopSession() {
         releaseAllKeys()
@@ -337,6 +543,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             NativeBridge.stop()
             sessionActive = false
         }
+        activeWifi = null
+        activeAccessory = false
         cursorVisible = false
         cursorView.visibility = View.GONE
         cursorSeq = 0
@@ -353,6 +561,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     /** The settings button is only available while input is not being forwarded. */
     private fun updateChrome() {
         settingsButton.visibility = if (inputActive()) View.GONE else View.VISIBLE
+        updateDiscovery()
     }
 
     // --- Per-frame polling ---
@@ -484,33 +693,70 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             bufH = bh
             fitSurface()
         }
-        val addr = "$HOST:$PORT"
+        val wifiChoice = activeWifi
+        val usb = activeAccessory
+        val addr = if (wifiChoice != null) hostLabel(wifiChoice) else "$HOST:$PORT"
         when (j.optString("phase")) {
-            "connecting" -> setStatus(getString(R.string.status_waiting, addr))
-            "handshaking" -> setStatus(getString(R.string.status_handshake, addr))
+            "connecting" -> setStatus(
+                when {
+                    usb -> getString(R.string.status_usb_connecting)
+                    wifiChoice != null -> getString(R.string.status_wifi_connecting, addr)
+                    else -> getString(R.string.status_waiting, addr)
+                },
+            )
+            "handshaking" -> setStatus(
+                when {
+                    usb -> getString(R.string.status_usb_handshake)
+                    wifiChoice != null -> getString(R.string.status_wifi_handshake, addr)
+                    else -> getString(R.string.status_handshake, addr)
+                },
+            )
             "streaming" -> {
                 if (!wasStreaming) {
                     wasStreaming = true
+                    pairingLost = null
                     updateChrome()
                     backoffMs = BACKOFF_MIN_MS
                     streamW = j.optInt("width")
                     streamH = j.optInt("height")
                     val hz = formatHz(j.optInt("refresh_mhz"))
-                    setStatus(
-                        getString(
-                            R.string.status_connected, streamW, streamH, hz,
-                            j.optString("codec"), j.optString("decoder").takeIf { it != "null" }.orEmpty(),
-                        ).trim(),
-                    )
-                    statusHideAt = now + STATUS_HIDE_MS
+                    val connected = getString(
+                        R.string.status_connected, streamW, streamH, hz,
+                        j.optString("codec"), j.optString("decoder").takeIf { it != "null" }.orEmpty(),
+                    ).trim()
+                    if (wifiChoice != null) {
+                        InputPrefs.prefs(this).edit().putString(LAST_WIFI_HOST, wifiChoice.host.fingerprint).apply()
+                        wifiFailures.clear(wifiChoice.host.fingerprint, wifiChoice.addr)
+                        // Drawing over Wi-Fi works but feels different: say so, and keep it up a little longer.
+                        setStatus(connected + "\n" + getString(R.string.status_wifi_latency))
+                    } else {
+                        setStatus(connected)
+                    }
+                    statusHideAt = now + if (wifiChoice != null) NOTE_SHOW_MS else STATUS_HIDE_MS
                     applyFrameRate(j.optInt("refresh_mhz"))
                 } else if (statusHideAt != 0L && now >= statusHideAt) {
                     statusHideAt = 0
                     statusView.visibility = View.GONE
                 }
             }
-            "ended" -> disconnected(getString(R.string.status_ended, j.optString("detail"), addr))
-            "failed" -> disconnected(getString(R.string.status_error, j.optString("detail")))
+            "ended" -> disconnected(
+                if (usb) getString(R.string.status_ended_usb, j.optString("detail"))
+                else getString(R.string.status_ended, j.optString("detail"), addr),
+                false,
+            )
+            "failed" -> {
+                // A Wi-Fi failure carries a stable code; the detail is English text for the log.
+                val code = if (j.isNull("code")) null else j.optString("code")
+                val message = if (code != null && activeWifi != null) {
+                    getString(wifiErrorText(code))
+                } else {
+                    getString(R.string.status_error, j.optString("detail"))
+                }
+                // On not_paired the native layer already forgot the host, so wifiTarget() finds no
+                // address for it and the retries go back to USB only.
+                if (code == "not_paired" && activeWifi != null) pairingLost = message
+                disconnected(message, true)
+            }
         }
         val flags = if (j.isNull("client_flags")) 0 else j.optInt("client_flags")
         telemetryOn = (flags and 1) != 0
@@ -538,16 +784,29 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         statusHideAt = SystemClock.uptimeMillis() + ms
     }
 
-    private fun disconnected(message: String) {
+    private fun disconnected(message: String, failed: Boolean) {
         Log.i(TAG, "disconnected: $message")
+        val wasWifi = activeWifi != null
+        // Any failure over Wi-Fi demotes that address, so the next attempt tries another candidate.
+        if (failed) activeWifi?.let { wifiFailures.record(it.host.fingerprint, it.addr, SystemClock.elapsedRealtime()) }
         stopSession()
+        // Keep telling the user why Wi-Fi stopped until a host is paired again.
+        if (wifiTarget() != null) pairingLost = null
         setStatus(message)
+        // The loopback connection failed (no cable, no adb reverse): try the paired host over Wi-Fi right away.
+        // While an accessory is attached it is retried with the normal backoff; no fallback.
+        if (failed && !wasWifi && accessory == null && wifiTarget() != null) {
+            tryWifiNext = true
+            scheduleConnect(0)
+            return
+        }
         scheduleConnect(backoffMs)
         backoffMs = (backoffMs * 2).coerceAtMost(BACKOFF_MAX_MS)
     }
 
     private fun setStatus(text: String) {
-        statusView.text = text
+        val notice = pairingLost?.takeIf { it != text }
+        statusView.text = if (notice != null) "$notice\n$text" else text
         statusView.visibility = View.VISIBLE
         statusHideAt = 0
     }

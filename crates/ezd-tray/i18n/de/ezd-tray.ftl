@@ -18,6 +18,7 @@ status-streaming = Übertragung an { $device } · { $width }×{ $height } mit { 
 error-bind = Auf { $addr } kann nicht gelauscht werden: { $reason }
 error-adb-not-found = adb wurde nicht gefunden
 error-adb-reverse = adb reverse ist für { $serial } fehlgeschlagen: { $reason }
+usb-unavailable-hint = USB ohne Entwickleroptionen ist nicht verfügbar ({ $reason }); USB-Debugging funktioniert weiterhin.
 error-unsupported = Dieses System unterstützt noch keine virtuellen Bildschirme
 error-source = Die Videoquelle kann nicht erstellt werden: { $reason }
 
@@ -45,6 +46,9 @@ devices-heading = Geräte
 stats-heading = Live-Statistik
 stats-waiting = Warte auf die ersten Messwerte…
 stat-device = Tablet
+stat-connection = Verbindung
+transport-aoa = USB (Zubehör)
+transport-wifi = WLAN
 stat-mode = Modus
 stat-encoder = Encoder
 stat-fps = Bildrate
@@ -129,6 +133,7 @@ device-unauthorized = wartet darauf, dass du das USB-Debugging bestätigst
 device-offline = offline
 open-app = Die App auf dem Tablet öffnen, sobald es verbunden ist
 use-adb = Per USB mit adb verbinden
+use-aoa = USB ohne Entwickleroptionen
 advanced = Erweitert
 setting-port = Port
 port-hint = Das Tablet erreicht diesen Computer über diesen Port. Änderungen gelten, wenn keine Sitzung läuft.
@@ -185,6 +190,7 @@ input-description = Nutze das Tablet als Touchscreen und Stift an diesem Compute
 pen-description = Ein Grafiktablett fügt Druck und Neigung hinzu.
 telemetry-description = Zeigt während des Streams Live-Leistungswerte auf dem Tablet.
 use-adb-description = Findet Tablets, bei denen das USB-Debugging eingeschaltet ist.
+use-aoa-description = Schaltet das Tablet beim Anstecken in den Zubehörmodus, USB-Debugging ist nicht nötig. adb bleibt als Ausweichlösung.
 autostart-description = Startet ezdisplay, wenn du dich anmeldest.
 start-on-launch-description = Wartet auf dein Tablet, sobald ezdisplay geöffnet wird.
 system-accent = Akzentfarbe des Systems verwenden
@@ -194,3 +200,28 @@ logs-description = Öffnet den Ordner, in den ezdisplay seine Protokolle schreib
 about-description = Open-Source-USB-Display für Android-Tablets.
 repository = Quellcode
 driver-reinstall = Treiber neu installieren
+
+## Window: Wi-Fi
+card-wifi = WLAN
+wifi-enable = Über WLAN verbinden
+wifi-latency-warning = WLAN erhöht Latenz und Jitter; zum Zeichnen ist USB am besten.
+wifi-starts-with-stream = Das WLAN wird eingeschaltet, sobald das Streaming startet.
+wifi-address = Adresse
+wifi-fingerprint = Fingerabdruck des Hosts
+wifi-pair = Gerät koppeln
+wifi-pair-cancel = Abbrechen
+wifi-pair-hint = Scanne auf dem Tablet diesen QR-Code oder gib die PIN ein.
+wifi-pin = PIN
+wifi-qr-label = QR-Code zum Koppeln
+wifi-pair-expires = Schließt in { $seconds } s
+wifi-notice-paired = Mit { $device } gekoppelt.
+wifi-notice-attempts = Kopplung geschlossen: zu viele falsche PINs.
+wifi-notice-expired = Kopplung geschlossen: die Zeit ist abgelaufen.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } gekoppeltes Gerät
+       *[other] { $count } gekoppelte Geräte
+    }
+wifi-paired-none = Noch keine Geräte gekoppelt.
+wifi-forget = Entfernen
+error-wifi = Das WLAN kann nicht gestartet werden: { $reason }

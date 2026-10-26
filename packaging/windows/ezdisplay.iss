@@ -56,8 +56,13 @@ Name: "german"; MessagesFile: "compiler:Languages\German.isl,i18n\de-du.isl"
 [CustomMessages]
 english.TaskDriver=Install the virtual display driver
 english.TaskAutostart=Start ezdisplay when you sign in
-english.DownloadTitle=Downloading FFmpeg
-english.DownloadDesc=Setup is downloading the FFmpeg video libraries (about 90 MB).
+english.TaskUsbDk=USB without developer mode (installs the UsbDk driver)
+english.DownloadingUsbDk=Downloading UsbDk
+english.UsbDkDownloadFailed=UsbDk could not be downloaded:%n%n%1%n%nClick Retry to try again or Cancel to exit Setup. You can also go back and clear the USB task.
+english.UsbDkInstallFailed=UsbDk could not be installed (code %1). USB without developer mode will not work; ezdisplay falls back to adb.
+english.InstallingUsbDk=Installing the UsbDk driver...
+english.DownloadTitle=Downloading components
+english.DownloadDesc=Setup is downloading the components it needs: the FFmpeg video libraries (about 90 MB) and, if selected, UsbDk.
 english.ExtractingFfmpeg=Extracting FFmpeg...
 english.InstallingDriver=Installing the virtual display driver...
 english.FfmpegDownloadFailed=FFmpeg could not be downloaded:%n%n%1%n%nClick Retry to try again or Cancel to exit Setup.
@@ -67,8 +72,13 @@ english.DriverFailed=The virtual display driver could not be installed (code %1)
 
 spanish.TaskDriver=Instalar el controlador de pantalla virtual
 spanish.TaskAutostart=Iniciar ezdisplay al iniciar sesión
-spanish.DownloadTitle=Descargando FFmpeg
-spanish.DownloadDesc=El asistente está descargando las bibliotecas de video FFmpeg (unos 90 MB).
+spanish.TaskUsbDk=USB sin modo desarrollador (instala el controlador UsbDk)
+spanish.DownloadingUsbDk=Descargando UsbDk
+spanish.UsbDkDownloadFailed=No se pudo descargar UsbDk:%n%n%1%n%nHacé clic en Reintentar para probar de nuevo o en Cancelar para salir. También podés volver y desmarcar la tarea de USB.
+spanish.UsbDkInstallFailed=No se pudo instalar UsbDk (código %1). El USB sin modo desarrollador no va a funcionar; ezdisplay usa adb como alternativa.
+spanish.InstallingUsbDk=Instalando el controlador UsbDk...
+spanish.DownloadTitle=Descargando componentes
+spanish.DownloadDesc=El asistente está descargando los componentes que necesita: las bibliotecas de video FFmpeg (unos 90 MB) y, si lo elegiste, UsbDk.
 spanish.ExtractingFfmpeg=Extrayendo FFmpeg...
 spanish.InstallingDriver=Instalando el controlador de pantalla virtual...
 spanish.FfmpegDownloadFailed=No se pudo descargar FFmpeg:%n%n%1%n%nHacé clic en Reintentar para probar de nuevo o en Cancelar para salir.
@@ -78,8 +88,13 @@ spanish.DriverFailed=No se pudo instalar el controlador de pantalla virtual (có
 
 french.TaskDriver=Installer le pilote d'affichage virtuel
 french.TaskAutostart=Lancer ezdisplay à l'ouverture de session
-french.DownloadTitle=Téléchargement de FFmpeg
-french.DownloadDesc=L'assistant télécharge les bibliothèques vidéo FFmpeg (environ 90 Mo).
+french.TaskUsbDk=USB sans mode développeur (installe le pilote UsbDk)
+french.DownloadingUsbDk=Téléchargement de UsbDk
+french.UsbDkDownloadFailed=UsbDk n'a pas pu être téléchargé :%n%n%1%n%nCliquez sur Réessayer pour recommencer ou sur Annuler pour quitter. Vous pouvez aussi revenir en arrière et décocher la tâche USB.
+french.UsbDkInstallFailed=UsbDk n'a pas pu être installé (code %1). L'USB sans mode développeur ne fonctionnera pas ; ezdisplay se rabat sur adb.
+french.InstallingUsbDk=Installation du pilote UsbDk...
+french.DownloadTitle=Téléchargement des composants
+french.DownloadDesc=L'assistant télécharge les composants nécessaires : les bibliothèques vidéo FFmpeg (environ 90 Mo) et, si vous l'avez choisi, UsbDk.
 french.ExtractingFfmpeg=Extraction de FFmpeg...
 french.InstallingDriver=Installation du pilote d'affichage virtuel...
 french.FfmpegDownloadFailed=FFmpeg n'a pas pu être téléchargé :%n%n%1%n%nCliquez sur Réessayer pour recommencer ou sur Annuler pour quitter.
@@ -89,8 +104,13 @@ french.DriverFailed=Le pilote d'affichage virtuel n'a pas pu être installé (co
 
 brazilianportuguese.TaskDriver=Instalar o driver de tela virtual
 brazilianportuguese.TaskAutostart=Iniciar o ezdisplay ao entrar no Windows
-brazilianportuguese.DownloadTitle=Baixando o FFmpeg
-brazilianportuguese.DownloadDesc=O instalador está baixando as bibliotecas de vídeo do FFmpeg (cerca de 90 MB).
+brazilianportuguese.TaskUsbDk=USB sem modo desenvolvedor (instala o driver UsbDk)
+brazilianportuguese.DownloadingUsbDk=Baixando o UsbDk
+brazilianportuguese.UsbDkDownloadFailed=Não foi possível baixar o UsbDk:%n%n%1%n%nClique em Repetir para tentar de novo ou em Cancelar para sair. Você também pode voltar e desmarcar a tarefa de USB.
+brazilianportuguese.UsbDkInstallFailed=Não foi possível instalar o UsbDk (código %1). O USB sem modo desenvolvedor não vai funcionar; o ezdisplay recorre ao adb.
+brazilianportuguese.InstallingUsbDk=Instalando o driver UsbDk...
+brazilianportuguese.DownloadTitle=Baixando componentes
+brazilianportuguese.DownloadDesc=O instalador está baixando os componentes necessários: as bibliotecas de vídeo do FFmpeg (cerca de 90 MB) e, se você escolheu, o UsbDk.
 brazilianportuguese.ExtractingFfmpeg=Extraindo o FFmpeg...
 brazilianportuguese.InstallingDriver=Instalando o driver de tela virtual...
 brazilianportuguese.FfmpegDownloadFailed=Não foi possível baixar o FFmpeg:%n%n%1%n%nClique em Repetir para tentar de novo ou em Cancelar para sair.
@@ -100,8 +120,13 @@ brazilianportuguese.DriverFailed=Não foi possível instalar o driver de tela vi
 
 italian.TaskDriver=Installa il driver dello schermo virtuale
 italian.TaskAutostart=Avvia ezdisplay all'accesso
-italian.DownloadTitle=Download di FFmpeg
-italian.DownloadDesc=Il programma di installazione sta scaricando le librerie video FFmpeg (circa 90 MB).
+italian.TaskUsbDk=USB senza modalità sviluppatore (installa il driver UsbDk)
+italian.DownloadingUsbDk=Download di UsbDk
+italian.UsbDkDownloadFailed=Impossibile scaricare UsbDk:%n%n%1%n%nFai clic su Riprova per riprovare o su Annulla per uscire. Puoi anche tornare indietro e deselezionare l'attività USB.
+italian.UsbDkInstallFailed=Impossibile installare UsbDk (codice %1). L'USB senza modalità sviluppatore non funzionerà; ezdisplay ripiega su adb.
+italian.InstallingUsbDk=Installazione del driver UsbDk...
+italian.DownloadTitle=Download dei componenti
+italian.DownloadDesc=Il programma di installazione sta scaricando i componenti necessari: le librerie video FFmpeg (circa 90 MB) e, se l'hai scelto, UsbDk.
 italian.ExtractingFfmpeg=Estrazione di FFmpeg...
 italian.InstallingDriver=Installazione del driver dello schermo virtuale...
 italian.FfmpegDownloadFailed=Impossibile scaricare FFmpeg:%n%n%1%n%nFai clic su Riprova per riprovare o su Annulla per uscire.
@@ -111,8 +136,13 @@ italian.DriverFailed=Impossibile installare il driver dello schermo virtuale (co
 
 german.TaskDriver=Treiber für den virtuellen Bildschirm installieren
 german.TaskAutostart=ezdisplay bei der Anmeldung starten
-german.DownloadTitle=FFmpeg wird heruntergeladen
-german.DownloadDesc=Das Setup lädt die FFmpeg-Videobibliotheken herunter (etwa 90 MB).
+german.TaskUsbDk=USB ohne Entwickleroptionen (installiert den UsbDk-Treiber)
+german.DownloadingUsbDk=UsbDk wird heruntergeladen
+german.UsbDkDownloadFailed=UsbDk konnte nicht heruntergeladen werden:%n%n%1%n%nKlicke auf Wiederholen, um es erneut zu versuchen, oder auf Abbrechen, um das Setup zu beenden. Du kannst auch zurückgehen und die USB-Aufgabe abwählen.
+german.UsbDkInstallFailed=UsbDk konnte nicht installiert werden (Code %1). USB ohne Entwickleroptionen funktioniert nicht; ezdisplay weicht auf adb aus.
+german.InstallingUsbDk=UsbDk-Treiber wird installiert...
+german.DownloadTitle=Komponenten werden heruntergeladen
+german.DownloadDesc=Das Setup lädt die benötigten Komponenten herunter: die FFmpeg-Videobibliotheken (etwa 90 MB) und, falls ausgewählt, UsbDk.
 german.ExtractingFfmpeg=FFmpeg wird entpackt...
 german.InstallingDriver=Treiber für den virtuellen Bildschirm wird installiert...
 german.FfmpegDownloadFailed=FFmpeg konnte nicht heruntergeladen werden:%n%n%1%n%nKlicke auf Wiederholen, um es erneut zu versuchen, oder auf Abbrechen, um das Setup zu beenden.
@@ -123,6 +153,8 @@ german.DriverFailed=Der Treiber für den virtuellen Bildschirm konnte nicht inst
 [Tasks]
 Name: "driver"; Description: "{cm:TaskDriver}"
 Name: "autostart"; Description: "{cm:TaskAutostart}"
+; Optional, off by default: UsbDk lets the host open the tablet over USB without developer mode (AOA).
+Name: "usbdk"; Description: "{cm:TaskUsbDk}"; Flags: unchecked
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
@@ -155,6 +187,13 @@ Name: "{autodesktop}\ezdisplay"; Filename: "{app}\ezdisplay.exe"; Tasks: desktop
 ; level follows "run_elevated" in an existing config.toml (elevated by default).
 Filename: "{app}\ezdisplay.exe"; Parameters: "--autostart on"; Tasks: autostart; Flags: runhidden waituntilterminated
 Filename: "{app}\ezdisplay.exe"; Parameters: "--autostart off"; Tasks: not autostart; Flags: runhidden waituntilterminated
+; Wi-Fi: tablets reach the host on UDP 27183. One inbound rule per executable, for the private
+; profile only (a public network never gets the port). The delete first keeps a reinstall from
+; stacking duplicates; it fails harmlessly on a first install.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ezdisplay Wi-Fi (ezdisplay.exe)"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ezdisplay Wi-Fi (ezd-host.exe)"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ezdisplay Wi-Fi (ezdisplay.exe)"" dir=in action=allow protocol=UDP localport=27183 profile=private program=""{app}\ezdisplay.exe"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ezdisplay Wi-Fi (ezd-host.exe)"" dir=in action=allow protocol=UDP localport=27183 profile=private program=""{app}\ezd-host.exe"""; Flags: runhidden waituntilterminated
 ; Unelevated on purpose: the app asks the task to start its elevated copy.
 Filename: "{app}\ezdisplay.exe"; Description: "{cm:LaunchProgram,ezdisplay}"; Flags: postinstall nowait runasoriginaluser skipifsilent
 
@@ -164,6 +203,9 @@ Filename: "{app}\ezdisplay.exe"; Description: "{cm:LaunchProgram,ezdisplay}"; Fl
 Filename: "{app}\ezdisplay.exe"; Parameters: "--quit"; RunOnceId: "QuitTray"; Flags: runhidden waituntilterminated
 ; The task launches the app elevated and carries the autostart trigger.
 Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ezdisplay /f"; RunOnceId: "DeleteTask"; Flags: runhidden waituntilterminated
+; The Wi-Fi firewall rules of [Run].
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ezdisplay Wi-Fi (ezdisplay.exe)"""; RunOnceId: "FirewallTray"; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ezdisplay Wi-Fi (ezd-host.exe)"""; RunOnceId: "FirewallHost"; Flags: runhidden waituntilterminated
 Filename: "{app}\adb\adb.exe"; Parameters: "kill-server"; RunOnceId: "KillAdb"; Flags: runhidden waituntilterminated
 ; Only removes the driver if ezdisplay installed it. Exit code 3010 (reboot required) cannot be
 ; read from [UninstallRun], so no restart prompt is shown for it.
@@ -182,6 +224,8 @@ var
   DownloadPage: TDownloadWizardPage;
   // Path of the FFmpeg archive to install ('' = the pinned build is already installed).
   FfmpegZip: String;
+  // Path of the downloaded UsbDk MSI ('' = nothing to install).
+  UsbDkMsi: String;
   RestartNeeded: Boolean;
 
 procedure InitializeWizard;
@@ -218,6 +262,52 @@ begin
   Result := FfmpegZip <> '';
 end;
 
+// UsbDk registers a kernel service named "UsbDk".
+function UsbDkAlreadyInstalled: Boolean;
+begin
+  Result := RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Services\UsbDk');
+end;
+
+// Downloads the pinned UsbDk MSI when its task is selected and the driver is not installed yet.
+// False means the user cancelled Setup after a failed download.
+function DownloadUsbDk: Boolean;
+var
+  Retry: Boolean;
+begin
+  Result := True;
+  UsbDkMsi := '';
+  if not WizardIsTaskSelected('usbdk') then
+    Exit;
+  if UsbDkAlreadyInstalled then
+  begin
+    Log('ezdisplay: UsbDk already installed');
+    Exit;
+  end;
+  repeat
+    Retry := False;
+    Log('ezdisplay: downloading UsbDk');
+    DownloadPage.Clear;
+    DownloadPage.SetText(CustomMessage('DownloadingUsbDk'), '');
+    DownloadPage.Add('{#UsbDkUrl}', 'usbdk.msi', '{#UsbDkSha256}');
+    DownloadPage.Show;
+    try
+      try
+        DownloadPage.Download;
+        UsbDkMsi := ExpandConstant('{tmp}\usbdk.msi');
+      except
+        Log('ezdisplay: UsbDk download failed: ' + GetExceptionMessage);
+        if SuppressibleMsgBox(FmtMessage(CustomMessage('UsbDkDownloadFailed'), [GetExceptionMessage]),
+          mbError, MB_RETRYCANCEL, IDCANCEL) = IDRETRY then
+          Retry := True
+        else
+          Result := False;
+      end;
+    finally
+      DownloadPage.Hide;
+    end;
+  until not Retry;
+end;
+
 // Runs on silent installs too (they simulate the Next clicks).
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
@@ -227,6 +317,14 @@ begin
   Result := True;
   if CurPageID <> wpReady then
     Exit;
+
+  if not DownloadUsbDk then
+  begin
+    Result := False;
+    Exit;
+  end;
+  // Clear the UsbDk line of the progress page before FFmpeg uses it.
+  DownloadPage.SetText('', '');
 
   FfmpegZip := '';
   if FfmpegAlreadyInstalled then
@@ -344,6 +442,23 @@ begin
   until Finished;
 end;
 
+// Silent MSI install of the UsbDk driver. A failure is not fatal: without UsbDk the host falls back
+// to adb. Uninstall does not remove UsbDk on purpose, since other applications may depend on it.
+procedure InstallUsbDk;
+var
+  ResultCode: Integer;
+begin
+  WizardForm.StatusLabel.Caption := CustomMessage('InstallingUsbDk');
+  if not Exec(ExpandConstant('{sys}\msiexec.exe'), '/i "' + UsbDkMsi + '" /qn /norestart', '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    ResultCode := -1;
+  Log('ezdisplay: UsbDk msiexec exit code ' + IntToStr(ResultCode));
+  if ResultCode = 3010 then
+    RestartNeeded := True
+  else if ResultCode <> 0 then
+    SuppressibleMsgBox(FmtMessage(CustomMessage('UsbDkInstallFailed'), [IntToStr(ResultCode)]), mbError, MB_OK, IDOK);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   // ssInstall comes before [Files]; ssPostInstall after [Files] and the non-postinstall [Run].
@@ -365,5 +480,7 @@ begin
     end;
     if WizardIsTaskSelected('driver') then
       InstallDriver;
+    if UsbDkMsi <> '' then
+      InstallUsbDk;
   end;
 end;

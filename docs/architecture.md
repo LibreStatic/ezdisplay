@@ -1,6 +1,6 @@
 # ezdisplay architecture
 
-ezdisplay turns an Android tablet into an extended monitor for a Windows or Linux PC, over USB (ADB now, Android Open Accessory later) or Wi-Fi. The design goal is low latency: about 30 ms glass to glass over USB at 120 Hz, with the cursor feeling instant.
+ezdisplay turns an Android tablet into an extended monitor for a Windows or Linux PC, over USB (ADB now, Android Open Accessory later) or Wi-Fi (QUIC, paired with a PIN or QR code). The design goal is low latency: about 30 ms glass to glass over USB at 120 Hz, with the cursor feeling instant.
 
 ## Why existing tools lag
 
@@ -52,7 +52,7 @@ left out. The platform backends are only built on their own OS.
 | Crate / dir | Role |
 |---|---|
 | `crates/ezd-proto` | Wire protocol: framing, messages, capabilities negotiation, clock sync. Pure, no I/O. |
-| `crates/ezd-link` | Byte-stream links (TCP/ADB now, AOA and QUIC later), ADB helper, prioritized mux with video credit. |
+| `crates/ezd-link` | Links (TCP through ADB; QUIC on Wi-Fi with separate control and video streams; AOA over libusb bulk endpoints), device identity and PIN pairing, ADB helper, prioritized mux with video credit. |
 | `crates/ezd-host-core` | Platform-independent host: `VideoSource` / `VirtualDisplay` traits, session, pacing, synthetic frames. |
 | `crates/ezd-ffmpeg` | Thin safe wrapper over FFmpeg (encoders, decoders, hardware contexts). |
 | `crates/ezd-host-service` | The host loop as a library: accepts the tablet, keeps `adb reverse` set up for each device, runs sessions and publishes live status. Used by the CLI and the tray app. |
@@ -65,7 +65,7 @@ left out. The platform backends are only built on their own OS.
 | `crates/ezd-input` | Client input engine: motion events to protocol input messages, palm rejection, S Pen button gestures, local zoom. |
 | `crates/ezd-android` + `android/` | Android client: Kotlin UI, Rust native lib with AMediaCodec decode to a SurfaceView. |
 | `packaging/windows` | Inno Setup installer: bundles the driver, `nefconw.exe` and `adb`, downloads the pinned FFmpeg build during setup. |
-| `packaging/linux` | udev rule for `/dev/uinput`, desktop entry and icon; Arch `PKGBUILD`, Debian/Ubuntu `.deb` maintainer scripts (metadata in `crates/ezd-tray`) and the AppImage build (bundled FFmpeg and adb). |
+| `packaging/linux` | udev rules for `/dev/uinput` and USB access, desktop entry and icon; Arch `PKGBUILD`, Debian/Ubuntu `.deb` maintainer scripts (metadata in `crates/ezd-tray`) and the AppImage build (bundled FFmpeg and adb). |
 | `tools/latency` | Web page for glass-to-glass measurements with a slow-motion camera. |
 | `tools/input-test` | Web page and logger to check injected pen, touch, buttons and scroll as text. |
 
@@ -128,7 +128,7 @@ flowchart TB
 0. Diagnosis and spikes (Nitro measurements, KDE virtual output, tablet probing).
 1. Vertical slice on both hosts: video and local cursor over ADB. 1a core → 1b Android, 1c Linux KDE, 1d Windows in parallel.
 2. Input: touch, pen, S Pen button gestures.
-3. Transports: AOA, Wi-Fi (QUIC with PIN pairing).
+3. Transports: Wi-Fi (QUIC with PIN or QR pairing, mDNS discovery) in progress; AOA (USB without developer mode, libusb) done.
 4. Audio.
 5. GNOME, wlroots and X11 backends.
 6. Packaging: Windows installer (done, with the tray app), Linux packages (Arch, .deb, AppImage; done) and udev rules, Android `full`/`play` builds.

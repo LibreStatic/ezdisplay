@@ -18,6 +18,7 @@ status-streaming = Transmitiendo a { $device } · { $width }×{ $height } a { $h
 error-bind = No se puede escuchar en { $addr }: { $reason }
 error-adb-not-found = No se encontró adb
 error-adb-reverse = Falló adb reverse para { $serial }: { $reason }
+usb-unavailable-hint = USB sin modo desarrollador no está disponible ({ $reason }); la depuración USB sigue funcionando.
 error-unsupported = Este sistema todavía no admite pantallas virtuales
 error-source = No se puede crear la fuente de video: { $reason }
 
@@ -45,6 +46,9 @@ devices-heading = Dispositivos
 stats-heading = Estadísticas en vivo
 stats-waiting = Esperando las primeras mediciones…
 stat-device = Tablet
+stat-connection = Conexión
+transport-aoa = USB (accesorio)
+transport-wifi = Wi-Fi
 stat-mode = Modo
 stat-encoder = Codificador
 stat-fps = Cuadros por segundo
@@ -129,6 +133,7 @@ device-unauthorized = esperando que aceptes la depuración USB
 device-offline = sin conexión
 open-app = Abrir la app en la tablet al conectarla
 use-adb = Conectar por USB con adb
+use-aoa = USB sin modo desarrollador
 advanced = Avanzado
 setting-port = Puerto
 port-hint = La tablet llega a esta computadora por este puerto. Los cambios se aplican cuando no hay una sesión en curso.
@@ -185,6 +190,7 @@ input-description = Usá la tablet como pantalla táctil y lápiz en esta comput
 pen-description = Una tableta gráfica agrega presión e inclinación.
 telemetry-description = Muestra mediciones de rendimiento en vivo en la tablet mientras transmitís.
 use-adb-description = Encuentra las tablets que tienen la depuración USB activada.
+use-aoa-description = Pasa la tablet al modo accesorio al conectarla, así no hace falta la depuración USB. adb queda como alternativa.
 autostart-description = Inicia ezdisplay cuando iniciás sesión.
 start-on-launch-description = Empieza a esperar tu tablet apenas se abre ezdisplay.
 system-accent = Usar el color de acento del sistema
@@ -194,3 +200,28 @@ logs-description = Abre la carpeta donde ezdisplay guarda sus registros.
 about-description = Pantalla USB de código abierto para tablets Android.
 repository = Código fuente
 driver-reinstall = Reinstalar el controlador
+
+## Window: Wi-Fi
+card-wifi = Wi-Fi
+wifi-enable = Conectar por Wi-Fi
+wifi-latency-warning = El Wi-Fi agrega latencia y jitter; el USB es lo mejor para dibujar.
+wifi-starts-with-stream = El Wi-Fi se activa cuando empieza la transmisión.
+wifi-address = Dirección
+wifi-fingerprint = Huella del host
+wifi-pair = Vincular un dispositivo
+wifi-pair-cancel = Cancelar
+wifi-pair-hint = En la tablet, escaneá este código QR o escribí el PIN.
+wifi-pin = PIN
+wifi-qr-label = Código QR de vinculación
+wifi-pair-expires = Se cierra en { $seconds } s
+wifi-notice-paired = Vinculada con { $device }.
+wifi-notice-attempts = La vinculación se cerró: demasiados PIN incorrectos.
+wifi-notice-expired = La vinculación se cerró: se acabó el tiempo.
+wifi-paired-count =
+    { $count ->
+        [one] { $count } dispositivo vinculado
+       *[other] { $count } dispositivos vinculados
+    }
+wifi-paired-none = Todavía no hay dispositivos vinculados.
+wifi-forget = Olvidar
+error-wifi = No se puede iniciar el Wi-Fi: { $reason }

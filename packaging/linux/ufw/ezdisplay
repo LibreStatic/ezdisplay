@@ -1,0 +1,4 @@
+[ezdisplay]
+title=ezdisplay
+description=Use an Android tablet as an extended monitor over Wi-Fi
+ports=27183/udp
