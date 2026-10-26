@@ -31,11 +31,15 @@ impl Default for TrayConfig {
     }
 }
 
+/// Longest delay before the virtual monitor is removed.
+pub const MAX_DETACH_GRACE_MS: u32 = 60_000;
+
 impl TrayConfig {
     /// Brings out-of-range values (hand-edited files) back into what the service accepts.
     pub fn sanitized(mut self) -> Self {
         self.service.scale_permille = self.service.scale_permille.clamp(250, 1000);
         self.service.video_window = self.service.video_window.clamp(1, 8);
+        self.service.detach_grace_ms = self.service.detach_grace_ms.min(MAX_DETACH_GRACE_MS);
         self
     }
 }

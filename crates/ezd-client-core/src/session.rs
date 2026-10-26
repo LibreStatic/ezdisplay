@@ -40,9 +40,9 @@ pub trait ClientHandler: Send {
     /// [`on_stream_config`]: ClientHandler::on_stream_config
     fn on_stream_color(&mut self, _color: &StreamColor) {}
 
-    /// The host's audio decision (protocol 0.6), called right before [`on_stream_config`] and
+    /// The host's audio decision (protocol 0.7), called right before [`on_stream_config`] and
     /// only when the host sent one: `stream: None` means no audio this session. Create the
-    /// audio decoder/output here. Not called for a host older than protocol 0.6.
+    /// audio decoder/output here. Not called for a host older than protocol 0.7.
     ///
     /// [`on_stream_config`]: ClientHandler::on_stream_config
     fn on_audio_config(&mut self, _cfg: &AudioConfig) {}
@@ -78,7 +78,7 @@ pub struct ClientConfig {
     /// `ClientHdr` is sent right after the host `Hello`; `None` sends [`ClientHdr::none`]
     /// (no HDR10), so the host always gets an answer and never waits for it in vain.
     pub hdr: Option<ClientHdr>,
-    /// Audio playback capabilities. Whenever the host speaks protocol 0.6 a `ClientAudio` is sent
+    /// Audio playback capabilities. Whenever the host speaks protocol 0.7 a `ClientAudio` is sent
     /// right after `ClientHdr`; `None` sends [`ClientAudio::none`] (no audio), so the host
     /// always gets an answer and never waits for it in vain.
     pub audio: Option<ClientAudio>,
@@ -141,7 +141,7 @@ pub struct ClientOutcome {
     pub stream: StreamConfig,
     /// Colour description of the stream (BT.709 8-bit when the host sent none).
     pub color: StreamColor,
-    /// The host's audio decision; `None` when the host sent none (older than protocol 0.6).
+    /// The host's audio decision; `None` when the host sent none (older than protocol 0.7).
     pub audio: Option<AudioConfig>,
     /// Why it ended.
     pub end: ClientEnd,
@@ -238,8 +238,9 @@ pub async fn run_client<H: ClientHandler>(
     if let Some(minor) = cfg.proto_minor {
         my_hello.proto_minor = minor;
     }
-    let (my_minor_supports_hdr, my_minor_supports_audio) =
-        (my_hello.supports_hdr(), my_hello.supports_audio());
+    let my_minor_supports_hdr = my_hello.supports_hdr();
+    let my_minor_supports_audio = my_hello.supports_audio();
+    let my_minor_supports_keyboard = my_hello.supports_keyboard();
     tx.send_control(Message::Hello(my_hello))?;
     tx.send_control(Message::ClientCaps(cfg.caps.clone()))?;
     let hello = wait_for(&mut rx, &tx, "Hello", wait, |m| match m {
@@ -265,7 +266,7 @@ pub async fn run_client<H: ClientHandler>(
         o => Err(o),
     })
     .await?;
-    // `StreamColor` (0.5) and `AudioConfig` (0.6) may precede `StreamConfig`; without the colour
+    // `StreamColor` (0.5) and `AudioConfig` (0.7) may precede `StreamConfig`; without the colour
     // the stream is BT.709 8-bit.
     let mut color = StreamColor::sdr_bt709();
     let mut audio: Option<AudioConfig> = None;
@@ -303,6 +304,9 @@ pub async fn run_client<H: ClientHandler>(
     tx.send_control(Message::ConfigAck)?;
     if hello.supports_input() {
         handle.set_input_sender(Some(tx.clone()));
+    }
+    if hello.supports_keyboard() && my_minor_supports_keyboard {
+        handle.set_keyboard_sender(Some(tx.clone()));
     }
 
     // Streaming.
@@ -368,6 +372,7 @@ pub async fn run_client<H: ClientHandler>(
     };
 
     handle.set_input_sender(None);
+    handle.set_keyboard_sender(None);
     let outcome = ClientOutcome {
         stream,
         color,

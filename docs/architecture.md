@@ -16,6 +16,39 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 
 ## Components
 
+```mermaid
+flowchart TB
+  subgraph PC["PC"]
+    TRAY["ezd-tray<br/>tray app"] --> SVC["ezd-host-service<br/>host loop"]
+    CLI["ezd-host<br/>CLI"] --> SVC
+    SVC --> WIN["ezd-host-windows"]
+    SVC --> LIN["ezd-host-linux"]
+    WIN --> FF["ezd-ffmpeg"]
+    LIN --> FF
+    FF --> CORE["ezd-host-core<br/>session, traits"]
+    FAKE["ezd-fake-client<br/>desktop test client"] --> FF
+  end
+  subgraph TAB["Tablet"]
+    APP["android/<br/>Kotlin app (UI, SurfaceView)"] -- JNI --> AND["ezd-android<br/>native lib, AMediaCodec"]
+  end
+  subgraph SHARED["Shared"]
+    CLC["ezd-client-core<br/>client session"]
+    INP["ezd-input<br/>motion events → input messages"]
+    LINK["ezd-link<br/>links, mux, video credit"]
+    PROTO["ezd-proto<br/>wire protocol, no I/O"]
+    CLC --> LINK
+    LINK --> PROTO
+    INP --> PROTO
+  end
+  CORE --> LINK
+  FAKE --> CLC
+  AND --> CLC
+  AND --> INP
+```
+
+Arrows point from a crate to the crates it uses; dependencies already implied by another arrow are
+left out. The platform backends are only built on their own OS.
+
 | Crate / dir | Role |
 |---|---|
 | `crates/ezd-proto` | Wire protocol: framing, messages, capabilities negotiation, clock sync. Pure, no I/O. |
@@ -26,7 +59,7 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 | `crates/ezd-host` | Host CLI: `run`, `diag`, `vdd` (driver status, setup, install, uninstall). |
 | `crates/ezd-tray` | The PC app (`ezdisplay`): tray icon and menu plus a settings and statistics window (egui), autostart, single instance. |
 | `crates/ezd-fake-client` | Desktop stand-in for the Android client (decode, latency stats, frame dumps). |
-| `crates/ezd-host-linux` | Linux backends (Phase 1c): portal virtual outputs, PipeWire DMA-BUF, VAAPI/NVENC. |
+| `crates/ezd-host-linux` | Linux backends (Phase 1c): KDE and GNOME virtual outputs, PipeWire DMA-BUF, VAAPI/NVENC. |
 | `crates/ezd-host-windows` | Windows backends (Phase 1d): Virtual Display Driver, DXGI adapter policy, Desktop Duplication, D3D11 encoders. |
 | `crates/ezd-client-core` | Client session shared by the Android library and the fake client: handshake, receive loop, frame acks, clock sync, cursor cache. |
 | `crates/ezd-input` | Client input engine: motion events to protocol input messages, palm rejection, S Pen button gestures, local zoom. |
@@ -37,6 +70,31 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 | `tools/input-test` | Web page and logger to check injected pen, touch, buttons and scroll as text. |
 
 ## Platform notes
+
+The video path on each host, from the virtual output to the tablet's screen. Every box up to the
+encoder runs on the same GPU:
+
+```mermaid
+flowchart TB
+  subgraph W["Windows"]
+    direction TB
+    VDD["Virtual Display Driver<br/>(IddCx, render adapter set)"] --> DD["Desktop Duplication<br/>D3D11 device on the same adapter"]
+    DD --> WENC["FFmpeg d3d11va frames<br/>h264_nvenc / h264_qsv / h264_amf"]
+  end
+  subgraph L["Linux (KDE Plasma 6)"]
+    direction TB
+    KVO["KWin virtual output<br/>(portal VIRTUAL, custom mode)"] --> PW["PipeWire DMA-BUF"]
+    PW -- "Intel / AMD" --> VA["VAAPI encode"]
+    PW -- "NVIDIA" --> VK["Vulkan import<br/>(dedicated allocation)"]
+    VK --> SV["scale_vulkan → NV12"] --> CU["copy to CUDA,<br/>same GPU"] --> NV["NVENC"]
+    PW -. "no DMA-BUF" .-> SHM["shared-memory fallback"]
+  end
+  WENC --> MUX["ezd-link mux<br/>(1 frame in flight)"]
+  VA --> MUX
+  NV --> MUX
+  SHM -.-> MUX
+  MUX -- "ADB over USB" --> DEC["Tablet: AMediaCodec<br/>async decode → SurfaceView"]
+```
 
 ### Windows
 
@@ -50,10 +108,11 @@ On hybrid-GPU laptops (for example an Acer Nitro 5 with a MUX switch), existing 
 ### Linux
 
 - KDE Plasma: the ScreenCast portal source type `VIRTUAL` creates a KWin virtual output. The user picks its size in the portal dialog, default 1920×1080, and `restore_token` skips the dialog afterwards. KWin virtual outputs start at 60 Hz but support custom modes, so the host adds the stream-size mode (the tablet's native size, or the `--scale`d one) with `kscreen-doctor output.<name>.addCustomMode.<w>.<h>.<mHz>.reduced` and switches to it.
-- GNOME: portal `VIRTUAL` (Mutter `RecordVirtual`). wlroots: a headless output created over IPC, captured as a monitor.
+- GNOME: Mutter's own `org.gnome.Mutter.ScreenCast` service. The host calls `CreateSession`, `RecordVirtual` (`cursor-mode` 2 = metadata, `is-platform`) and `Start`, waits for the `PipeWireStreamAdded` signal and captures that node from the user's PipeWire daemon (no portal, no dialog). Mutter sizes the virtual monitor from the PipeWire format negotiation, so the capture offers a size range anchored at the wanted size (`pw.rs`), and the host reads the result back from `org.gnome.Mutter.DisplayConfig.GetCurrentState` once the format is known. The monitor appears in `DisplayConfig` only after the stream connects, and Mutter places it to the right of the existing ones. Without the ScreenCast service on the bus (or to capture an existing monitor) the host falls back to the portal. wlroots (later): a headless output created over IPC, captured through Wayland protocols.
+- Backend selection (`backend.rs`): `EZD_LINUX_BACKEND=kde|gnome|sway|hyprland`, then `XDG_CURRENT_DESKTOP`, then the bus names `org.kde.KWin` and `org.gnome.Mutter.ScreenCast`, then `SWAYSOCK` and `HYPRLAND_INSTANCE_SIGNATURE`. Sway and Hyprland are detected but report a clear error. The compositor-specific half is a `VirtualOutputProvider` (`provider.rs`: `open` creates the output and returns a `FrameSource`, `settle` reports the final output once the stream format is known; implemented by `kde.rs` and `gnome.rs`); `source.rs` holds the shared capture and encode core. `FrameSource` has only a PipeWire variant today; a producer that does not use PipeWire becomes another variant.
 - Capture: PipeWire with DMA-BUF. Encoding uses VAAPI on Intel/AMD. On NVIDIA, the DMA-BUF is imported into Vulkan with a dedicated allocation (FFmpeg's own import makes some buffers sample as black there), converted to NV12 with `scale_vulkan`, copied into CUDA memory on the same GPU and encoded with NVENC. Shared memory is the fallback.
 - The zero-copy paths need the encoder GPU to be the one KWin renders on. The host takes KWin's primary GPU from `KWIN_DRM_DEVICES` (its first entry) when it is set, and otherwise the GPU driving the internal panel.
-- Input (Phase 2): uinput devices mapped to the virtual output (KWin `org.kde.KWin.InputDevice.outputName`, GNOME settings, Sway/Hyprland config). KDE is implemented, see `docs/input.md`.
+- Input (Phase 2): uinput devices mapped to the virtual output (KWin `org.kde.KWin.InputDevice.outputName`, GNOME gsettings, Sway/Hyprland config). KDE and GNOME are implemented, see `docs/input.md`.
 
 ### Android
 

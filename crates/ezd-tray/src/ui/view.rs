@@ -26,6 +26,9 @@ pub const SAMSUNG_DRIVER_URL: &str = "https://developer.samsung.com/android-usb-
 
 /// Refresh rates offered, in hertz.
 const REFRESH_HZ: [u32; 7] = [30, 60, 90, 120, 144, 165, 240];
+
+/// Delays offered before the virtual monitor is removed, in milliseconds.
+const DETACH_GRACE_MS: [u32; 6] = [2_000, 5_000, 10_000, 15_000, 30_000, 60_000];
 /// Encoders that can be forced by name; the current one is kept even if it is not listed.
 const ENCODERS: [&str; 6] = [
     "h264_nvenc",
@@ -892,6 +895,54 @@ impl SettingsView {
                         cfg.adapter = (!t.is_empty()).then(|| t.to_string());
                     }
                 }
+            },
+        );
+        if !windows {
+            return;
+        }
+        ui.add_space(CARD_GAP);
+
+        // Virtual monitor: how long it stays after the tablet goes away.
+        let grace_text = |ms: u32| {
+            fl!(
+                l,
+                "value-seconds",
+                seconds = text::decimal(l, text::seconds(ms))
+            )
+        };
+        let grace_now = cfg.detach_grace_ms;
+        widgets::card(
+            ui,
+            pal,
+            Some((glyphs::TIMER, &fl!(l, "card-virtual-monitor"))),
+            |ui| {
+                widgets::labelled_row(
+                    ui,
+                    pal,
+                    &fl!(l, "setting-detach-grace"),
+                    Some(&fl!(l, "detach-grace-description")),
+                    None,
+                    |ui| {
+                        ComboBox::from_id_salt("detach-grace")
+                            .width(COMBO_WIDTH)
+                            .selected_text(grace_text(grace_now))
+                            .show_ui(ui, |ui| {
+                                let mut options = DETACH_GRACE_MS.to_vec();
+                                if !options.contains(&grace_now) {
+                                    options.push(grace_now);
+                                    options.sort_unstable();
+                                }
+                                for ms in options {
+                                    ui.selectable_value(
+                                        &mut cfg.detach_grace_ms,
+                                        ms,
+                                        grace_text(ms),
+                                    );
+                                }
+                            })
+                            .response
+                    },
+                );
             },
         );
     }

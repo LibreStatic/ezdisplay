@@ -80,6 +80,19 @@ object NativeBridge {
      */
     @JvmStatic external fun inputEvent(ints: IntArray, floats: FloatArray, timesNs: LongArray)
 
+    /**
+     * Forwards one hardware key transition. [timeNs] is on the `SystemClock.uptimeMillis` base.
+     * A press of a key already down is an autorepeat. Returns false when the key code has no HID
+     * usage (nothing was sent).
+     */
+    @JvmStatic external fun keyEvent(keyCode: Int, pressed: Boolean, timeNs: Long): Boolean
+
+    /**
+     * Reports whether a hardware keyboard is attached. Kept across sessions: a session started
+     * later tells the host about the last value.
+     */
+    @JvmStatic external fun setKeyboardAttached(attached: Boolean)
+
     /** Fires the engine timers that are due; call once per frame. */
     @JvmStatic external fun inputTick()
 

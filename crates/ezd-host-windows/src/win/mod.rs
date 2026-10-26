@@ -18,6 +18,7 @@ pub mod input;
 pub mod shell;
 pub mod source;
 pub mod task;
+pub mod touch_keyboard;
 pub mod util;
 pub mod vdd;
 pub mod vdd_install;

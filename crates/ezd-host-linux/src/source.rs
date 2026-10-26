@@ -1,4 +1,5 @@
-//! [`VideoSource`] for KDE Plasma: portal virtual output -> PipeWire -> hardware encode.
+//! [`VideoSource`] for Linux: a compositor-specific virtual output (see `provider.rs`) -> PipeWire
+//! -> hardware encode.
 
 use crate::adapter::{self, RenderNode};
 use crate::ahead::{ConvertAhead, Item, Start};
@@ -6,12 +7,11 @@ use crate::encode::{
     Converter, Encoder, Kind, Pipeline, Plan, StreamTags, plan_encoders, plan_hdr_encoders,
     probe_plan,
 };
-use crate::kscreen;
-use crate::portal::{PortalCapture, SourceKind};
-use crate::pw::{PwCapture, PwParams, Target, default_intel_modifiers, default_nvidia_modifiers};
+use crate::portal::SourceKind;
+use crate::provider::{FrameSource, OutputRequest, VirtualOutputProvider};
+use crate::pw::{PwCapture, PwParams, default_intel_modifiers, default_nvidia_modifiers};
 use ezd_host_core::{
-    CursorSink, DisplayMode, EncodedFrame, OutputInfo, PlatformOptions, SourceError, SourceHdr,
-    VideoSource,
+    CursorSink, EncodedFrame, OutputInfo, PlatformOptions, SourceError, SourceHdr, VideoSource,
 };
 use ezd_proto::{Codec, DynamicRange, EncoderCaps, StreamColor, StreamConfig};
 use std::collections::HashMap;
@@ -69,16 +69,9 @@ fn hdr_mismatch(expected: bool, actual: bool) -> Option<&'static str> {
     }
 }
 
-fn portal_timeout() -> Duration {
-    let secs = std::env::var("EZD_PORTAL_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(120);
-    Duration::from_secs(secs)
-}
-
-/// Linux/KDE capture + encode source.
-pub struct KdeVirtualSource {
+/// Linux capture + encode source, generic over the compositor's output provider.
+pub struct LinuxSource {
+    provider: Box<dyn VirtualOutputProvider>,
     kind: SourceKind,
     output_name: Option<String>,
     node: Option<RenderNode>,
@@ -92,8 +85,8 @@ pub struct KdeVirtualSource {
     color: StreamColor,
     running: Option<Running>,
     force_key: bool,
-    /// The output the stream shows (KDE virtual output or the captured monitor), after `start`.
-    output: Option<kscreen::KOutput>,
+    /// The output the stream shows (virtual output or the captured monitor), after `start`.
+    output: Option<OutputInfo>,
 }
 
 /// Converts and encodes capture frames.
@@ -109,10 +102,11 @@ enum Input {
 }
 
 struct Running {
-    // Field order matters for drop: stop converting, then capture, then close the portal session.
+    // Field order matters for drop: stop converting, then capture, then destroy the output.
     input: Input,
     pw: PwCapture,
-    _portal: PortalCapture,
+    /// The provider's hold on the virtual output.
+    _output: Box<dyn Send>,
     dmabuf_ok: bool,
     /// When the shared-memory fallback started.
     dmabuf_off_at: Option<Instant>,
@@ -137,9 +131,9 @@ fn convert_ahead() -> Option<Start> {
     }
 }
 
-impl KdeVirtualSource {
+impl LinuxSource {
     /// Selects the adapter and probes the encoders (cached per process).
-    pub fn new(opts: &PlatformOptions) -> KdeVirtualSource {
+    pub fn new(opts: &PlatformOptions, provider: Box<dyn VirtualOutputProvider>) -> LinuxSource {
         let nodes = adapter::list_render_nodes();
         let node = adapter::select(&nodes, opts.adapter.as_deref(), opts.prefer_dgpu);
         if let Some(s) = &node {
@@ -156,7 +150,8 @@ impl KdeVirtualSource {
         } else {
             Vec::new()
         };
-        KdeVirtualSource {
+        LinuxSource {
+            provider,
             kind: if opts.output_name.is_some() {
                 SourceKind::Monitor
             } else {
@@ -191,7 +186,7 @@ impl KdeVirtualSource {
     }
 }
 
-impl VideoSource for KdeVirtualSource {
+impl VideoSource for LinuxSource {
     fn encoders(&self) -> Vec<EncoderCaps> {
         let codec = |p: &Plan| {
             if p.hdr10() { Codec::Hevc } else { Codec::H264 }
@@ -254,46 +249,15 @@ impl VideoSource for KdeVirtualSource {
             .find(|p| p.name == cfg.encoder_name && p.hdr10() == hdr10)
             .cloned()
             .ok_or_else(|| SourceError::msg(format!("encoder {} not offered", cfg.encoder_name)))?;
-        let virtual_kind = self.kind == SourceKind::Virtual;
-        let before = if virtual_kind && kscreen::available() {
-            kscreen::list_outputs().ok()
-        } else {
-            None
-        };
-        let mut portal = PortalCapture::open(self.kind, portal_timeout()).map_err(|e| {
-            let hint = virtual_kind
-                .then(|| kscreen::list_outputs().ok())
-                .flatten()
-                .and_then(|outs| kscreen::disabled_virtual_hint(&outs));
-            SourceError::msg(match hint {
-                Some(h) => format!("{e}. {h}"),
-                None => e,
-            })
+        tracing::info!(provider = self.provider.name(), "opening the output");
+        let opened = self.provider.open(&OutputRequest {
+            kind: self.kind,
+            output_name: self.output_name.clone(),
+            width: cfg.width,
+            height: cfg.height,
+            refresh_mhz: cfg.refresh_mhz,
         })?;
-        tracing::info!(
-            node = portal.node_id,
-            restored = portal.restored,
-            size = ?portal.size,
-            position = ?portal.position,
-            stream = ?portal.stream_id,
-            "screencast session open"
-        );
-
-        self.output = None;
-        if virtual_kind {
-            match &before {
-                Some(before) => self.output = switch_mode(before, cfg),
-                None => tracing::warn!(
-                    "kscreen-doctor unavailable: the virtual display keeps its default size"
-                ),
-            }
-        } else if let Some(name) = &self.output_name
-            && kscreen::available()
-        {
-            self.output = kscreen::list_outputs()
-                .ok()
-                .and_then(|outs| outs.into_iter().find(|o| &o.name == name));
-        }
+        self.output = opened.info;
 
         let params = PwParams {
             width: cfg.width,
@@ -301,9 +265,8 @@ impl VideoSource for KdeVirtualSource {
             fps: cfg.refresh_mhz.div_ceil(1000),
             dmabuf_modifiers: self.dmabuf_modifiers(&plan),
         };
-        let fd = portal.fd.take();
-        let pw = PwCapture::start(fd, Target::Node(portal.node_id), params, cursor)
-            .map_err(SourceError::msg)?;
+        let FrameSource::PipeWire { fd, target } = opened.frames;
+        let pw = PwCapture::start(fd, target, params, cursor).map_err(SourceError::msg)?;
         let fmt = pw
             .wait_format((cfg.width, cfg.height), Duration::from_secs(5))
             .or_else(|| pw.wait_any_format(Duration::from_secs(5)))
@@ -318,6 +281,9 @@ impl VideoSource for KdeVirtualSource {
             );
         }
         tracing::info!(?fmt, plan = ?plan, "capture format negotiated");
+        if let Some(info) = self.provider.settle((fmt.width, fmt.height)) {
+            self.output = Some(info);
+        }
         let hdr_now = fmt.is_hdr10();
         if let Some(why) = hdr_mismatch(self.hdr_source.is_some(), hdr_now) {
             // The negotiation (codec, dynamic range) was made for the other state. Remember the
@@ -345,7 +311,7 @@ impl VideoSource for KdeVirtualSource {
         self.running = Some(Running {
             input,
             pw,
-            _portal: portal,
+            _output: opened.guard,
             dmabuf_ok: fmt.modifier.is_some(),
             dmabuf_off_at: None,
         });
@@ -439,21 +405,7 @@ impl VideoSource for KdeVirtualSource {
     }
 
     fn output(&self) -> Option<OutputInfo> {
-        let o = self.output.as_ref()?;
-        Some(OutputInfo {
-            name: o.name.clone(),
-            mode: DisplayMode {
-                width: o.size.0,
-                height: o.size.1,
-                refresh_mhz: o
-                    .modes
-                    .iter()
-                    .find(|m| m.id == o.current_mode_id)
-                    .map_or(0, |m| (m.refresh_hz * 1000.0).round() as u32),
-            },
-            origin: o.pos,
-            adapter: None,
-        })
+        self.output.clone()
     }
 
     fn request_keyframe(&mut self) {
@@ -461,50 +413,13 @@ impl VideoSource for KdeVirtualSource {
     }
 
     fn stop(&mut self) {
-        // Drop order: converter and encoder, PipeWire, then the portal session (removes the
+        // Drop order: converter and encoder, PipeWire, then the output guard (removes the
         // virtual output).
         if let Some(r) = &self.running {
             let (produced, coalesced) = r.pw.counters();
             tracing::info!(produced, coalesced, "capture stopped");
         }
         self.running = None;
-    }
-}
-
-/// Best-effort switch of the new virtual output to the negotiated mode.
-/// Returns the output as KWin reports it after the switch.
-fn switch_mode(before: &[kscreen::KOutput], cfg: &StreamConfig) -> Option<kscreen::KOutput> {
-    let mut found = None;
-    for _ in 0..20 {
-        if let Ok(after) = kscreen::list_outputs() {
-            found = kscreen::find_new_output(before, &after)
-                .or_else(|| kscreen::find_virtual_output(&after))
-                .map(|o| o.name.clone());
-            if found.is_some() {
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let Some(name) = found else {
-        tracing::warn!("could not find the new virtual output; keeping its default mode");
-        return None;
-    };
-    match kscreen::apply_mode(&name, cfg.width, cfg.height, cfg.refresh_mhz) {
-        Ok(o) => {
-            tracing::info!("{name} set to {}x{}", cfg.width, cfg.height);
-            // Re-list: the position and scale can change with the mode.
-            kscreen::list_outputs()
-                .ok()
-                .and_then(|outs| outs.into_iter().find(|x| x.name == name))
-                .or(Some(o))
-        }
-        Err(e) => {
-            tracing::warn!("could not set {name} to {}x{}: {e}", cfg.width, cfg.height);
-            kscreen::list_outputs()
-                .ok()
-                .and_then(|outs| outs.into_iter().find(|x| x.name == name))
-        }
     }
 }
 

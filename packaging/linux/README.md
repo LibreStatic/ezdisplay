@@ -1,6 +1,6 @@
 # Linux packaging
 
-Only KDE Plasma 6 on Wayland is supported today. CI builds all of this in
+Only KDE Plasma 6 and GNOME on Wayland are supported today. CI builds all of this in
 `.github/workflows/linux-packages.yml`; the commands below reproduce it locally. Replace
 `~/.cache/ezd-pkg` with any scratch directory on a disk (not a RAM-backed `/tmp`).
 
@@ -55,7 +55,8 @@ docker run --rm -v "$PWD:/src:ro" -v ~/.cache/ezd-pkg/deb:/work -e CARGO_HOME=/w
 `--strip` is needed because the release profile keeps debug info, which cargo-deb would otherwise
 leave in the binaries. Use `1~debian13` on `debian:trixie` and `1~ubuntu26.04` on `ubuntu:26.04`. The revision suffix
 keeps the three files distinct and makes each sort below a later plain revision. `adb` is a hard
-dependency; `xdg-desktop-portal-kde` and the package that ships `kscreen-doctor` are recommended.
+dependency; `xdg-desktop-portal-kde` and the package that ships `kscreen-doctor` are recommended
+(KDE only; GNOME needs nothing beyond its own session). On Arch they are optional dependencies.
 
 ## AppImage
 
@@ -80,7 +81,7 @@ cached file with the right hash is not downloaded again. The result is
 sources, see [docs/releasing.md](../../docs/releasing.md)).
 
 The build refuses to produce an AppImage whose binaries need any library outside the bundle other
-than glibc, libgcc_s, libva, libva-drm, libdrm, libvulkan, libusb-1.0 and PipeWire (libusb is a host dependency, present on practically every desktop distro), or glibc symbols newer than
+than glibc, libgcc_s, libva, libva-drm, libdrm, libvulkan, libusb-1.0 (with its libudev and libcap dependencies) and PipeWire (libusb is a host dependency, present on practically every desktop distro), or glibc symbols newer than
 2.39. Smoke test on a machine without FFmpeg (needs `jq`):
 
 ```sh

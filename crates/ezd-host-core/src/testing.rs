@@ -283,6 +283,8 @@ pub enum InputCall {
     Scroll(Scroll),
     /// `InputSink::key`.
     Key(Key),
+    /// `InputSink::keyboard_attached`.
+    Keyboard(bool),
     /// `InputSink::release_all`.
     ReleaseAll,
 }
@@ -368,6 +370,9 @@ impl InputSink for RecordingSink {
     }
     fn key(&mut self, k: &Key) {
         self.push(InputCall::Key(*k));
+    }
+    fn keyboard_attached(&mut self, attached: bool) {
+        self.push(InputCall::Keyboard(attached));
     }
     fn tick(&mut self) {
         self.recording

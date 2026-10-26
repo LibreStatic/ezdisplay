@@ -6,10 +6,10 @@
 //!   |<------------------- Hello --|
 //!   |-- ClientCaps -------------->|
 //!   |-- ClientHdr (minor >= 5) --->|     the host waits for it when the client speaks minor >= 5
-//!   |-- ClientAudio (minor >= 6) ->|     likewise; the host waits for it
+//!   |-- ClientAudio (minor >= 7) ->|     likewise; the host waits for it
 //!   |<--------------- HostCaps ---|
 //!   |<------------ StreamColor ---|     minor >= 5 only
-//!   |<------------ AudioConfig ---|     minor >= 6 only; `stream: None` = no audio
+//!   |<------------ AudioConfig ---|     minor >= 7 only; `stream: None` = no audio
 //!   |<------------- StreamConfig -|     negotiate_hdr(ClientCaps, HostCaps, Prefs, ..)
 //!   |-- ConfigAck (decoder ready)>|
 //!   |<== CODEC_CONFIG, keyframe ==|     source.start() runs after the ack
@@ -72,7 +72,7 @@ pub struct SessionOptions {
     /// Receives live [`SessionEvent`]s (default: none). Send errors are ignored.
     pub events: Option<tokio::sync::mpsc::UnboundedSender<SessionEvent>>,
     /// Creates the audio source and Opus encoder of each session; `None` means no audio (the
-    /// client is told when it speaks protocol 0.6).
+    /// client is told when it speaks protocol 0.7).
     pub audio: Option<Arc<dyn AudioBackend>>,
 }
 
@@ -541,6 +541,12 @@ pub async fn run_host_session_with(
                         }
                     }
                 },
+                Ok(Some(Message::ClientKeyboard(k))) => {
+                    tracing::debug!(attached = k.attached, "client keyboard");
+                    if let Some(t) = &input_tx {
+                        let _ = t.send(InputCmd::Keyboard(k.attached));
+                    }
+                }
                 Ok(Some(Message::Bye(b))) => break EndReason::ClientBye(b.reason),
                 Ok(Some(Message::Reject(r))) => break EndReason::ClientBye(r.reason),
                 Ok(Some(other)) => tracing::debug!(?other, "ignoring message"),
@@ -836,7 +842,7 @@ async fn handshake(
     } else {
         None
     };
-    // Likewise a client with minor >= 6 sends `ClientAudio` (possibly `none()`).
+    // Likewise a client with minor >= 7 sends `ClientAudio` (possibly `none()`).
     let client_audio: Option<ClientAudio> = if hello.supports_audio() {
         Some(
             expect(rx, tx, "ClientAudio", wait, |m| match m {

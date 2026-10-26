@@ -34,11 +34,13 @@ class SettingsStoreTest {
         assertEquals("raw", s.custom[InputPrefs.CUSTOM_CLICK])
         assertEquals("local_zoom", s.custom[InputPrefs.CUSTOM_DOUBLE_CLICK])
         assertEquals("raw", s.custom[InputPrefs.CUSTOM_HOLD])
+        assertEquals("none", s.custom[InputPrefs.CUSTOM_DOUBLE_HOLD])
         assertEquals("raw", s.custom[InputPrefs.CUSTOM_HOLD_DRAG_CONTACT])
         assertEquals("raw", s.custom[InputPrefs.CUSTOM_HOLD_DRAG_HOVER])
         assertEquals(InputPrefs.DEFAULT_KEYS_CLICK, s.keys[InputPrefs.KEYS_CLICK])
         assertEquals(InputPrefs.DEFAULT_KEYS_DOUBLE_CLICK, s.keys[InputPrefs.KEYS_DOUBLE_CLICK])
         assertEquals(InputPrefs.DEFAULT_KEYS_HOLD, s.keys[InputPrefs.KEYS_HOLD])
+        assertEquals(KeyCombo(InputPrefs.MOD_CTRL or InputPrefs.MOD_ALT, 0x2C), s.keys[InputPrefs.KEYS_DOUBLE_HOLD])
         assertEquals(2f, s.zoomFactor, 0f)
         assertEquals(300, s.doubleClickMs)
         assertTrue(s.palmRejection)
@@ -93,6 +95,90 @@ class SettingsStoreTest {
         assertEquals(KeyCombo(4, 0x2C), s.keys[InputPrefs.KEYS_CLICK])
     }
 
+    @Test fun stepZoomIsOnlyAcceptedByTheDragTriggers() {
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "step_zoom")
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "step_zoom")
+        assertEquals("step_zoom", s.custom[InputPrefs.CUSTOM_HOLD_DRAG_CONTACT])
+        assertEquals("step_zoom", prefs.getString(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, null))
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD, "step_zoom")
+        store.setCustomAction(InputPrefs.CUSTOM_CLICK, "step_zoom")
+        assertEquals("raw", s.custom[InputPrefs.CUSTOM_HOLD])
+        assertEquals("raw", s.custom[InputPrefs.CUSTOM_CLICK])
+    }
+
+    @Test fun zoomShortcutsDefaultAndReachTheJson() {
+        assertEquals(KeyCombo(InputPrefs.MOD_CTRL, 0x2C), s.keys[InputPrefs.KEYS_ZOOM_IN])
+        assertEquals(KeyCombo(InputPrefs.MOD_CTRL or InputPrefs.MOD_ALT, 0x2C), s.keys[InputPrefs.KEYS_ZOOM_OUT])
+        store.setKey(InputPrefs.KEYS_ZOOM_IN, 0x04)
+        store.toggleModifier(InputPrefs.KEYS_ZOOM_OUT, InputPrefs.MOD_SHIFT)
+        val k = JSONObject(InputPrefs.toJson(context)).getJSONObject("keys")
+        assertEquals(1, k.getJSONObject("zoom_in").getInt("mods"))
+        assertEquals(0x04, k.getJSONObject("zoom_in").getInt("key"))
+        assertEquals(7, k.getJSONObject("zoom_out").getInt("mods"))
+        assertEquals(0x2C, k.getJSONObject("zoom_out").getInt("key"))
+    }
+
+    @Test fun stepZoomMakesTheProfileUseKeys() {
+        store.setProfile("custom")
+        assertFalse(InputPrefs.usesKeys(context))
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "step_zoom")
+        assertTrue(InputPrefs.usesKeys(context))
+    }
+
+    @Test fun wheelZoomAndPanAreOnlyAcceptedByTheirDragTriggers() {
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "wheel_zoom")
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "wheel_zoom")
+        assertEquals("wheel_zoom", s.custom[InputPrefs.CUSTOM_HOLD_DRAG_CONTACT])
+        assertEquals("wheel_zoom", s.custom[InputPrefs.CUSTOM_HOLD_DRAG_HOVER])
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "pan")
+        assertEquals("pan", prefs.getString(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, null))
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "pan")
+        assertEquals("wheel_zoom", s.custom[InputPrefs.CUSTOM_HOLD_DRAG_HOVER])
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD, "wheel_zoom")
+        assertEquals("raw", s.custom[InputPrefs.CUSTOM_HOLD])
+    }
+
+    @Test fun panZoomIsOnlyAcceptedByTheContactDragAndUsesKeys() {
+        store.setProfile("custom")
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "pan_zoom")
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD, "pan_zoom")
+        assertEquals("raw", s.custom[InputPrefs.CUSTOM_HOLD_DRAG_HOVER])
+        assertEquals("raw", s.custom[InputPrefs.CUSTOM_HOLD])
+        assertFalse(InputPrefs.usesKeys(context))
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "pan_zoom")
+        assertEquals("pan_zoom", prefs.getString(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, null))
+        assertTrue(InputPrefs.usesKeys(context))
+        assertEquals(
+            "pan_zoom",
+            JSONObject(InputPrefs.toJson(context)).getJSONObject("custom").getString("hold_drag_contact"),
+        )
+    }
+
+    @Test fun panShortcutDefaultsToSpaceAndReachesTheJson() {
+        assertEquals(KeyCombo(0, 0x2C), s.keys[InputPrefs.KEYS_PAN])
+        store.setKey(InputPrefs.KEYS_PAN, 0x04)
+        store.toggleModifier(InputPrefs.KEYS_PAN, InputPrefs.MOD_ALT)
+        val k = JSONObject(InputPrefs.toJson(context)).getJSONObject("keys")
+        assertEquals(4, k.getJSONObject("pan").getInt("mods"))
+        assertEquals(0x04, k.getJSONObject("pan").getInt("key"))
+    }
+
+    @Test fun panMakesTheProfileUseKeysButWheelZoomDoesNot() {
+        store.setProfile("custom")
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "wheel_zoom")
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "wheel_zoom")
+        assertFalse(InputPrefs.usesKeys(context))
+        store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "pan")
+        assertTrue(InputPrefs.usesKeys(context))
+    }
+
+    @Test fun doubleHoldOnlyAcceptsEraserKeysAndNone() {
+        store.setCustomAction(InputPrefs.CUSTOM_DOUBLE_HOLD, "right_click")
+        assertEquals("none", s.custom[InputPrefs.CUSTOM_DOUBLE_HOLD])
+        store.setCustomAction(InputPrefs.CUSTOM_DOUBLE_HOLD, "eraser")
+        assertEquals("eraser", prefs.getString(InputPrefs.CUSTOM_DOUBLE_HOLD, null))
+    }
+
     @Test fun toggleModifierFlipsBit() {
         store.toggleModifier(InputPrefs.KEYS_CLICK, InputPrefs.MOD_SHIFT)
         assertEquals(KeyCombo(InputPrefs.MOD_CTRL or InputPrefs.MOD_SHIFT, 0x1D), s.keys[InputPrefs.KEYS_CLICK])
@@ -140,11 +226,13 @@ class SettingsStoreTest {
         store.setCustomAction(InputPrefs.CUSTOM_CLICK, "keys")
         store.setCustomAction(InputPrefs.CUSTOM_DOUBLE_CLICK, "middle_click")
         store.setCustomAction(InputPrefs.CUSTOM_HOLD, "eraser")
+        store.setCustomAction(InputPrefs.CUSTOM_DOUBLE_HOLD, "keys")
         store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_CONTACT, "scroll")
         store.setCustomAction(InputPrefs.CUSTOM_HOLD_DRAG_HOVER, "pc_zoom")
         store.setKeyCombo(InputPrefs.KEYS_CLICK, KeyCombo(InputPrefs.MOD_META, 0x04))
         store.toggleModifier(InputPrefs.KEYS_DOUBLE_CLICK, InputPrefs.MOD_ALT)
         store.setKey(InputPrefs.KEYS_HOLD, 0x29)
+        store.setKey(InputPrefs.KEYS_DOUBLE_HOLD, 0x05)
         store.setZoomFactor(1.5f)
         store.setDoubleClickMs(250)
         store.setPalmRejection(false)
@@ -155,6 +243,7 @@ class SettingsStoreTest {
         assertEquals("keys", c.getString("click"))
         assertEquals("middle_click", c.getString("double_click"))
         assertEquals("eraser", c.getString("hold"))
+        assertEquals("keys", c.getString("double_hold"))
         assertEquals("scroll", c.getString("hold_drag_contact"))
         assertEquals("pc_zoom", c.getString("hold_drag_hover"))
         val k = j.getJSONObject("keys")
@@ -164,6 +253,8 @@ class SettingsStoreTest {
         assertEquals(0x1D, k.getJSONObject("double_click").getInt("key"))
         assertEquals(1, k.getJSONObject("hold").getInt("mods"))
         assertEquals(0x29, k.getJSONObject("hold").getInt("key"))
+        assertEquals(5, k.getJSONObject("double_hold").getInt("mods"))
+        assertEquals(0x05, k.getJSONObject("double_hold").getInt("key"))
         assertEquals(1.5, j.getDouble("zoom_factor"), 0.0)
         assertEquals(250, j.getInt("double_click_ms"))
         assertFalse(j.getBoolean("palm_rejection"))
@@ -173,6 +264,9 @@ class SettingsStoreTest {
         val j = JSONObject(InputPrefs.toJson(context))
         assertEquals("raw", j.getString("profile"))
         assertEquals("local_zoom", j.getJSONObject("custom").getString("double_click"))
+        assertEquals("none", j.getJSONObject("custom").getString("double_hold"))
+        assertEquals(5, j.getJSONObject("keys").getJSONObject("double_hold").getInt("mods"))
+        assertEquals(0x2C, j.getJSONObject("keys").getJSONObject("double_hold").getInt("key"))
         assertEquals(2.0, j.getDouble("zoom_factor"), 0.0)
         assertEquals(300, j.getInt("double_click_ms"))
         assertTrue(j.getBoolean("palm_rejection"))

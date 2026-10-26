@@ -30,6 +30,11 @@ pub trait InputSink: Send {
     /// A key press or release (HID usage). Sinks without key support ignore it (they do not
     /// announce `InputStatus::KEYS`, so well-behaved clients do not send keys to them).
     fn key(&mut self, _k: &Key) {}
+    /// The client reports whether a hardware keyboard is attached (`ClientKeyboard`). Called on
+    /// every change and once after the sink is created if the client already said so. Sinks that
+    /// adapt the desktop (for example to hide the touch keyboard) undo it in `release_all` and on
+    /// drop.
+    fn keyboard_attached(&mut self, _attached: bool) {}
     /// Called at least every 50 ms while the session runs (e.g. to refresh stationary touches).
     fn tick(&mut self) {}
     /// Releases everything that is down (pen out, touches up, buttons up). Called at session end.
@@ -90,6 +95,8 @@ pub(crate) enum InputCmd {
     Msg(Message),
     /// The output the stream shows (`None` = unknown); sent once after the source started.
     Output(Option<OutputInfo>),
+    /// The client's hardware keyboard state (`ClientKeyboard`).
+    Keyboard(bool),
     /// End of session.
     Stop,
 }
@@ -321,10 +328,12 @@ const LOG_EVERY: Duration = Duration::from_secs(5);
 pub(crate) fn input_thread(rx: Receiver<InputCmd>, ctx: InputContext) -> InputStats {
     // Wait for the output, collecting what the client already sent.
     let mut backlog = Vec::new();
+    let mut keyboard: Option<bool> = None;
     let output = loop {
         match rx.recv() {
             Ok(InputCmd::Msg(m)) => backlog.push(m),
             Ok(InputCmd::Output(o)) => break o,
+            Ok(InputCmd::Keyboard(a)) => keyboard = Some(a),
             Ok(InputCmd::Stop) | Err(_) => return InputStats::default(),
         }
     };
@@ -351,11 +360,15 @@ pub(crate) fn input_thread(rx: Receiver<InputCmd>, ctx: InputContext) -> InputSt
         match cmd {
             InputCmd::Msg(m) => backlog.push(m),
             InputCmd::Output(_) => {}
+            InputCmd::Keyboard(a) => keyboard = Some(a),
             InputCmd::Stop => {
                 sink.release_all();
                 return InputStats::default();
             }
         }
+    }
+    if let Some(a) = keyboard {
+        sink.keyboard_attached(a);
     }
 
     let mut st = Recorder {
@@ -399,6 +412,7 @@ pub(crate) fn input_thread(rx: Receiver<InputCmd>, ctx: InputContext) -> InputSt
         let wait = TICK.saturating_sub(last_tick.elapsed());
         match rx.recv_timeout(wait) {
             Ok(InputCmd::Msg(m)) => record(&mut st, sink.as_mut(), &m),
+            Ok(InputCmd::Keyboard(a)) => sink.keyboard_attached(a),
             Ok(InputCmd::Output(_)) | Err(RecvTimeoutError::Timeout) => {}
             Ok(InputCmd::Stop) | Err(RecvTimeoutError::Disconnected) => break,
         }

@@ -6,7 +6,9 @@
 //! * palm rejection (fingers are dropped while the pen is near),
 //! * S Pen barrel-button gestures (click, double click, hold, drag) mapped to
 //!   right click, scrolling, PC zoom, eraser, local zoom, a keyboard shortcut
-//!   (tapped, or held while the barrel is held) or raw forwarding,
+//!   (tapped, or held while the barrel is held, also after a double click), zoom
+//!   steps (a shortcut plus a click per distance dragged) or
+//!   raw forwarding,
 //! * a local zoom of the view ([`ViewTransform`]) that is undone for the
 //!   coordinates sent to the host.
 //!

@@ -96,6 +96,12 @@ impl Hello {
         self.proto_minor >= crate::MINOR_AUDIO
     }
 
+    /// True if the peer speaks at least protocol minor [`MINOR_KEYBOARD`](crate::MINOR_KEYBOARD)
+    /// (`ClientKeyboard`).
+    pub fn supports_keyboard(&self) -> bool {
+        self.proto_minor >= crate::MINOR_KEYBOARD
+    }
+
     /// Fails with [`ProtoError::VersionMismatch`] if the peer's major differs from ours.
     pub fn check_compatible(&self) -> Result<()> {
         if self.proto_major != crate::PROTOCOL_MAJOR {
@@ -483,6 +489,9 @@ impl Scroll {
 /// `usage` is a USB HID keyboard-page (0x07) usage id, i.e. a physical key
 /// position on a US layout; the host applies the user's layout like a real USB
 /// keyboard. Clients send it only when the host reports [`InputStatus::KEYS`].
+///
+/// A press of a key that is already down is an autorepeat: hosts inject another key-down, since
+/// they do not repeat on their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Key {
     /// Client monotonic clock, microseconds.
@@ -548,6 +557,17 @@ pub const H273_TRANSFER_PQ: u8 = 16;
 /// H.273 matrix coefficients code of BT.2020 non-constant luminance.
 pub const H273_MATRIX_BT2020_NCL: u8 = 9;
 
+/// Whether a hardware keyboard is attached to the client (client to host, protocol 0.6).
+///
+/// Sent when the state changes and right after the handshake, when the host `Hello` has minor >=
+/// [`MINOR_KEYBOARD`](crate::MINOR_KEYBOARD). The host may use it to adapt its desktop, for example
+/// to stop the on-screen keyboard from popping up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientKeyboard {
+    /// True while a hardware keyboard is attached and usable.
+    pub attached: bool,
+}
+
 /// What the client display and decoders can do with HDR10 (client to host, protocol 0.5).
 ///
 /// Sent right after `ClientCaps` when the host `Hello` has minor >= [`MINOR_HDR`](crate::MINOR_HDR).
@@ -604,7 +624,7 @@ impl ClientHdr {
     }
 }
 
-/// Audio codec of the PC audio stream (protocol 0.6).
+/// Audio codec of the PC audio stream (protocol 0.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AudioCodec {
     /// Uncompressed little-endian interleaved samples.
@@ -632,7 +652,7 @@ impl SampleFormat {
     }
 }
 
-/// What the client can play (client to host, protocol 0.6).
+/// What the client can play (client to host, protocol 0.7).
 ///
 /// Sent right after `ClientHdr` when the host `Hello` has minor >= [`MINOR_AUDIO`](crate::MINOR_AUDIO)
 /// and the client itself advertised one.
@@ -663,7 +683,7 @@ impl ClientAudio {
     }
 }
 
-/// The negotiated audio stream (host to client, protocol 0.6).
+/// The negotiated audio stream (host to client, protocol 0.7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioStream {
     /// Codec of every [`AudioPacket`].
@@ -690,7 +710,7 @@ impl AudioStream {
     }
 }
 
-/// Audio decision of the host (host to client, protocol 0.6), sent right after `StreamColor` and
+/// Audio decision of the host (host to client, protocol 0.7), sent right after `StreamColor` and
 /// before `StreamConfig` when both sides speak minor >= [`MINOR_AUDIO`](crate::MINOR_AUDIO).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioConfig {
@@ -698,7 +718,7 @@ pub struct AudioConfig {
     pub stream: Option<AudioStream>,
 }
 
-/// One audio packet (host to client, Audio/1, protocol 0.6).
+/// One audio packet (host to client, Audio/1, protocol 0.7).
 ///
 /// `data` is exactly one frame: `frame_samples * channels` interleaved samples for PCM, one Opus
 /// packet for Opus.
@@ -791,7 +811,8 @@ impl Default for StreamColor {
 }
 
 /// Any message of protocol 0.x (0.2 added `FrameAck`, 0.3 the input messages,
-/// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`, 0.6 audio).
+/// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`, 0.6 `ClientKeyboard`,
+/// 0.7 audio).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
@@ -828,8 +849,10 @@ pub enum Message {
     /// Control/16 (0.5), host to client.
     StreamColor(StreamColor),
     /// Control/17 (0.6), client to host.
+    ClientKeyboard(ClientKeyboard),
+    /// Control/18 (0.7), client to host.
     ClientAudio(ClientAudio),
-    /// Control/18 (0.6), host to client.
+    /// Control/19 (0.7), host to client.
     AudioConfig(AudioConfig),
     /// Input/1 (0.3), client to host.
     Pen(PenSample),
@@ -847,7 +870,7 @@ pub enum Message {
     CursorState(CursorState),
     /// Video/1.
     VideoFrame(VideoFrame),
-    /// Audio/1 (0.6), host to client.
+    /// Audio/1 (0.7), host to client.
     AudioPacket(AudioPacket),
 }
 
@@ -886,8 +909,9 @@ impl Message {
             Message::ClientOptions(_) => 14,
             Message::ClientHdr(_) => 15,
             Message::StreamColor(_) => 16,
-            Message::ClientAudio(_) => 17,
-            Message::AudioConfig(_) => 18,
+            Message::ClientKeyboard(_) => 17,
+            Message::ClientAudio(_) => 18,
+            Message::AudioConfig(_) => 19,
             Message::Pen(_) => 1,
             Message::Touch(_) => 2,
             Message::PointerButton(_) => 3,
@@ -924,6 +948,7 @@ pub fn encode_message(msg: &Message) -> Result<(Channel, u8, Vec<u8>)> {
         Message::ClientOptions(m) => enc(m)?,
         Message::ClientHdr(m) => enc(m)?,
         Message::StreamColor(m) => enc(m)?,
+        Message::ClientKeyboard(m) => enc(m)?,
         Message::ClientAudio(m) => enc(m)?,
         Message::AudioConfig(m) => enc(m)?,
         Message::Pen(m) => enc(m)?,
@@ -972,8 +997,9 @@ pub fn decode_message(channel: u8, kind: u8, payload: &[u8]) -> Result<Option<Me
         (Channel::Control, 14) => Message::ClientOptions(dec(c, k, payload)?),
         (Channel::Control, 15) => Message::ClientHdr(dec(c, k, payload)?),
         (Channel::Control, 16) => Message::StreamColor(dec(c, k, payload)?),
-        (Channel::Control, 17) => Message::ClientAudio(dec(c, k, payload)?),
-        (Channel::Control, 18) => Message::AudioConfig(dec(c, k, payload)?),
+        (Channel::Control, 17) => Message::ClientKeyboard(dec(c, k, payload)?),
+        (Channel::Control, 18) => Message::ClientAudio(dec(c, k, payload)?),
+        (Channel::Control, 19) => Message::AudioConfig(dec(c, k, payload)?),
         (Channel::Input, 1) => Message::Pen(dec(c, k, payload)?),
         (Channel::Input, 2) => Message::Touch(dec(c, k, payload)?),
         (Channel::Input, 3) => Message::PointerButton(dec(c, k, payload)?),
@@ -1092,6 +1118,7 @@ mod tests {
                 1000,
                 400,
             )),
+            Message::ClientKeyboard(ClientKeyboard { attached: true }),
             Message::ClientAudio(ClientAudio {
                 enabled: true,
                 sample_rates: vec![44100, 48000],
@@ -1308,6 +1335,15 @@ mod tests {
         assert!(h.supports_audio());
         h.proto_minor = crate::MINOR_AUDIO - 1;
         assert!(!h.supports_audio());
+        assert!(h.supports_keyboard());
+    }
+
+    #[test]
+    fn keyboard_support_by_minor() {
+        let mut h = Hello::new(Role::Client, "x", "y");
+        assert!(h.supports_keyboard());
+        h.proto_minor = crate::MINOR_KEYBOARD - 1;
+        assert!(!h.supports_keyboard());
         assert!(h.supports_hdr());
     }
 

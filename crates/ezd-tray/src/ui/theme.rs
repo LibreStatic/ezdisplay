@@ -77,6 +77,12 @@ pub fn palette(theme: Theme) -> Palette {
 /// Minimum contrast of text against its background (WCAG AA).
 const MIN_CONTRAST: f64 = 4.5;
 
+/// Contrast of labels on accent fills (buttons, selected segments). Higher than [`MIN_CONTRAST`]:
+/// a mid-tone accent that only just reaches 4.5:1 reads poorly in small text. Close to the
+/// accent tones Windows 11 uses for fills (a darker one in light mode, a lighter one in dark).
+const ACCENT_FILL_CONTRAST_LIGHT: f64 = 6.0;
+const ACCENT_FILL_CONTRAST_DARK: f64 = 7.0;
+
 fn luminance(c: Color32) -> f64 {
     let lin = |v: u8| {
         let s = f64::from(v) / 255.0;
@@ -106,19 +112,29 @@ fn shift_until(c: Color32, target: Color32, ok: impl Fn(Color32) -> bool) -> Col
 }
 
 /// The palette of `theme` with the accent roles (`accent`, `on_accent`, `accent_text`,
-/// `nav_selected`) derived from the system accent `accent`. Every text pair keeps at least 4.5:1:
-/// in light mode the accent is darkened under white text, in dark mode it is lightened under
-/// near-black text (as Windows 11 does). Neutrals and status colours stay as they are.
+/// `nav_selected`) derived from the system accent `accent`. Every text pair keeps at least 4.5:1,
+/// and labels on accent fills more: in light mode the accent is darkened under white text, in dark
+/// mode it is lightened under near-black text (as Windows 11 does). Neutrals and status colours stay as they are.
 pub fn palette_with_accent(theme: Theme, accent: Color32) -> Palette {
     let mut p = palette(theme);
     let accent = Color32::from_rgb(accent.r(), accent.g(), accent.b());
-    let (toward, on_accent, mix) = match theme {
-        Theme::Light => (Color32::BLACK, Color32::WHITE, 0.2),
-        Theme::Dark => (Color32::WHITE, Color32::BLACK, 0.25),
+    let (toward, on_accent, fill_contrast, mix) = match theme {
+        Theme::Light => (
+            Color32::BLACK,
+            Color32::WHITE,
+            ACCENT_FILL_CONTRAST_LIGHT,
+            0.2,
+        ),
+        Theme::Dark => (
+            Color32::WHITE,
+            Color32::BLACK,
+            ACCENT_FILL_CONTRAST_DARK,
+            0.25,
+        ),
     };
     // Light: darken until white text reads on it; dark: lighten until near-black text does.
     p.on_accent = on_accent;
-    p.accent = shift_until(accent, toward, |c| contrast(on_accent, c) >= MIN_CONTRAST);
+    p.accent = shift_until(accent, toward, |c| contrast(on_accent, c) >= fill_contrast);
     // The selected row: the navigation fill tinted with the accent, as much as the text allows.
     let mut m = mix;
     p.nav_selected = p.nav_bg.lerp_to_gamma(p.accent, m);
@@ -242,7 +258,7 @@ mod tests {
 
     const ACCENTS: [u32; 12] = [
         0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0x00FFFF, 0xFF00FF, 0xFAFAFA, 0x050505, 0x808080,
-        0x0078D4, 0x4F7A9A, 0x625FF0,
+        0x0078D4, 0x4F7A9A, 0x52789A,
     ];
 
     fn hex(h: u32) -> Color32 {
@@ -265,6 +281,12 @@ mod tests {
                     let c = contrast(fg, bg);
                     assert!(c >= 4.5, "{theme:?} {h:06X} {what}: {c:.2}");
                 }
+                let fill = match theme {
+                    Theme::Light => ACCENT_FILL_CONTRAST_LIGHT,
+                    Theme::Dark => ACCENT_FILL_CONTRAST_DARK,
+                };
+                let c = contrast(p.on_accent, p.accent);
+                assert!(c >= fill, "{theme:?} {h:06X} on_accent/accent: {c:.2}");
                 let base = palette(theme);
                 assert_eq!(p.window_bg, base.window_bg);
                 assert_eq!(p.card, base.card);

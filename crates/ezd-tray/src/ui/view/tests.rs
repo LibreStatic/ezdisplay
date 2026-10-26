@@ -237,6 +237,33 @@ fn changing_the_scale_changes_the_config() {
 }
 
 #[test]
+fn virtual_monitor_delay_is_windows_only_and_changes_the_config() {
+    let mut h = harness(snapshot(HostStatus::Waiting { devices: vec![] }), "en");
+    h.get_by_role_and_label(Role::Button, "Display").click();
+    h.run();
+    assert!(h.query_by_label("Remove after").is_none());
+
+    let mut snap = snapshot(HostStatus::Waiting { devices: vec![] });
+    snap.windows = true;
+    let mut h = harness(snap, "en");
+    h.get_by_role_and_label(Role::Button, "Display").click();
+    h.run();
+    h.get_by_role_and_label(Role::ComboBox, "Remove after")
+        .scroll_to_me();
+    h.run();
+    h.get_by_role_and_label(Role::ComboBox, "Remove after")
+        .click();
+    h.run();
+    h.get_by_label("10 s").click();
+    h.run();
+    let actions = h.state_mut().take_actions();
+    let [Action::SetConfig(c)] = actions.as_slice() else {
+        panic!("expected one SetConfig, got {actions:?}");
+    };
+    assert_eq!(c.service.detach_grace_ms, 10_000);
+}
+
+#[test]
 fn changing_hdr_changes_the_config() {
     let mut h = harness(snapshot(HostStatus::Waiting { devices: vec![] }), "en");
     h.get_by_role_and_label(Role::Button, "Display").click();

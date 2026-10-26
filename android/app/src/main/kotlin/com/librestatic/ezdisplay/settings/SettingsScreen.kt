@@ -117,12 +117,14 @@ private fun PenContent(
     Column(modifier.fillMaxWidth()) {
         ProfileCards(state.profile, actions::setProfile, columns, Modifier, unselectedHeight, selectedHeight)
         when (state.profile) {
-            "graphics_tablet" -> ShortcutRow(
-                InputPrefs.KEYS_HOLD, state.keys.getValue(InputPrefs.KEYS_HOLD),
-                { onOpenEditor(InputPrefs.KEYS_HOLD) },
-                Modifier.padding(top = profileGap(columns)), highlighted = selectedEditor == InputPrefs.KEYS_HOLD,
-                minHeight = shortcutMinHeight,
-            )
+            "graphics_tablet" -> for (key in visibleKeyEditors(state)) {
+                ShortcutRow(
+                    key, state.keys.getValue(key),
+                    { onOpenEditor(key) },
+                    Modifier.padding(top = profileGap(columns)), highlighted = selectedEditor == key,
+                    minHeight = shortcutMinHeight,
+                )
+            }
             "custom" -> CustomGestures(state, actions, onOpenEditor, Modifier.padding(top = profileGap(columns)), selectedEditor, shortcutMinHeight)
         }
     }
@@ -413,7 +415,7 @@ private fun WideLayout(
                     WideHeading(stringResource(R.string.settings_profile))
                     PenContent(
                         state, actions, if (sideBySide) 3 else 2, setPaneEditor,
-                        selectedEditor = editor, shortcutMinHeight = 88.dp,
+                        selectedEditor = editor, shortcutMinHeight = 64.dp,
                     )
                     Spacer(Modifier.height(20.dp))
                     if (sideBySide) {
@@ -426,9 +428,9 @@ private fun WideLayout(
                                 WideHeading(stringResource(R.string.section_touch))
                                 PalmRow(state.palmRejection, actions::setPalmRejection)
                                 AirActionsCard(state.airActions, Modifier.padding(top = profileGap(3)))
-                                Spacer(Modifier.height(20.dp))
-                                WideHeading(stringResource(R.string.section_audio))
-                                AudioRow(state.audioEnabled, actions::setAudioEnabled)
+                                // No heading of its own: the row already reads "Audio", and the graphics tablet
+                                // profile's shortcut rows leave no room for one without scrolling.
+                                AudioRow(state.audioEnabled, actions::setAudioEnabled, Modifier.padding(top = profileGap(3)))
                             }
                             Column(Modifier.weight(1f)) {
                                 WideHeading(stringResource(R.string.section_connection))

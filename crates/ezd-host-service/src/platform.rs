@@ -47,6 +47,12 @@ pub fn audio_source() -> Option<Box<dyn AudioSource>> {
     }
 }
 
+/// Removes a virtual display left on the desktop for a quick reconnect (Windows).
+pub fn release_virtual_display() {
+    #[cfg(windows)]
+    imp::release_virtual_display();
+}
+
 /// Platform part of the diagnostics report.
 pub fn diag_section() -> serde_json::Value {
     #[cfg(any(target_os = "linux", windows))]

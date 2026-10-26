@@ -1,8 +1,7 @@
 name: Linux packages
 
 on:
-  push:
-    branches: [main]
+  # Pushes to main run through the release workflow, which calls this one.
   pull_request:
   # Called by the release workflow.
   workflow_call:
