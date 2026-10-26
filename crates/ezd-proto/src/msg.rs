@@ -90,6 +90,12 @@ impl Hello {
         self.proto_minor >= crate::MINOR_HDR
     }
 
+    /// True if the peer speaks at least protocol minor [`MINOR_AUDIO`](crate::MINOR_AUDIO)
+    /// (`ClientAudio`, `AudioConfig`, the Audio channel).
+    pub fn supports_audio(&self) -> bool {
+        self.proto_minor >= crate::MINOR_AUDIO
+    }
+
     /// Fails with [`ProtoError::VersionMismatch`] if the peer's major differs from ours.
     pub fn check_compatible(&self) -> Result<()> {
         if self.proto_major != crate::PROTOCOL_MAJOR {
@@ -598,6 +604,113 @@ impl ClientHdr {
     }
 }
 
+/// Audio codec of the PC audio stream (protocol 0.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AudioCodec {
+    /// Uncompressed little-endian interleaved samples.
+    Pcm,
+    /// Opus, one packet per frame; always decoded at 48 kHz.
+    Opus,
+}
+
+/// Sample format of uncompressed audio: little-endian, interleaved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SampleFormat {
+    /// Signed 16-bit integer.
+    S16,
+    /// 32-bit IEEE float in -1.0..=1.0.
+    F32,
+}
+
+impl SampleFormat {
+    /// Bytes per sample.
+    pub fn bytes(self) -> usize {
+        match self {
+            SampleFormat::S16 => 2,
+            SampleFormat::F32 => 4,
+        }
+    }
+}
+
+/// What the client can play (client to host, protocol 0.6).
+///
+/// Sent right after `ClientHdr` when the host `Hello` has minor >= [`MINOR_AUDIO`](crate::MINOR_AUDIO)
+/// and the client itself advertised one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientAudio {
+    /// The user wants PC audio on this device.
+    pub enabled: bool,
+    /// Output sample rates in Hz the client can play uncompressed audio at.
+    pub sample_rates: Vec<u32>,
+    /// Maximum output channel count (0 = no audio output).
+    pub max_channels: u8,
+    /// Uncompressed sample formats the client can play.
+    pub formats: Vec<SampleFormat>,
+    /// Codecs the client can decode.
+    pub codecs: Vec<AudioCodec>,
+}
+
+impl ClientAudio {
+    /// A client without audio output (or with audio switched off).
+    pub fn none() -> Self {
+        ClientAudio {
+            enabled: false,
+            sample_rates: Vec::new(),
+            max_channels: 0,
+            formats: Vec::new(),
+            codecs: Vec::new(),
+        }
+    }
+}
+
+/// The negotiated audio stream (host to client, protocol 0.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioStream {
+    /// Codec of every [`AudioPacket`].
+    pub codec: AudioCodec,
+    /// Sample rate in Hz (48000).
+    pub sample_rate: u32,
+    /// Interleaved channel count.
+    pub channels: u8,
+    /// Sample format of PCM packets. Ignored for Opus (set to `S16`): the client picks its own
+    /// decoder output format.
+    pub format: SampleFormat,
+    /// Samples per channel in every packet (480 = 10 ms at 48 kHz).
+    pub frame_samples: u32,
+    /// Codec configuration: the OpusHead identification header for Opus, empty for PCM.
+    #[serde(with = "serde_bytes")]
+    pub codec_config: Vec<u8>,
+}
+
+impl AudioStream {
+    /// Bytes of one PCM packet; `None` for Opus (variable size).
+    pub fn pcm_packet_len(&self) -> Option<usize> {
+        (self.codec == AudioCodec::Pcm)
+            .then(|| self.frame_samples as usize * self.channels as usize * self.format.bytes())
+    }
+}
+
+/// Audio decision of the host (host to client, protocol 0.6), sent right after `StreamColor` and
+/// before `StreamConfig` when both sides speak minor >= [`MINOR_AUDIO`](crate::MINOR_AUDIO).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioConfig {
+    /// The stream, or `None` when there is no audio in this session.
+    pub stream: Option<AudioStream>,
+}
+
+/// One audio packet (host to client, Audio/1, protocol 0.6).
+///
+/// `data` is exactly one frame: `frame_samples * channels` interleaved samples for PCM, one Opus
+/// packet for Opus.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioPacket {
+    /// Host monotonic time of the first sample, microseconds.
+    pub pts_us: u64,
+    /// Packet payload.
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+}
+
 /// SMPTE ST 2086 mastering display colour volume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mastering {
@@ -678,7 +791,7 @@ impl Default for StreamColor {
 }
 
 /// Any message of protocol 0.x (0.2 added `FrameAck`, 0.3 the input messages,
-/// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`).
+/// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`, 0.6 audio).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
@@ -714,6 +827,10 @@ pub enum Message {
     ClientHdr(ClientHdr),
     /// Control/16 (0.5), host to client.
     StreamColor(StreamColor),
+    /// Control/17 (0.6), client to host.
+    ClientAudio(ClientAudio),
+    /// Control/18 (0.6), host to client.
+    AudioConfig(AudioConfig),
     /// Input/1 (0.3), client to host.
     Pen(PenSample),
     /// Input/2 (0.3), client to host.
@@ -730,6 +847,8 @@ pub enum Message {
     CursorState(CursorState),
     /// Video/1.
     VideoFrame(VideoFrame),
+    /// Audio/1 (0.6), host to client.
+    AudioPacket(AudioPacket),
 }
 
 impl Message {
@@ -743,6 +862,7 @@ impl Message {
             | Message::Key(_) => Channel::Input,
             Message::CursorShape(_) | Message::CursorState(_) => Channel::Cursor,
             Message::VideoFrame(_) => Channel::Video,
+            Message::AudioPacket(_) => Channel::Audio,
             _ => Channel::Control,
         }
     }
@@ -766,6 +886,8 @@ impl Message {
             Message::ClientOptions(_) => 14,
             Message::ClientHdr(_) => 15,
             Message::StreamColor(_) => 16,
+            Message::ClientAudio(_) => 17,
+            Message::AudioConfig(_) => 18,
             Message::Pen(_) => 1,
             Message::Touch(_) => 2,
             Message::PointerButton(_) => 3,
@@ -774,6 +896,7 @@ impl Message {
             Message::CursorShape(_) => 1,
             Message::CursorState(_) => 2,
             Message::VideoFrame(_) => 1,
+            Message::AudioPacket(_) => 1,
         }
     }
 }
@@ -801,6 +924,8 @@ pub fn encode_message(msg: &Message) -> Result<(Channel, u8, Vec<u8>)> {
         Message::ClientOptions(m) => enc(m)?,
         Message::ClientHdr(m) => enc(m)?,
         Message::StreamColor(m) => enc(m)?,
+        Message::ClientAudio(m) => enc(m)?,
+        Message::AudioConfig(m) => enc(m)?,
         Message::Pen(m) => enc(m)?,
         Message::Touch(m) => enc(m)?,
         Message::PointerButton(m) => enc(m)?,
@@ -809,6 +934,7 @@ pub fn encode_message(msg: &Message) -> Result<(Channel, u8, Vec<u8>)> {
         Message::CursorShape(m) => enc(m)?,
         Message::CursorState(m) => enc(m)?,
         Message::VideoFrame(m) => enc(m)?,
+        Message::AudioPacket(m) => enc(m)?,
     };
     Ok((msg.channel(), msg.kind(), payload))
 }
@@ -846,6 +972,8 @@ pub fn decode_message(channel: u8, kind: u8, payload: &[u8]) -> Result<Option<Me
         (Channel::Control, 14) => Message::ClientOptions(dec(c, k, payload)?),
         (Channel::Control, 15) => Message::ClientHdr(dec(c, k, payload)?),
         (Channel::Control, 16) => Message::StreamColor(dec(c, k, payload)?),
+        (Channel::Control, 17) => Message::ClientAudio(dec(c, k, payload)?),
+        (Channel::Control, 18) => Message::AudioConfig(dec(c, k, payload)?),
         (Channel::Input, 1) => Message::Pen(dec(c, k, payload)?),
         (Channel::Input, 2) => Message::Touch(dec(c, k, payload)?),
         (Channel::Input, 3) => Message::PointerButton(dec(c, k, payload)?),
@@ -854,6 +982,7 @@ pub fn decode_message(channel: u8, kind: u8, payload: &[u8]) -> Result<Option<Me
         (Channel::Cursor, 1) => Message::CursorShape(dec(c, k, payload)?),
         (Channel::Cursor, 2) => Message::CursorState(dec(c, k, payload)?),
         (Channel::Video, 1) => Message::VideoFrame(dec(c, k, payload)?),
+        (Channel::Audio, 1) => Message::AudioPacket(dec(c, k, payload)?),
         _ => return Ok(None),
     }))
 }
@@ -963,6 +1092,23 @@ mod tests {
                 1000,
                 400,
             )),
+            Message::ClientAudio(ClientAudio {
+                enabled: true,
+                sample_rates: vec![44100, 48000],
+                max_channels: 2,
+                formats: vec![SampleFormat::S16, SampleFormat::F32],
+                codecs: vec![AudioCodec::Pcm, AudioCodec::Opus],
+            }),
+            Message::AudioConfig(AudioConfig {
+                stream: Some(AudioStream {
+                    codec: AudioCodec::Opus,
+                    sample_rate: 48000,
+                    channels: 2,
+                    format: SampleFormat::S16,
+                    frame_samples: 480,
+                    codec_config: b"OpusHead".to_vec(),
+                }),
+            }),
             Message::Pen(PenSample {
                 t_us: 1 << 40,
                 x: 65535,
@@ -1030,6 +1176,10 @@ mod tests {
                 capture_us: 5,
                 encoded_us: 6,
                 data: vec![0, 0, 0, 1, 0x67, 1, 2, 3],
+            }),
+            Message::AudioPacket(AudioPacket {
+                pts_us: 1 << 35,
+                data: vec![1, 2, 3, 4],
             }),
         ]
     }
@@ -1150,6 +1300,41 @@ mod tests {
         h.proto_minor = crate::MINOR_HDR - 1;
         assert!(!h.supports_hdr());
         assert!(h.supports_input());
+    }
+
+    #[test]
+    fn audio_support_by_minor() {
+        let mut h = Hello::new(Role::Client, "x", "y");
+        assert!(h.supports_audio());
+        h.proto_minor = crate::MINOR_AUDIO - 1;
+        assert!(!h.supports_audio());
+        assert!(h.supports_hdr());
+    }
+
+    #[test]
+    fn audio_stream_helpers() {
+        assert!(!ClientAudio::none().enabled);
+        let mut s = AudioStream {
+            codec: AudioCodec::Pcm,
+            sample_rate: 48000,
+            channels: 2,
+            format: SampleFormat::F32,
+            frame_samples: 480,
+            codec_config: Vec::new(),
+        };
+        assert_eq!(s.pcm_packet_len(), Some(480 * 2 * 4));
+        s.format = SampleFormat::S16;
+        assert_eq!(s.pcm_packet_len(), Some(480 * 2 * 2));
+        s.codec = AudioCodec::Opus;
+        assert_eq!(s.pcm_packet_len(), None);
+        let m = Message::AudioPacket(AudioPacket {
+            pts_us: 0,
+            data: vec![255; 200],
+        });
+        assert_eq!(encode_message(&m).unwrap().0, Channel::Audio);
+        let none = Message::AudioConfig(AudioConfig { stream: None });
+        let (ch, kind, p) = encode_message(&none).unwrap();
+        assert_eq!(decode_message(ch as u8, kind, &p).unwrap(), Some(none));
     }
 
     #[test]

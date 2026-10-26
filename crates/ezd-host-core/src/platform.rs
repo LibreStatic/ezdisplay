@@ -5,9 +5,12 @@
 //! ```ignore
 //! pub fn create_virtual_source(opts: &PlatformOptions)
 //!     -> Result<Box<dyn VideoSource>, PlatformError>;
+//! pub fn create_audio_source(opts: &PlatformOptions) -> Option<Box<dyn AudioSource>>;
 //! pub fn diag_section() -> serde_json::Value;
 //! ```
-//! so `ezd-host` can call them without knowing the platform.
+//! so `ezd-host` can call them without knowing the platform. `create_audio_source` returns
+//! `None` when the PC audio cannot be captured; the host wraps it in an
+//! [`AudioBackend`](crate::AudioBackend) for the sessions.
 
 /// Options chosen on the command line that platform backends interpret.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -3,8 +3,8 @@
 use crate::{ClientHandle, now_us};
 use ezd_link::{Link, MuxError, MuxReceiver, MuxSender};
 use ezd_proto::{
-    Bye, ClientCaps, ClientHdr, CursorShape, CursorState, FrameAck, Hello, Message, Ping, Pong,
-    Role, StreamColor, StreamConfig, VideoFrame,
+    AudioConfig, AudioPacket, Bye, ClientAudio, ClientCaps, ClientHdr, CursorShape, CursorState,
+    FrameAck, Hello, Message, Ping, Pong, Role, StreamColor, StreamConfig, VideoFrame,
 };
 use std::time::Duration;
 use tokio::time::{MissedTickBehavior, interval, timeout};
@@ -40,6 +40,17 @@ pub trait ClientHandler: Send {
     /// [`on_stream_config`]: ClientHandler::on_stream_config
     fn on_stream_color(&mut self, _color: &StreamColor) {}
 
+    /// The host's audio decision (protocol 0.6), called right before [`on_stream_config`] and
+    /// only when the host sent one: `stream: None` means no audio this session. Create the
+    /// audio decoder/output here. Not called for a host older than protocol 0.6.
+    ///
+    /// [`on_stream_config`]: ClientHandler::on_stream_config
+    fn on_audio_config(&mut self, _cfg: &AudioConfig) {}
+
+    /// An audio packet. Hand it to the audio thread without blocking; packets only arrive
+    /// when [`on_audio_config`](Self::on_audio_config) announced a stream.
+    fn on_audio_packet(&mut self, _pkt: AudioPacket) {}
+
     /// A `CODEC_CONFIG` frame (parameter sets). Never acked.
     fn on_codec_config(&mut self, frame: VideoFrame) -> HandlerResult;
 
@@ -67,6 +78,10 @@ pub struct ClientConfig {
     /// `ClientHdr` is sent right after the host `Hello`; `None` sends [`ClientHdr::none`]
     /// (no HDR10), so the host always gets an answer and never waits for it in vain.
     pub hdr: Option<ClientHdr>,
+    /// Audio playback capabilities. Whenever the host speaks protocol 0.6 a `ClientAudio` is sent
+    /// right after `ClientHdr`; `None` sends [`ClientAudio::none`] (no audio), so the host
+    /// always gets an answer and never waits for it in vain.
+    pub audio: Option<ClientAudio>,
     /// Interval of `ClientStats` messages.
     pub stats_interval: Duration,
     /// Interval of client-initiated pings (clock sync).
@@ -92,6 +107,7 @@ impl ClientConfig {
             app_version: env!("CARGO_PKG_VERSION").into(),
             caps,
             hdr: None,
+            audio: None,
             stats_interval: Duration::from_secs(1),
             ping_interval: Duration::from_millis(500),
             max_duration: None,
@@ -125,6 +141,8 @@ pub struct ClientOutcome {
     pub stream: StreamConfig,
     /// Colour description of the stream (BT.709 8-bit when the host sent none).
     pub color: StreamColor,
+    /// The host's audio decision; `None` when the host sent none (older than protocol 0.6).
+    pub audio: Option<AudioConfig>,
     /// Why it ended.
     pub end: ClientEnd,
     /// Estimated `host_clock - client_clock` in microseconds.
@@ -181,8 +199,11 @@ async fn wait_for<T>(
                     t2_us: t,
                 }));
             }
-            Err(Message::Pong(_)) | Err(Message::CursorShape(_)) | Err(Message::CursorState(_)) => {
-            }
+            Err(Message::Pong(_))
+            | Err(Message::CursorShape(_))
+            | Err(Message::CursorState(_))
+            | Err(Message::AudioConfig(_))
+            | Err(Message::AudioPacket(_)) => {}
             Err(Message::Reject(r)) => {
                 return Err(ClientError::Handshake(format!("rejected: {}", r.reason)));
             }
@@ -217,7 +238,8 @@ pub async fn run_client<H: ClientHandler>(
     if let Some(minor) = cfg.proto_minor {
         my_hello.proto_minor = minor;
     }
-    let my_minor_supports_hdr = my_hello.supports_hdr();
+    let (my_minor_supports_hdr, my_minor_supports_audio) =
+        (my_hello.supports_hdr(), my_hello.supports_audio());
     tx.send_control(Message::Hello(my_hello))?;
     tx.send_control(Message::ClientCaps(cfg.caps.clone()))?;
     let hello = wait_for(&mut rx, &tx, "Hello", wait, |m| match m {
@@ -233,18 +255,29 @@ pub async fn run_client<H: ClientHandler>(
             cfg.hdr.clone().unwrap_or_else(ClientHdr::none),
         ))?;
     }
+    if hello.supports_audio() && my_minor_supports_audio {
+        tx.send_control(Message::ClientAudio(
+            cfg.audio.clone().unwrap_or_else(ClientAudio::none),
+        ))?;
+    }
     wait_for(&mut rx, &tx, "HostCaps", wait, |m| match m {
         Message::HostCaps(h) => Ok(h),
         o => Err(o),
     })
     .await?;
-    // `StreamColor` (0.5) may precede `StreamConfig`; without it the stream is BT.709 8-bit.
+    // `StreamColor` (0.5) and `AudioConfig` (0.6) may precede `StreamConfig`; without the colour
+    // the stream is BT.709 8-bit.
     let mut color = StreamColor::sdr_bt709();
+    let mut audio: Option<AudioConfig> = None;
     let stream = loop {
         let next = wait_for(&mut rx, &tx, "StreamConfig", wait, |m| match m {
             Message::StreamConfig(c) => Ok(Some(c)),
             Message::StreamColor(c) => {
                 color = c;
+                Ok(None)
+            }
+            Message::AudioConfig(a) => {
+                audio = Some(a);
                 Ok(None)
             }
             o => Err(o),
@@ -256,6 +289,9 @@ pub async fn run_client<H: ClientHandler>(
     };
     handle.store_stream_color(color);
     handler.on_stream_color(&color);
+    if let Some(a) = &audio {
+        handler.on_audio_config(a);
+    }
     if let Err(e) = handler.on_stream_config(&stream) {
         let _ = tx.send_control(Message::Bye(Bye {
             reason: format!("decoder init failed: {e}"),
@@ -335,6 +371,7 @@ pub async fn run_client<H: ClientHandler>(
     let outcome = ClientOutcome {
         stream,
         color,
+        audio,
         end,
         clock_offset_us: handle.clock_offset_us(),
         rtt_us: handle.rtt_us(),
@@ -407,6 +444,10 @@ fn on_message<H: ClientHandler>(
             }))?;
             handle.count_received(v.data.len());
             flow(handler.on_video_frame(v, received_us))
+        }
+        Message::AudioPacket(p) => {
+            handler.on_audio_packet(p);
+            Ok(None)
         }
         Message::InputStatus(st) => {
             handle.store_input_status(st);

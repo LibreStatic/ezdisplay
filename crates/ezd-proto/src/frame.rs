@@ -33,7 +33,7 @@ pub enum Channel {
     Cursor = 2,
     /// Encoded video frames.
     Video = 3,
-    /// Audio (reserved).
+    /// Audio packets (protocol 0.6).
     Audio = 4,
 }
 

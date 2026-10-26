@@ -1,4 +1,4 @@
-# ezdisplay wire protocol (version 0.5)
+# ezdisplay wire protocol (version 0.6)
 
 All integers are little endian. The protocol runs over any reliable ordered byte stream: TCP
 through `adb reverse` over USB, or a QUIC connection on Wi-Fi (see [Transports](#transports)). It is implemented in the `ezd-proto`
@@ -30,7 +30,7 @@ Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 | 1 | Input | Pen, touch, pointer buttons, scroll and keys, client to host (0.3; keys 0.4). |
 | 2 | Cursor | Cursor shape and position. |
 | 3 | Video | Encoded video frames. |
-| 4 | Audio | Reserved. |
+| 4 | Audio | PC audio packets, host to client (0.6). |
 
 ### Kinds
 
@@ -52,6 +52,8 @@ Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 | Control | 14 | `ClientOptions` | host to client | postcard (0.3) |
 | Control | 15 | `ClientHdr` | client to host | postcard (0.5) |
 | Control | 16 | `StreamColor` | host to client | postcard (0.5) |
+| Control | 17 | `ClientAudio` | client to host | postcard (0.6) |
+| Control | 18 | `AudioConfig` | host to client | postcard (0.6) |
 | Input | 1 | `Pen` (`PenSample`) | client to host | postcard (0.3) |
 | Input | 2 | `Touch` (`TouchFrame`) | client to host | postcard (0.3) |
 | Input | 3 | `PointerButton` | client to host | postcard (0.3) |
@@ -60,10 +62,11 @@ Every frame is an 8-byte header followed by `payload_len` bytes of payload.
 | Cursor | 1 | `CursorShape` | host to client | postcard |
 | Cursor | 2 | `CursorState` | host to client | postcard |
 | Video | 1 | `VideoFrame` | host to client | postcard |
+| Audio | 1 | `AudioPacket` | host to client | postcard (0.6) |
 
 The payload of a message is the [postcard](https://docs.rs/postcard) encoding (serde, varint
 integers, no field names) of the struct of that name in `ezd-proto/src/msg.rs`. Byte vectors
-(`VideoFrame.data`, `CursorShape.rgba`) use `serde_bytes`, i.e. a varint length followed by
+(`VideoFrame.data`, `CursorShape.rgba`, `AudioPacket.data`, `AudioStream.codec_config`) use `serde_bytes`, i.e. a varint length followed by
 raw bytes. The struct definitions are the normative field list and order.
 
 ### Fragmentation and reassembly
@@ -83,7 +86,7 @@ per push) and yields complete messages.
 ### Forward compatibility
 
 * A `(channel, kind)` pair the receiver does not know is skipped silently (it is reassembled,
-  counted and dropped), never an error. This includes the reserved Input and Audio channels.
+  counted and dropped), never an error. A peer older than a channel simply skips its messages.
 * Unknown flag bits are ignored.
 * A known pair with a malformed payload is a protocol error and the connection should be
   closed. Because postcard is not self-describing, existing structs are never extended in
@@ -91,9 +94,9 @@ per push) and yields complete messages.
 
 ### Versioning
 
-`Hello` carries `proto_major` and `proto_minor` (currently 0 and 5; 0.2 added `FrameAck`, 0.3
+`Hello` carries `proto_major` and `proto_minor` (currently 0 and 6; 0.2 added `FrameAck`, 0.3
 the input messages, `InputStatus` and `ClientOptions`, 0.4 the `Key` message, 0.5 `ClientHdr` and
-`StreamColor` for HDR10; the Wi-Fi transport is below the framed protocol and needs no minor
+`StreamColor` for HDR10, 0.6 `ClientAudio`, `AudioConfig` and the Audio channel for PC audio; the Wi-Fi transport is below the framed protocol and needs no minor
 bump). A different major version is fatal: the
 receiver answers `Reject` and closes. Minor versions only add new `(channel,
 kind)` pairs, so peers with different minors interoperate. `Hello::supports_input()` is true
@@ -103,6 +106,10 @@ Input messages to an older host. `Key` needs no minor gate: a client sends it on
 host's `InputStatus.caps` has `KEYS`, and an older host would skip the unknown pair anyway.
 `Hello::supports_hdr()` is true when the peer's minor is at least `MINOR_HDR` = 5: a client sends
 `ClientHdr` only to such a host, and a host sends `StreamColor` only to such a client.
+`Hello::supports_audio()` is true when the peer's minor is at least `MINOR_AUDIO` = 6: a client
+sends `ClientAudio` only to such a host (and only if it advertised such a minor itself), and a
+host sends `AudioConfig` and `AudioPacket` only to such a client. A peer with an older minor sees
+no audio message at all.
 
 ## Transports
 
@@ -126,13 +133,16 @@ Streams, one per channel:
 | Control | bidirectional | client | none (preamble first) | 4 (highest) |
 | Input | unidirectional | client, after reading `Accepted` | `'I'` | 3 |
 | Cursor | unidirectional | host, after writing `Accepted` | `'C'` | 2 |
-| Audio (reserved) | unidirectional | host | `'A'` | 1 |
+| Audio | unidirectional | host, after writing `Accepted` | `'A'` | 1 |
 | Video | unidirectional | host, after writing `Accepted` | `'V'` | 0 (lowest) |
 
 Every unidirectional stream starts with its tag byte, then carries the framed messages of its
 channel. Control carries the preamble, then the framed protocol for the control channel. The
-receiver accepts the expected streams (the host one, the client two) within 10 s and dispatches
-them by tag, not by arrival order; an unknown or repeated tag ends the session. The cursor stream
+receiver accepts the expected streams (the host one, the client three) within 10 s and dispatches
+them by tag, not by arrival order; an unknown or repeated tag ends the session. The audio stream
+is optional for compatibility: the host gives up opening it after 0.5 s (a client older than
+0.6 allows only two), and the client waits 0.5 s for it after the cursor and video streams (a
+host older than 0.6 never opens it); a link without the audio stream carries no audio. The cursor stream
 carries cursor shapes and the latest-wins cursor state, shapes first. There is no compatibility
 with earlier layouts.
 
@@ -152,6 +162,7 @@ client                                     host
   |=== input stream: 'I', Pen/Touch ... ===>|   opened after reading Accepted
   |<== cursor stream: 'C', CursorState ... ==|   opened after writing Accepted
   |<=== video stream: 'V', VideoFrame ... ===|
+  |<=== audio stream: 'A', AudioPacket ... ===|
   |  Hello ... (as in Handshake and session) |
 ```
 
@@ -161,8 +172,8 @@ Transport settings tuned for latency: keep-alive 1 s, idle timeout 5 s, initial 
 The host accepts any client certificate in the handshake, so it treats every peer as untrusted
 until the preamble: it finishes each handshake in its own task within 10 s, keeps at most 8
 connections, allows the client one bidirectional stream and one unidirectional one (input), and uses
-256 KiB receive windows (it never receives video). The client allows the host only the cursor
-and video streams and uses 8 MiB stream and 16 MiB connection receive windows, room for a large keyframe.
+256 KiB receive windows (it never receives video). The client allows the host only the cursor,
+video and audio streams and uses 8 MiB stream and 16 MiB connection receive windows, room for a large keyframe.
 A client only opens a session on a connection whose host certificate it pinned.
 
 Hosts advertise themselves over mDNS as `_ezdisplay._udp.local.` with TXT records `fp` (short
@@ -223,15 +234,18 @@ client                                     host
   |<----- Hello(role=Host, version, name)    |   either order; major mismatch -> Reject
   |  ClientCaps(display, decoders, ...) ---->|
   |  ClientHdr (host minor >= 5) ----------->|   host waits for it if the client minor >= 5
+  |  ClientAudio (host minor >= 6) --------->|   host waits for it if the client minor >= 6
   |<---------------------- HostCaps(encoders)|
   |            negotiate_hdr(ClientCaps, HostCaps, Prefs, ...)  (host, pure function)
   |<----------------- StreamColor (minor >= 5)|   sent before StreamConfig
+  |<----------------- AudioConfig (minor >= 6)|   after StreamColor; stream = None: no audio
   |<-------------------------- StreamConfig |   or Reject{reason}
   |  open decoder                            |
   |  ConfigAck ----------------------------->|
   |                                          |   host starts capture + encode
   |<=== VideoFrame(CODEC_CONFIG) ============|
   |<=== VideoFrame(KEYFRAME) ================|
+  |<=== AudioPacket (every 10 ms) ===========|   only if AudioConfig carried a stream
   |<=== VideoFrame..., CursorShape/State ====|   Ping/Pong both ways, ClientStats ~1 Hz
   |  FrameAck (per frame, before decode) --->|   releases the host's video credit
   |  RequestKeyframe (on decode error) ----->|   next frame is an IDR
@@ -261,6 +275,8 @@ gives up (the host uses 10 s per step).
   above and `StreamConfig.codec` matches it. Otherwise the stream is SDR and an HDR source is
   tone-mapped, for one reason of: turned off, old client, display not HDR, no 10-bit decoder,
   no 10-bit encoder.
+
+* Audio (`negotiate_audio`): see [Audio](#audio-06).
 
 ## Video
 
@@ -305,12 +321,15 @@ which is only meant for tests.
 
 ### Priority
 
-The writer serves queues in the order control, input, cursor shapes, cursor state, video.
+The writer serves queues in the order control, input, cursor shapes, cursor state, audio, video.
 Video frames are written in chunks and the higher-priority queues are re-checked between
 chunks, so a large keyframe delays a control, input or cursor message by at most one chunk
 (64 KiB by default). `CursorState` is latest-wins: a state that has not been written yet is
 replaced by a newer one. Everything else is reliable FIFO. Note that control messages overtake
 video: send `Bye` after the last frame has been written if the peer should see all frames first.
+
+Audio is a short FIFO: when more than 10 audio packets (about 100 ms) are queued, the oldest
+is dropped and counted (`audio_dropped`), so a stalled link replays no stale sound.
 
 Input is batched: when the writer takes input it drains every queued input message into one
 buffer and writes and flushes it once. Under a backlog (128 or more queued input messages) a
@@ -372,6 +391,39 @@ mastering: Option<Mastering>, max_cll: u16, max_fall: u16 }`. The codes are ITU-
 white: [u16; 2], max_luminance: u32, min_luminance: u32 }` holds the red, green and blue
 chromaticities and the white point in units of 0.00002, and the luminances in units of 0.0001
 cd/m2. A client that receives no `StreamColor` assumes 8-bit limited-range BT.709, as before 0.5.
+
+## Audio (0.6)
+
+The host streams the PC's audio output to the client.
+
+Client to host, on the Control channel, right after `ClientHdr` when the host minor is at least
+6 (and the client minor too): `ClientAudio { enabled: bool, sample_rates: Vec<u32>, max_channels:
+u8, formats: Vec<SampleFormat>, codecs: Vec<AudioCodec> }`. `enabled` is the user's choice, the
+rest is what the output can do: `SampleFormat` is `S16` or `F32` (little-endian, interleaved),
+`AudioCodec` is `Pcm` or `Opus`. A client without audio sends `enabled = false` and empty lists.
+The host waits for the message (10 s per step like the others), so a client of minor 6 must
+always send it.
+
+Host to client, right after `StreamColor` and before `StreamConfig`: `AudioConfig { stream:
+Option<AudioStream> }`; `None` means no audio in this session. `AudioStream { codec, sample_rate:
+u32, channels: u8, format: SampleFormat, frame_samples: u32, codec_config: Vec<u8> }`.
+`sample_rate` is 48000, `channels` is the smaller of 2 and the client's `max_channels`,
+`frame_samples` (samples per channel per packet) is 480, i.e. 10 ms. `codec_config` is the OpusHead
+identification header for Opus and empty for PCM; `format` applies to PCM only (it is `S16` and
+ignored for Opus, the client chooses its decoder output format).
+
+Host to client, on the Audio channel: `AudioPacket { pts_us: u64, data: Vec<u8> }`, one every 10 ms
+while audio is captured. `pts_us` is the host monotonic time of the packet's first sample. `data`
+is exactly `frame_samples * channels` interleaved samples for PCM (`frame_samples * channels * 2`
+or `* 4` bytes) and one Opus packet for Opus. Audio is not acknowledged; audio packets carry no
+credit. If audio capture fails the host stops sending packets and the video session goes on.
+
+Negotiation (`negotiate_audio`, mode `Auto` / `Pcm` / `Opus` / `Off`): audio is off when the mode
+is `Off`, the client is disabled or has no channels, or the host has no capture source. PCM needs
+the client to support `Pcm` and 48 kHz (and, in `Auto`, a link ceiling of at least 8 Mbit/s); its
+format is `F32` on USB when the client plays it, otherwise `S16`, otherwise `F32`. Opus needs the
+client to support `Opus` and the host an Opus encoder. `Auto` and `Pcm` try PCM then Opus; `Opus`
+tries Opus then PCM; forced `Pcm` ignores the link ceiling.
 
 ## Cursor
 

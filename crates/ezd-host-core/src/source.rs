@@ -9,7 +9,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Error returned by [`VideoSource`] / [`VirtualDisplay`] implementations.
+/// Error returned by [`VideoSource`] / [`VirtualDisplay`] / [`AudioSource`] / [`AudioEncoder`]
+/// implementations.
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
     /// Free-form failure description.
@@ -196,6 +197,68 @@ pub trait VideoSource: Send {
 
     /// Stops capture and releases resources. Also called if `start` failed.
     fn stop(&mut self);
+}
+
+/// A block of captured audio, see [`AudioSource::next_samples`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioBlock {
+    /// [`now_us`](crate::now_us) of the first sample (capture time).
+    pub pts_us: u64,
+    /// Interleaved samples, 48 kHz, in -1.0..=1.0.
+    pub samples: Vec<f32>,
+}
+
+/// Capture of the PC audio that is streamed to the client.
+///
+/// Implemented per platform. The session owns the source on a dedicated thread ("ezd-audio") and
+/// calls `start`, then repeatedly `next_samples`, and finally `stop`. A failure ends the audio
+/// only; the video session goes on.
+pub trait AudioSource: Send {
+    /// Starts capturing 48 kHz audio with `channels` interleaved `f32` channels (the source
+    /// downmixes or upmixes as needed).
+    fn start(&mut self, channels: u8) -> Result<(), SourceError>;
+
+    /// Blocks up to `timeout` for the next block of captured samples (any length; the session
+    /// re-chunks them). `Ok(None)` means nothing captured yet (timeout, or silence on a backend
+    /// that produces none).
+    fn next_samples(&mut self, timeout: Duration) -> Result<Option<AudioBlock>, SourceError>;
+
+    /// Stops capture and releases resources. Also called if `start` failed.
+    fn stop(&mut self);
+}
+
+/// An Opus encoder for one audio stream (48 kHz, the negotiated channel count, 10 ms frames).
+pub trait AudioEncoder: Send {
+    /// The OpusHead identification header, sent to the client in `AudioStream::codec_config`.
+    fn codec_config(&self) -> Vec<u8>;
+
+    /// Encodes one frame of `frame_samples * channels` interleaved `f32` samples into one packet.
+    fn encode(&mut self, pcm: &[f32]) -> Result<Vec<u8>, SourceError>;
+}
+
+/// Creates the audio parts of each session. Shared by all sessions of a host process.
+pub trait AudioBackend: Send + Sync {
+    /// A capture source for one session, or `None` when this host cannot capture audio (the
+    /// session then has no audio). Must not start capturing: that happens in
+    /// [`AudioSource::start`] on the audio thread.
+    fn create_source(&self) -> Option<Box<dyn AudioSource>>;
+
+    /// True if [`create_opus_encoder`](Self::create_opus_encoder) can work (default: no).
+    fn opus_available(&self) -> bool {
+        false
+    }
+
+    /// An Opus encoder for `channels` (1 or 2) at 48 kHz with 10 ms frames. If it fails the
+    /// session falls back to PCM when the client allows it.
+    fn create_opus_encoder(&self, _channels: u8) -> Result<Box<dyn AudioEncoder>, SourceError> {
+        Err(SourceError::msg("no Opus encoder on this host"))
+    }
+}
+
+impl std::fmt::Debug for dyn AudioBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AudioBackend")
+    }
 }
 
 /// Mode of a virtual display.

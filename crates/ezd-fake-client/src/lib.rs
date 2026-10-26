@@ -19,8 +19,9 @@ use ezd_ffmpeg::{Decoder, FfmpegError};
 use ezd_host_core::synthetic::read_frame_number;
 use ezd_link::{Link, MuxError};
 use ezd_proto::{
-    ClientCaps, ClientOptions, Codec, CursorShape, CursorState, DecoderCaps, DisplayInfo,
-    InputStatus, StreamConfig, VideoFrame,
+    AudioCodec, AudioConfig, AudioPacket, AudioStream, ClientAudio, ClientCaps, ClientOptions,
+    Codec, CursorShape, CursorState, DecoderCaps, DisplayInfo, InputStatus, SampleFormat,
+    StreamConfig, VideoFrame,
 };
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -61,6 +62,9 @@ pub struct FakeClientConfig {
     pub stop_after_script: bool,
     /// Protocol minor to advertise in `Hello` instead of ours (to test older clients).
     pub proto_minor: Option<u16>,
+    /// Advertise PC audio playback (48 kHz stereo PCM or Opus); the packets are counted, not
+    /// played. Off sends `ClientAudio::none()`.
+    pub audio: bool,
 }
 
 impl Default for FakeClientConfig {
@@ -81,11 +85,26 @@ impl Default for FakeClientConfig {
             input_script: None,
             stop_after_script: false,
             proto_minor: None,
+            audio: false,
         }
     }
 }
 
 impl FakeClientConfig {
+    /// The `ClientAudio` this client advertises.
+    pub fn client_audio(&self) -> ClientAudio {
+        if !self.audio {
+            return ClientAudio::none();
+        }
+        ClientAudio {
+            enabled: true,
+            sample_rates: vec![48_000],
+            max_channels: 2,
+            formats: vec![SampleFormat::S16, SampleFormat::F32],
+            codecs: vec![AudioCodec::Pcm, AudioCodec::Opus],
+        }
+    }
+
     /// The `ClientCaps` this client advertises: one software H.264 decoder named "ffmpeg".
     pub fn caps(&self) -> ClientCaps {
         ClientCaps {
@@ -179,6 +198,12 @@ pub struct ClientReport {
     pub client_options: Option<ClientOptions>,
     /// Input messages sent to the host.
     pub inputs_sent: u64,
+    /// The audio stream the host negotiated; `None` when there is no audio in the session.
+    pub audio: Option<AudioStream>,
+    /// Audio packets received.
+    pub audio_packets: u64,
+    /// Audio payload bytes received.
+    pub audio_bytes: u64,
 }
 
 impl ClientReport {
@@ -227,6 +252,18 @@ impl ClientReport {
                 "summary-e2e",
                 p50 = self.e2e_us_p50.to_string(),
                 p95 = self.e2e_us_p95.to_string()
+            ),
+            fl!(
+                "summary-audio",
+                stream = match &self.audio {
+                    Some(a) => format!(
+                        "{:?} {:?} {} Hz {} ch",
+                        a.codec, a.format, a.sample_rate, a.channels
+                    ),
+                    None => fl!("summary-audio-off"),
+                },
+                packets = self.audio_packets.to_string(),
+                bytes = self.audio_bytes.to_string()
             ),
             fl!(
                 "summary-input",
@@ -342,6 +379,15 @@ impl ClientHandler for Handler {
         Ok(Flow::Continue)
     }
 
+    fn on_audio_config(&mut self, cfg: &AudioConfig) {
+        self.report.audio = cfg.stream.clone();
+    }
+
+    fn on_audio_packet(&mut self, pkt: AudioPacket) {
+        self.report.audio_packets += 1;
+        self.report.audio_bytes += pkt.data.len() as u64;
+    }
+
     fn on_codec_config(&mut self, v: VideoFrame) -> HandlerResult {
         self.report.codec_configs += 1;
         if self.have_keyframe {
@@ -419,6 +465,7 @@ pub async fn run_fake_client(
     core_cfg.app_version = env!("CARGO_PKG_VERSION").into();
 
     core_cfg.proto_minor = cfg.proto_minor;
+    core_cfg.audio = Some(cfg.client_audio());
 
     let handle = ClientHandle::new();
     let (start_script, script_task) = match cfg.input_script {
@@ -479,6 +526,9 @@ pub async fn run_fake_client(
             input_status: None,
             client_options: None,
             inputs_sent: 0,
+            audio: None,
+            audio_packets: 0,
+            audio_bytes: 0,
         },
         all_decode: Vec::new(),
         all_e2e: Vec::new(),
