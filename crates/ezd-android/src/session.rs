@@ -11,7 +11,7 @@ use ezd_client_core::{
 };
 use ezd_link::{BlockingOptions, Link};
 use ezd_proto::pair::Fingerprint;
-use ezd_proto::{CursorShape, StreamColor, StreamConfig, VideoFrame};
+use ezd_proto::{CursorShape, StreamColor, StreamConfig, StreamReport, VideoFrame};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -188,6 +188,11 @@ impl ClientHandler for Handler {
             color.full_range
         );
         self.color = *color;
+    }
+
+    fn on_stream_report(&mut self, report: &StreamReport) {
+        tracing::info!(?report, "host stream report");
+        self.shared.set_report(report.clone());
     }
 
     fn on_stream_config(&mut self, cfg: &StreamConfig) -> HandlerResult {

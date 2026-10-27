@@ -27,7 +27,7 @@ use ezd_link::{Link, MuxClosed, MuxError, MuxOptions, MuxReceiver, MuxSender, Vi
 use ezd_proto::{
     Bye, ClientCaps, ClientHdr, ClientOptions, ClientStats, ClockSync, Codec, DEFAULT_CHUNK_LEN,
     DynamicRange, Hello, HostCaps, InputStatus, Message, Ping, Pong, Prefs, ProtoError, Reject,
-    Role, StreamColor, StreamConfig, VideoFrame, negotiate_hdr,
+    Role, StreamColor, StreamConfig, StreamReport, VideoFrame, negotiate_hdr,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -357,6 +357,13 @@ pub async fn run_host_session_with(
 
     {
         let (shared, tx, cfg) = (shared.clone(), tx.clone(), cfg.clone());
+        let report_base = client_hello.supports_report().then(|| ReportBase {
+            wanted_kbps: prefs.bitrate_kbps.unwrap_or_else(|| {
+                ezd_proto::auto_bitrate_kbps(cfg.width, cfg.height, cfg.refresh_mhz, cfg.codec)
+            }),
+            user_bitrate: prefs.bitrate_kbps.is_some(),
+            ceiling_kbps: ezd_proto::bitrate_ceiling_kbps(&prefs),
+        });
         let input_for_video = input_tx.clone();
         let handle = tokio::runtime::Handle::current();
         let poll = opts.poll_interval;
@@ -371,7 +378,7 @@ pub async fn run_host_session_with(
                         if let Some(t) = &input_for_video {
                             let _ = t.send(InputCmd::Output(source.output()));
                         }
-                        video_loop(source.as_mut(), &tx, &shared, &handle, poll)
+                        video_loop(source.as_mut(), &tx, &shared, &handle, poll, report_base)
                     }
                     Err(e) => Err(e),
                 };
@@ -802,12 +809,20 @@ fn reject(tx: &MuxSender, reason: String) {
     let _ = tx.send_control(Message::Reject(Reject { reason }));
 }
 
+/// Negotiation side of the `StreamReport`; the encoder side comes from the source.
+struct ReportBase {
+    wanted_kbps: u32,
+    user_bitrate: bool,
+    ceiling_kbps: u32,
+}
+
 fn video_loop(
     source: &mut dyn VideoSource,
     tx: &MuxSender,
     sh: &VideoShared,
     handle: &tokio::runtime::Handle,
     poll: Duration,
+    report_base: Option<ReportBase>,
 ) -> Result<(), SourceError> {
     let mut last_config: Option<Vec<u8>> = None;
     let mut next_id = 0u64;
@@ -844,6 +859,30 @@ fn video_loop(
         let Some(f) = source.next_frame(poll)? else {
             continue;
         };
+        // The encoder opened (again) to produce this frame: tell the client how, before it.
+        if let Some(setup) = source.take_encoder_setup() {
+            let report = StreamReport {
+                wanted_kbps: report_base.as_ref().map_or(0, |b| b.wanted_kbps),
+                user_bitrate: report_base.as_ref().is_some_and(|b| b.user_bitrate),
+                ceiling_kbps: report_base.as_ref().map_or(0, |b| b.ceiling_kbps),
+                attempts: setup.attempts,
+                rate: setup.rate,
+            };
+            tracing::info!(
+                wanted_kbps = report.wanted_kbps,
+                user_bitrate = report.user_bitrate,
+                ceiling_kbps = report.ceiling_kbps,
+                rate_mode = report.rate.rate_mode().name(),
+                quality = report.rate.quality,
+                target_kbps = report.rate.target_kbps,
+                max_kbps = report.rate.max_kbps,
+                attempts = ?report.attempts,
+                "encoder setup"
+            );
+            if report_base.is_some() && tx.send_control(Message::StreamReport(report)).is_err() {
+                return Ok(());
+            }
+        }
         let id = f.frame_id.unwrap_or(next_id);
         next_id = id + 1;
         if let Some(cfg) = f.codec_config
@@ -1201,6 +1240,123 @@ mod tests {
         let _ = timeout(Duration::from_secs(10), host).await;
         let told = *told.lock().unwrap();
         (seen, told)
+    }
+
+    /// A source that offers an encoder setup once, after its first frame.
+    struct ReportingSource {
+        inner: ScriptedSource,
+        pending: bool,
+        offered: bool,
+    }
+
+    impl VideoSource for ReportingSource {
+        fn encoders(&self) -> Vec<ezd_proto::EncoderCaps> {
+            self.inner.encoders()
+        }
+        fn start(&mut self, cfg: &StreamConfig, cursor: CursorSink) -> Result<(), SourceError> {
+            self.inner.start(cfg, cursor)
+        }
+        fn next_frame(&mut self, t: Duration) -> Result<Option<EncodedFrame>, SourceError> {
+            let f = self.inner.next_frame(t);
+            self.pending = !std::mem::replace(&mut self.offered, true);
+            f
+        }
+        fn take_encoder_setup(&mut self) -> Option<crate::source::EncoderSetup> {
+            if !std::mem::take(&mut self.pending) {
+                return None;
+            }
+            Some(crate::source::EncoderSetup {
+                attempts: vec![ezd_proto::EncoderAttempt {
+                    encoder: "enc".into(),
+                    options: "rc=vbr".into(),
+                    ok: true,
+                    error: String::new(),
+                }],
+                rate: ezd_proto::RateControl {
+                    mode: ezd_proto::RateMode::Vbr.code(),
+                    quality: 19,
+                    target_kbps: 1000,
+                    max_kbps: 2000,
+                },
+            })
+        }
+        fn request_keyframe(&mut self) {
+            self.inner.request_keyframe()
+        }
+        fn stop(&mut self) {
+            self.inner.stop()
+        }
+    }
+
+    /// Messages a client of `minor` receives up to its first few video frames.
+    async fn messages_until_video(minor: u16) -> Vec<Message> {
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let src = ReportingSource {
+            inner: ScriptedSource::new(Duration::from_millis(5), 3000),
+            pending: false,
+            offered: false,
+        };
+        let host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(src),
+            Prefs::default(),
+            fast_opts(),
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(DEFAULT_CHUNK_LEN);
+        let mut hello = Hello::new(Role::Client, "t", "client");
+        hello.proto_minor = minor;
+        tx.send_control(Message::Hello(hello)).unwrap();
+        tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        loop {
+            if matches!(recv(&mut rx).await, Message::StreamConfig(_)) {
+                break;
+            }
+        }
+        tx.send_control(Message::ConfigAck).unwrap();
+        let mut seen = Vec::new();
+        let mut videos = 0;
+        while videos < 5 {
+            let m = recv(&mut rx).await;
+            videos += matches!(m, Message::VideoFrame(_)) as usize;
+            seen.push(m);
+        }
+        tx.send_control(Message::Bye(Bye { reason: "t".into() }))
+            .unwrap();
+        let _ = timeout(Duration::from_secs(10), host).await;
+        seen
+    }
+
+    #[tokio::test]
+    async fn report_precedes_the_first_frame_for_a_new_client() {
+        let seen = messages_until_video(ezd_proto::MINOR_REPORT).await;
+        let report = seen
+            .iter()
+            .position(|m| matches!(m, Message::StreamReport(_)))
+            .expect("no StreamReport");
+        let first_video = seen
+            .iter()
+            .position(|m| matches!(m, Message::VideoFrame(_)))
+            .unwrap();
+        assert!(report < first_video, "{seen:?}");
+        let Message::StreamReport(r) = &seen[report] else {
+            unreachable!()
+        };
+        assert!(!r.user_bitrate && r.wanted_kbps > 0 && r.ceiling_kbps >= r.wanted_kbps);
+        assert_eq!(r.attempts.len(), 1);
+        assert_eq!(r.rate.quality, 19);
+        let count = seen
+            .iter()
+            .filter(|m| matches!(m, Message::StreamReport(_)))
+            .count();
+        assert_eq!(count, 1, "one setup, one report");
+    }
+
+    #[tokio::test]
+    async fn old_client_gets_no_report() {
+        let seen = messages_until_video(ezd_proto::MINOR_REPORT - 1).await;
+        assert!(!seen.iter().any(|m| matches!(m, Message::StreamReport(_))));
     }
 
     #[tokio::test]

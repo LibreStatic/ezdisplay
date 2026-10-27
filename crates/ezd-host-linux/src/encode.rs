@@ -10,7 +10,8 @@ use ezd_ffmpeg::ColorInfo;
 use ezd_ffmpeg::HwDevice;
 use ezd_ffmpeg::HwKind;
 use ezd_ffmpeg::sys as ff;
-use ezd_host_core::now_us;
+use ezd_host_core::{EncoderSetup, now_us};
+use ezd_proto::EncoderAttempt;
 use std::ffi::{CStr, CString, c_void};
 use std::os::fd::IntoRawFd;
 use std::ptr;
@@ -345,6 +346,16 @@ struct Enc {
     ctx: *mut ff::AVCodecContext,
     pkt: *mut ff::AVPacket,
     extradata: Vec<u8>,
+    /// What `open` tried and what it runs with; taken by the `Encoder` once.
+    setup: Option<EncoderSetup>,
+}
+
+/// Longest error text kept in an [`EncoderAttempt`].
+const ATTEMPT_ERROR_MAX: usize = 120;
+
+/// `text` cut to what fits an [`EncoderAttempt`] error.
+pub(crate) fn short_error(text: &str) -> String {
+    text.chars().take(ATTEMPT_ERROR_MAX).collect()
 }
 
 // SAFETY: exclusively owned FFmpeg objects, moved between threads only as a whole.
@@ -421,11 +432,28 @@ impl Enc {
             return Err(format!("encoder {} not available in this FFmpeg", p.name));
         }
         let mut last = String::from("no option set");
+        let mut attempts = Vec::new();
         for set in ezd_ffmpeg::option_sets_for(p.name, p.ten_bit) {
+            let mut attempt = EncoderAttempt {
+                encoder: p.name.to_string(),
+                options: ezd_ffmpeg::options_label(&set),
+                ok: true,
+                error: String::new(),
+            };
             match Self::try_open(codec, p, &set) {
-                Ok(e) => return Ok(e),
+                Ok(mut e) => {
+                    attempts.push(attempt);
+                    e.setup = Some(EncoderSetup {
+                        attempts,
+                        rate: ezd_ffmpeg::describe_rate(p.name, &set, p.kbps),
+                    });
+                    return Ok(e);
+                }
                 Err(e) => {
                     tracing::debug!("opening {} with {set:?} failed: {e}", p.name);
+                    attempt.ok = false;
+                    attempt.error = short_error(&e);
+                    attempts.push(attempt);
                     last = e;
                 }
             }
@@ -449,9 +477,8 @@ impl Enc {
                 ctx,
                 pkt: ptr::null_mut(),
                 extradata: Vec::new(),
+                setup: None,
             };
-            let bitrate = p.kbps as i64 * 1000;
-            let fps = p.fps_mhz as f64 / 1000.0;
             let c = &mut *ctx;
             c.width = p.width as i32;
             c.height = p.height as i32;
@@ -464,9 +491,10 @@ impl Enc {
                 den: 1000,
             };
             c.pix_fmt = p.pix_fmt;
-            c.bit_rate = bitrate;
-            c.rc_max_rate = bitrate;
-            c.rc_buffer_size = ((bitrate as f64 * 2.0 / fps) as i32).max(1000);
+            let rate = ezd_ffmpeg::rate_settings(p.kbps, p.fps_mhz);
+            c.bit_rate = rate.bit_rate;
+            c.rc_max_rate = rate.max_rate;
+            c.rc_buffer_size = rate.buffer_size;
             c.gop_size = i32::MAX;
             c.max_b_frames = 0;
             c.thread_count = 1;
@@ -1180,6 +1208,8 @@ pub struct Encoder {
     fps_mhz: u32,
     kbps: u32,
     active: Option<Active>,
+    /// Setup of the encoder opened last, until the source takes it.
+    setup: Option<EncoderSetup>,
 }
 
 impl Encoder {
@@ -1191,7 +1221,13 @@ impl Encoder {
             fps_mhz,
             kbps,
             active: None,
+            setup: None,
         }
+    }
+
+    /// The setup of the encoder opened since the last call (every open makes a new one).
+    pub fn take_setup(&mut self) -> Option<EncoderSetup> {
+        self.setup.take()
     }
 
     /// Sets the colour signalling of the stream (default BT.709 limited range).
@@ -1211,7 +1247,7 @@ impl Encoder {
             self.active = None;
             // SAFETY: valid frame; the frames context outlives the call.
             let hw = unsafe { (*p.frame.0).hw_frames_ctx };
-            let enc = Enc::open(&EncParams {
+            let mut enc = Enc::open(&EncParams {
                 name: self.name,
                 width: p.width,
                 height: p.height,
@@ -1222,6 +1258,7 @@ impl Encoder {
                 color: self.tags.color,
                 ten_bit: ten_bit_encoder(self.name),
             })?;
+            self.setup = enc.setup.take();
             self.active = Some(Active {
                 generation: p.generation,
                 enc,
@@ -1306,6 +1343,11 @@ impl Pipeline {
             enc: Encoder::new(plan.name, fps_mhz, kbps),
             conv: Converter::new(plan, fps_mhz),
         }
+    }
+
+    /// The setup of the encoder opened since the last call.
+    pub fn take_setup(&mut self) -> Option<EncoderSetup> {
+        self.enc.take_setup()
     }
 
     /// Sets the colour signalling of the stream (default BT.709 limited range).
@@ -2537,10 +2579,25 @@ mod tests {
         assert!(p.release.is_some());
         let out = std::thread::spawn(move || {
             let mut enc = Encoder::new("h264_nvenc", 60_000, 8_000);
-            enc.encode(p, false).expect("encode").expect("packet")
+            let out = enc.encode(p, false).expect("encode").expect("packet");
+            (out, enc.take_setup(), enc.take_setup())
         })
         .join()
         .unwrap();
+        let (out, setup, again) = out;
+        // The open made one setup: constant quality inside the peak, taken once.
+        let setup = setup.expect("setup after the open");
+        assert!(again.is_none());
+        assert_eq!(setup.attempts.len(), 1);
+        assert!(setup.attempts[0].ok && setup.attempts[0].options.contains("rc=vbr cq=19"));
+        assert_eq!(
+            (setup.rate.mode, setup.rate.quality),
+            (ezd_proto::RateMode::Vbr.code(), 19)
+        );
+        assert_eq!(
+            (setup.rate.target_kbps, setup.rate.max_kbps),
+            (8_000, 16_000)
+        );
         assert!(out.keyframe && out.codec_config.is_some());
         check_colors(&decode_first(&out));
     }

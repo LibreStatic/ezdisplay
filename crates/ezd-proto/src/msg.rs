@@ -96,6 +96,12 @@ impl Hello {
         self.proto_minor >= crate::MINOR_KEYBOARD
     }
 
+    /// True if the peer speaks at least protocol minor [`MINOR_REPORT`](crate::MINOR_REPORT)
+    /// (`StreamReport`).
+    pub fn supports_report(&self) -> bool {
+        self.proto_minor >= crate::MINOR_REPORT
+    }
+
     /// Fails with [`ProtoError::VersionMismatch`] if the peer's major differs from ours.
     pub fn check_compatible(&self) -> Result<()> {
         if self.proto_major != crate::PROTOCOL_MAJOR {
@@ -551,6 +557,108 @@ pub const H273_TRANSFER_PQ: u8 = 16;
 /// H.273 matrix coefficients code of BT.2020 non-constant luminance.
 pub const H273_MATRIX_BT2020_NCL: u8 = 9;
 
+/// How the encoder rate control is set up (see [`RateControl::mode`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateMode {
+    /// Not known (an encoder default, or a code from a newer host).
+    Unknown,
+    /// Constant bitrate.
+    Cbr,
+    /// Variable bitrate, optionally with a constant-quality target.
+    Vbr,
+    /// Constant quantiser.
+    Cqp,
+    /// Constant rate factor (x264).
+    Crf,
+}
+
+impl RateMode {
+    /// Wire code of this mode.
+    pub fn code(self) -> u8 {
+        match self {
+            RateMode::Unknown => 0,
+            RateMode::Cbr => 1,
+            RateMode::Vbr => 2,
+            RateMode::Cqp => 3,
+            RateMode::Crf => 4,
+        }
+    }
+
+    /// Mode for a wire code; unknown codes map to [`RateMode::Unknown`].
+    pub fn from_code(code: u8) -> RateMode {
+        match code {
+            1 => RateMode::Cbr,
+            2 => RateMode::Vbr,
+            3 => RateMode::Cqp,
+            4 => RateMode::Crf,
+            _ => RateMode::Unknown,
+        }
+    }
+
+    /// Short lowercase name (`"cbr"`, `"vbr"`, `"cqp"`, `"crf"`, `"unknown"`).
+    pub fn name(self) -> &'static str {
+        match self {
+            RateMode::Unknown => "unknown",
+            RateMode::Cbr => "cbr",
+            RateMode::Vbr => "vbr",
+            RateMode::Cqp => "cqp",
+            RateMode::Crf => "crf",
+        }
+    }
+}
+
+/// Rate control of the running encoder, part of [`StreamReport`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateControl {
+    /// [`RateMode`] code.
+    pub mode: u8,
+    /// Quality value of the mode (cq, qp or crf); 0 when the mode has none.
+    pub quality: u16,
+    /// Target bitrate in kbit/s.
+    pub target_kbps: u32,
+    /// Peak bitrate in kbit/s the encoder may burst to.
+    pub max_kbps: u32,
+}
+
+impl RateControl {
+    /// The mode as an enum.
+    pub fn rate_mode(&self) -> RateMode {
+        RateMode::from_code(self.mode)
+    }
+}
+
+/// One encoder and option set the host tried, part of [`StreamReport`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncoderAttempt {
+    /// FFmpeg encoder name.
+    pub encoder: String,
+    /// Compact label of the interesting options (`k=v` joined by spaces), or `probe`.
+    pub options: String,
+    /// True when this attempt opened (or, for `probe`, was usable).
+    pub ok: bool,
+    /// Short error text when `ok` is false (empty otherwise).
+    pub error: String,
+}
+
+/// How the host negotiated and encodes the stream (host to client, protocol 0.7).
+///
+/// Sent after the encoder opens, before the first frame it produced, and again after every reopen,
+/// when the client `Hello` has minor >= [`MINOR_REPORT`](crate::MINOR_REPORT). Informational only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamReport {
+    /// Bitrate the negotiation wanted before the link ceiling (kbit/s): derived from size and
+    /// rate, or the user's fixed value.
+    pub wanted_kbps: u32,
+    /// True when the user fixed the bitrate instead of deriving it.
+    pub user_bitrate: bool,
+    /// Link ceiling applied (kbit/s).
+    pub ceiling_kbps: u32,
+    /// Encoders and option sets the host tried, in order.
+    pub attempts: Vec<EncoderAttempt>,
+    /// Rate control of the encoder that is running.
+    pub rate: RateControl,
+}
+
 /// Whether a hardware keyboard is attached to the client (client to host, protocol 0.6).
 ///
 /// Sent when the state changes and right after the handshake, when the host `Hello` has minor >=
@@ -698,7 +806,7 @@ impl Default for StreamColor {
 }
 
 /// Any message of protocol 0.x (0.2 added `FrameAck`, 0.3 the input messages,
-/// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`, 0.6 `ClientKeyboard`).
+/// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`, 0.6 `ClientKeyboard`, 0.7 `StreamReport`).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
@@ -736,6 +844,8 @@ pub enum Message {
     StreamColor(StreamColor),
     /// Control/17 (0.6), client to host.
     ClientKeyboard(ClientKeyboard),
+    /// Control/18 (0.7), host to client.
+    StreamReport(StreamReport),
     /// Input/1 (0.3), client to host.
     Pen(PenSample),
     /// Input/2 (0.3), client to host.
@@ -789,6 +899,7 @@ impl Message {
             Message::ClientHdr(_) => 15,
             Message::StreamColor(_) => 16,
             Message::ClientKeyboard(_) => 17,
+            Message::StreamReport(_) => 18,
             Message::Pen(_) => 1,
             Message::Touch(_) => 2,
             Message::PointerButton(_) => 3,
@@ -825,6 +936,7 @@ pub fn encode_message(msg: &Message) -> Result<(Channel, u8, Vec<u8>)> {
         Message::ClientHdr(m) => enc(m)?,
         Message::StreamColor(m) => enc(m)?,
         Message::ClientKeyboard(m) => enc(m)?,
+        Message::StreamReport(m) => enc(m)?,
         Message::Pen(m) => enc(m)?,
         Message::Touch(m) => enc(m)?,
         Message::PointerButton(m) => enc(m)?,
@@ -871,6 +983,7 @@ pub fn decode_message(channel: u8, kind: u8, payload: &[u8]) -> Result<Option<Me
         (Channel::Control, 15) => Message::ClientHdr(dec(c, k, payload)?),
         (Channel::Control, 16) => Message::StreamColor(dec(c, k, payload)?),
         (Channel::Control, 17) => Message::ClientKeyboard(dec(c, k, payload)?),
+        (Channel::Control, 18) => Message::StreamReport(dec(c, k, payload)?),
         (Channel::Input, 1) => Message::Pen(dec(c, k, payload)?),
         (Channel::Input, 2) => Message::Touch(dec(c, k, payload)?),
         (Channel::Input, 3) => Message::PointerButton(dec(c, k, payload)?),
@@ -989,6 +1102,7 @@ mod tests {
                 400,
             )),
             Message::ClientKeyboard(ClientKeyboard { attached: true }),
+            Message::StreamReport(sample_report()),
             Message::Pen(PenSample {
                 t_us: 1 << 40,
                 x: 65535,
@@ -1185,6 +1299,65 @@ mod tests {
         h.proto_minor = crate::MINOR_KEYBOARD - 1;
         assert!(!h.supports_keyboard());
         assert!(h.supports_hdr());
+    }
+
+    fn sample_report() -> StreamReport {
+        StreamReport {
+            wanted_kbps: 45_949,
+            user_bitrate: false,
+            ceiling_kbps: 200_000,
+            attempts: vec![
+                EncoderAttempt {
+                    encoder: "h264_vaapi".into(),
+                    options: "rc_mode=VBR low_power=1".into(),
+                    ok: false,
+                    error: "Invalid argument".into(),
+                },
+                EncoderAttempt {
+                    encoder: "h264_vaapi".into(),
+                    options: "rc_mode=CQP qp=20 low_power=1 level=5.2".into(),
+                    ok: true,
+                    error: String::new(),
+                },
+            ],
+            rate: RateControl {
+                mode: RateMode::Cqp.code(),
+                quality: 20,
+                target_kbps: 45_949,
+                max_kbps: 91_898,
+            },
+        }
+    }
+
+    #[test]
+    fn report_support_by_minor() {
+        let mut h = Hello::new(Role::Client, "x", "y");
+        assert!(h.supports_report());
+        h.proto_minor = crate::MINOR_REPORT - 1;
+        assert!(!h.supports_report());
+        assert!(h.supports_keyboard());
+    }
+
+    #[test]
+    fn stream_report_round_trips_and_tolerates_unknown_mode() {
+        let mut r = sample_report();
+        r.rate.mode = 200;
+        let (ch, kind, p) = encode_message(&Message::StreamReport(r.clone())).unwrap();
+        assert_eq!((ch, kind), (Channel::Control, 18));
+        let Some(Message::StreamReport(back)) = decode_message(ch as u8, kind, &p).unwrap() else {
+            panic!("not a StreamReport");
+        };
+        assert_eq!(back, r);
+        assert_eq!(back.rate.rate_mode(), RateMode::Unknown);
+        for m in [
+            RateMode::Unknown,
+            RateMode::Cbr,
+            RateMode::Vbr,
+            RateMode::Cqp,
+            RateMode::Crf,
+        ] {
+            assert_eq!(RateMode::from_code(m.code()), m);
+        }
     }
 
     #[test]

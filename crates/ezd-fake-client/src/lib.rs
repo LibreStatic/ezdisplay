@@ -20,7 +20,7 @@ use ezd_host_core::synthetic::read_frame_number;
 use ezd_link::{Link, MuxError};
 use ezd_proto::{
     ClientCaps, ClientOptions, Codec, CursorShape, CursorState, DecoderCaps, DisplayInfo,
-    InputStatus, StreamConfig, VideoFrame,
+    InputStatus, StreamConfig, StreamReport, VideoFrame,
 };
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -339,6 +339,10 @@ impl Handler {
 }
 
 impl ClientHandler for Handler {
+    fn on_stream_report(&mut self, report: &StreamReport) {
+        tracing::info!(?report, "host stream report");
+    }
+
     fn on_stream_config(&mut self, cfg: &StreamConfig) -> HandlerResult {
         self.report.stream = cfg.clone();
         self.decoder = Some(Decoder::new(cfg.codec).map_err(boxed)?);

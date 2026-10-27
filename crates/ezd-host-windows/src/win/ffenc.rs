@@ -388,8 +388,6 @@ impl ZeroCopyEncoder {
                 return Err("avcodec_alloc_context3 failed".into());
             }
             self.ctx = ctx;
-            let bitrate = bitrate_kbps as i64 * 1000;
-            let fps = refresh_mhz as f64 / 1000.0;
             let c = &mut *ctx;
             c.width = width as i32;
             c.height = height as i32;
@@ -402,9 +400,10 @@ impl ZeroCopyEncoder {
                 den: 1000,
             };
             c.pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_D3D11;
-            c.bit_rate = bitrate;
-            c.rc_max_rate = bitrate;
-            c.rc_buffer_size = ((bitrate as f64 * 2.0 / fps) as i32).max(1000);
+            let rate = ezd_ffmpeg::rate_settings(bitrate_kbps, refresh_mhz);
+            c.bit_rate = rate.bit_rate;
+            c.rc_max_rate = rate.max_rate;
+            c.rc_buffer_size = rate.buffer_size;
             c.gop_size = i32::MAX;
             c.max_b_frames = 0;
             c.thread_count = 1;

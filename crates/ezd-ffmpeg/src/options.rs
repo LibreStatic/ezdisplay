@@ -28,6 +28,7 @@ fn base_option_sets(name: &str) -> Vec<Vec<(&'static str, String)>> {
         "libx264" => vec![vec![
             s("preset", "ultrafast"),
             s("tune", "zerolatency"),
+            s("crf", &crate::rate::X264_CRF.to_string()),
             s("forced-idr", "1"),
             // Keep in-band SPS/PPS on keyframes in addition to the global-header extradata.
             s(
@@ -42,11 +43,13 @@ fn base_option_sets(name: &str) -> Vec<Vec<(&'static str, String)>> {
             s("zerolatency", "1"),
             s("delay", "0"),
             s("bf", "0"),
-            s("rc", "cbr"),
+            // Constant quality inside the VBV: a sharp first IDR and few bits on still content.
+            s("rc", "vbr"),
+            s("cq", &crate::rate::NVENC_CQ.to_string()),
             s("forced-idr", "1"),
         ]],
         // Level 5.2: FFmpeg picks level 6.x above 5.2's macroblock rate (2960x1848 at 120 Hz),
-        // and Intel's iHD driver then fails every CBR frame ("internal encoding error") on
+        // and Intel's iHD driver then fails every rate-controlled frame ("internal encoding error") on
         // Gen 9.5. 5.2 still covers the frame size and buffering, and the tablet's decoder
         // accepts it.
         //
@@ -57,31 +60,31 @@ fn base_option_sets(name: &str) -> Vec<Vec<(&'static str, String)>> {
         // frame from queueing up behind the link.
         "h264_vaapi" => vec![
             vec![
-                s("rc_mode", "CBR"),
+                s("rc_mode", "VBR"),
                 s("low_power", "1"),
                 s("async_depth", "1"),
                 s("level", "5.2"),
             ],
             vec![
                 s("rc_mode", "CQP"),
-                s("qp", "24"),
+                s("qp", &crate::rate::VAAPI_QP.to_string()),
                 s("low_power", "1"),
                 s("async_depth", "1"),
                 s("level", "5.2"),
             ],
             vec![
-                s("rc_mode", "CBR"),
+                s("rc_mode", "VBR"),
                 s("async_depth", "1"),
                 s("level", "5.2"),
             ],
         ],
         "hevc_vaapi" | "av1_vaapi" => vec![
             vec![
-                s("rc_mode", "CBR"),
+                s("rc_mode", "VBR"),
                 s("low_power", "1"),
                 s("async_depth", "1"),
             ],
-            vec![s("rc_mode", "CBR"), s("async_depth", "1")],
+            vec![s("rc_mode", "VBR"), s("async_depth", "1")],
         ],
         "h264_qsv" | "hevc_qsv" | "av1_qsv" => vec![
             vec![
@@ -101,12 +104,16 @@ fn base_option_sets(name: &str) -> Vec<Vec<(&'static str, String)>> {
             let sets: [&[(&'static str, &str)]; 6] = [
                 &[
                     ("usage", "ultralowlatency"),
-                    ("rc", "cbr"),
+                    ("rc", "vbr_peak"),
                     ("quality", "speed"),
                 ],
-                &[("usage", "lowlatency"), ("rc", "cbr"), ("quality", "speed")],
+                &[
+                    ("usage", "lowlatency"),
+                    ("rc", "vbr_peak"),
+                    ("quality", "speed"),
+                ],
                 &[("usage", "lowlatency"), ("quality", "speed")],
-                &[("rc", "cbr"), ("quality", "speed")],
+                &[("rc", "vbr_peak"), ("quality", "speed")],
                 &[("quality", "speed")],
                 &[],
             ];
@@ -140,6 +147,24 @@ mod tests {
             let sets = option_sets(n);
             assert!(!sets.is_empty() && !sets[0].is_empty(), "{n}");
         }
+        let has = |n: &str, kv: (&'static str, &str)| {
+            option_sets(n)
+                .iter()
+                .any(|set| set.contains(&(kv.0, kv.1.to_string())))
+        };
+        for n in ["h264_nvenc", "hevc_nvenc", "av1_nvenc"] {
+            assert!(has(n, ("rc", "vbr")) && has(n, ("cq", "19")), "{n}");
+            assert!(!has(n, ("rc", "cbr")), "{n}");
+        }
+        assert!(has("libx264", ("crf", "20")));
+        for n in ["h264_vaapi", "hevc_vaapi", "av1_vaapi"] {
+            assert!(
+                has(n, ("rc_mode", "VBR")) && !has(n, ("rc_mode", "CBR")),
+                "{n}"
+            );
+        }
+        assert!(has("h264_vaapi", ("qp", "20")) && !has("h264_vaapi", ("qp", "24")));
+        assert!(has("h264_amf", ("rc", "vbr_peak")) && !has("h264_amf", ("rc", "cbr")));
         assert_eq!(option_sets("unknown_enc"), vec![vec![]]);
         assert_eq!(option_sets("h264_vaapi").len(), 3);
         assert_eq!(option_sets("hevc_vaapi").len(), 2);

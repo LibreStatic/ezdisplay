@@ -286,6 +286,20 @@ pub fn negotiate_hdr(
     Ok((negotiate(client, host, prefs)?, range))
 }
 
+/// Bitrate in kbit/s derived from the stream size, rate and codec (before the link ceiling).
+pub fn auto_bitrate_kbps(width: u32, height: u32, refresh_mhz: u32, codec: Codec) -> u32 {
+    let fps = refresh_mhz as f64 / 1000.0;
+    (width as f64 * height as f64 * fps * bits_per_pixel(codec) / 1000.0).round() as u32
+}
+
+/// Bitrate ceiling in kbit/s that `prefs` impose on the negotiated bitrate.
+pub fn bitrate_ceiling_kbps(prefs: &Prefs) -> u32 {
+    prefs
+        .max_bitrate_kbps
+        .unwrap_or_else(|| prefs.link.default_max_bitrate_kbps())
+        .max(MIN_BITRATE_KBPS)
+}
+
 /// Computes the stream configuration for a client/host pair.
 ///
 /// * codec: `prefs.codec` if both sides support it, else H.264 (then HEVC, AV1);
@@ -310,14 +324,10 @@ pub fn negotiate(client: &ClientCaps, host: &HostCaps, prefs: &Prefs) -> Result<
         prefs,
     );
     let refresh_mhz = pick_refresh(client, dec, prefs);
-    let fps = refresh_mhz as f64 / 1000.0;
-    let ceiling = prefs
-        .max_bitrate_kbps
-        .unwrap_or_else(|| prefs.link.default_max_bitrate_kbps())
-        .max(MIN_BITRATE_KBPS);
-    let wanted = prefs.bitrate_kbps.unwrap_or_else(|| {
-        (width as f64 * height as f64 * fps * bits_per_pixel(codec) / 1000.0).round() as u32
-    });
+    let ceiling = bitrate_ceiling_kbps(prefs);
+    let wanted = prefs
+        .bitrate_kbps
+        .unwrap_or_else(|| auto_bitrate_kbps(width, height, refresh_mhz, codec));
     Ok(StreamConfig {
         width,
         height,

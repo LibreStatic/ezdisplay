@@ -23,6 +23,7 @@ mod error;
 mod hw;
 mod options;
 mod probe;
+mod rate;
 mod source;
 #[cfg(target_os = "linux")]
 mod vulkan;
@@ -36,6 +37,10 @@ pub use hw::{HwDevice, HwKind};
 pub use options::{option_sets, option_sets_for};
 pub use probe::{
     ProbeResult, encoder_available, probe_encoder, probe_encoder_with, software_encoders,
+};
+pub use rate::{
+    NVENC_CQ, PEAK_FACTOR, RateSettings, VAAPI_QP, VBV_FRAMES, X264_CRF, describe_rate,
+    options_label, rate_settings,
 };
 pub use source::SwVideoSource;
 #[cfg(target_os = "linux")]

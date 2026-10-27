@@ -2,8 +2,8 @@
 
 use ezd_link::{MuxClosed, MuxSender};
 use ezd_proto::{
-    Codec, CursorShape, CursorState, DynamicRange, EncoderCaps, Mastering, StreamColor,
-    StreamConfig,
+    Codec, CursorShape, CursorState, DynamicRange, EncoderAttempt, EncoderCaps, Mastering,
+    RateControl, StreamColor, StreamConfig,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -138,6 +138,15 @@ impl SourceHdr {
     }
 }
 
+/// What a source's encoder tried and what it runs with, for the `StreamReport` sent to the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncoderSetup {
+    /// Encoders and option sets tried, in order.
+    pub attempts: Vec<EncoderAttempt>,
+    /// Rate control of the encoder that opened.
+    pub rate: RateControl,
+}
+
 /// A capture + encode pipeline for one virtual display.
 ///
 /// Implemented per platform (and by `ezd_ffmpeg::SwVideoSource` for tests).
@@ -188,6 +197,13 @@ pub trait VideoSource: Send {
     /// The output the stream shows, valid after `start` (default: unknown). Input injection
     /// uses it to map normalized coordinates onto the desktop.
     fn output(&self) -> Option<OutputInfo> {
+        None
+    }
+
+    /// The setup of the encoder that opened since the last call, `None` when nothing changed
+    /// (the default for sources that do not report). The session polls it after every frame
+    /// from `next_frame` and sends it to the client before that frame.
+    fn take_encoder_setup(&mut self) -> Option<EncoderSetup> {
         None
     }
 

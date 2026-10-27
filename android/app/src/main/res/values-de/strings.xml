@@ -152,4 +152,19 @@
         <item quantity="one">%1$d gekoppelter Host</item>
         <item quantity="other">%1$d gekoppelte Hosts</item>
     </plurals>
+    <string name="osd_negotiated">Ausgehandelt: %1$s</string>
+    <string name="osd_auto_for">automatisch für %1$s bei %2$s Hz</string>
+    <string name="osd_set_in_settings">in den Einstellungen festgelegt</string>
+    <string name="osd_clamped">gewünscht %1$s, begrenzt auf %2$s</string>
+    <string name="osd_link_limit">Verbindungslimit %1$s</string>
+    <string name="osd_mbit">%1$s Mbit/s</string>
+    <string name="osd_rate_peak">%1$s Mbit/s (Spitze %2$s)</string>
+    <string name="osd_rate_cbr">konstante Bitrate</string>
+    <string name="osd_rate_vbr">variable Bitrate, Qualität %1$d</string>
+    <string name="osd_rate_cqp">konstante Qualität %1$d</string>
+    <string name="osd_rate_crf">konstanter Ratenfaktor %1$d</string>
+    <plurals name="osd_more_attempts">
+        <item quantity="one">+%1$d weiteres</item>
+        <item quantity="other">+%1$d weitere</item>
+    </plurals>
 </resources>

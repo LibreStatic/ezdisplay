@@ -5,7 +5,7 @@ use crate::adapter::{self, RenderNode};
 use crate::ahead::{ConvertAhead, Item, Start};
 use crate::encode::{
     Converter, Encoder, Kind, Pipeline, Plan, StreamTags, plan_encoders, plan_hdr_encoders,
-    probe_plan,
+    probe_plan, short_error,
 };
 use crate::frame::{Frame, NegotiatedFormat};
 use crate::portal::SourceKind;
@@ -14,9 +14,10 @@ use crate::pw::{Frames, PwCapture, PwParams, default_intel_modifiers, default_nv
 use crate::wl_capture::WlCapture;
 use crate::x11_capture::X11Capture;
 use ezd_host_core::{
-    CursorSink, EncodedFrame, OutputInfo, PlatformOptions, SourceError, SourceHdr, VideoSource,
+    CursorSink, EncodedFrame, EncoderSetup, OutputInfo, PlatformOptions, SourceError, SourceHdr,
+    VideoSource,
 };
-use ezd_proto::{Codec, DynamicRange, EncoderCaps, StreamColor, StreamConfig};
+use ezd_proto::{Codec, DynamicRange, EncoderAttempt, EncoderCaps, StreamColor, StreamConfig};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -90,6 +91,8 @@ pub struct LinuxSource {
     force_key: bool,
     /// The output the stream shows (virtual output or the captured monitor), after `start`.
     output: Option<OutputInfo>,
+    /// Encoders the probes found unusable, reported with the encoder setup.
+    probe_failures: Vec<EncoderAttempt>,
 }
 
 /// Converts and encodes capture frames.
@@ -202,14 +205,29 @@ impl LinuxSource {
             tracing::warn!("no DRM render node found; software encoding only");
         }
         let node = node.map(|s| s.node);
-        let plans = plan_encoders(node.as_ref(), &|p| plan_works(p).is_ok());
+        // Encoders that were probed unusable, in plan order, for the stream report.
+        let probe_failures = std::cell::RefCell::new(Vec::new());
+        let works = |p: &Plan| match plan_works(p) {
+            Ok(()) => true,
+            Err(e) => {
+                probe_failures.borrow_mut().push(EncoderAttempt {
+                    encoder: p.name.to_string(),
+                    options: "probe".into(),
+                    ok: false,
+                    error: short_error(&e),
+                });
+                false
+            }
+        };
+        let plans = plan_encoders(node.as_ref(), &works);
         let hdr_source = observed_hdr();
         // Probing opens a Main10 encoder: only worth it when the compositor offers HDR10.
         let hdr_plans = if hdr_source.is_some() {
-            plan_hdr_encoders(node.as_ref(), &|p| plan_works(p).is_ok())
+            plan_hdr_encoders(node.as_ref(), &works)
         } else {
             Vec::new()
         };
+        let probe_failures = probe_failures.into_inner();
         LinuxSource {
             provider,
             kind: if opts.output_name.is_some() {
@@ -227,6 +245,7 @@ impl LinuxSource {
             running: None,
             force_key: false,
             output: None,
+            probe_failures,
         }
     }
 
@@ -484,6 +503,19 @@ impl VideoSource for LinuxSource {
 
     fn output(&self) -> Option<OutputInfo> {
         self.output.clone()
+    }
+
+    fn take_encoder_setup(&mut self) -> Option<EncoderSetup> {
+        let r = self.running.as_mut()?;
+        let mut setup = match &mut r.input {
+            Input::Serial(pipeline) => pipeline.take_setup(),
+            Input::Ahead { enc, .. } => enc.take_setup(),
+        }?;
+        // Probe failures happened before any open: they come first.
+        let mut attempts = self.probe_failures.clone();
+        attempts.append(&mut setup.attempts);
+        setup.attempts = attempts;
+        Some(setup)
     }
 
     fn request_keyframe(&mut self) {

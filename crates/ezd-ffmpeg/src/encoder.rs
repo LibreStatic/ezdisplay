@@ -200,8 +200,6 @@ impl Encoder {
             sw_fmt,
         };
         let cfg = &enc.cfg;
-        let bitrate = cfg.bitrate_kbps as i64 * 1000;
-        let fps = cfg.refresh_mhz as f64 / 1000.0;
         // SAFETY: ctx is a freshly allocated, exclusively owned AVCodecContext; we only write plain fields.
         unsafe {
             let c = &mut *ctx;
@@ -219,10 +217,10 @@ impl Encoder {
                 Some(h) => h.kind.pix_fmt(),
                 None => cfg.pix_fmt.av(),
             };
-            c.bit_rate = bitrate;
-            c.rc_max_rate = bitrate;
-            // Two frames worth of VBV buffer: tight enough for low latency, loose enough for keyframes.
-            c.rc_buffer_size = ((bitrate as f64 * 2.0 / fps) as i32).max(1000);
+            let rate = crate::rate::rate_settings(cfg.bitrate_kbps, cfg.refresh_mhz);
+            c.bit_rate = rate.bit_rate;
+            c.rc_max_rate = rate.max_rate;
+            c.rc_buffer_size = rate.buffer_size;
             c.gop_size = i32::MAX;
             c.max_b_frames = 0;
             // Hardware encoders gain nothing from threads. libx264 needs them: one thread manages

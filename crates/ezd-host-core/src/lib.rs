@@ -25,8 +25,8 @@ pub use session::{
     run_host_session, run_host_session_with,
 };
 pub use source::{
-    CursorSink, DisplayMode, EncodedFrame, OutputInfo, SourceError, SourceHdr, VideoSource,
-    VirtualDisplay,
+    CursorSink, DisplayMode, EncodedFrame, EncoderSetup, OutputInfo, SourceError, SourceHdr,
+    VideoSource, VirtualDisplay,
 };
 pub use synthetic::{PixelFormat, SyntheticFrames, read_frame_number};
 pub use time::now_us;

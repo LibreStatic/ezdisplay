@@ -1,4 +1,4 @@
-# ezdisplay wire protocol (version 0.6)
+# ezdisplay wire protocol (version 0.7)
 
 All integers are little endian. The protocol runs over any reliable ordered byte stream: TCP
 through `adb reverse` over USB, or a QUIC connection on Wi-Fi (see [Transports](#transports)). It is implemented in the `ezd-proto`
@@ -57,6 +57,7 @@ flowchart LR
 | Control | 15 | `ClientHdr` | client to host | postcard (0.5) |
 | Control | 16 | `StreamColor` | host to client | postcard (0.5) |
 | Control | 17 | `ClientKeyboard` | client to host | postcard (0.6) |
+| Control | 18 | `StreamReport` | host to client | postcard (0.7) |
 | Input | 1 | `Pen` (`PenSample`) | client to host | postcard (0.3) |
 | Input | 2 | `Touch` (`TouchFrame`) | client to host | postcard (0.3) |
 | Input | 3 | `PointerButton` | client to host | postcard (0.3) |
@@ -112,9 +113,9 @@ per push) and yields complete messages.
 
 ### Versioning
 
-`Hello` carries `proto_major` and `proto_minor` (currently 0 and 6; 0.2 added `FrameAck`, 0.3
+`Hello` carries `proto_major` and `proto_minor` (currently 0 and 7; 0.2 added `FrameAck`, 0.3
 the input messages, `InputStatus` and `ClientOptions`, 0.4 the `Key` message, 0.5 `ClientHdr` and
-`StreamColor` for HDR10, 0.6 `ClientKeyboard`; the Wi-Fi transport is below the framed protocol and
+`StreamColor` for HDR10, 0.6 `ClientKeyboard`, 0.7 `StreamReport`; the Wi-Fi transport is below the framed protocol and
 needs no minor bump). A different major version is fatal: the
 receiver answers `Reject` and closes. Minor versions only add new `(channel,
 kind)` pairs, so peers with different minors interoperate. `Hello::supports_input()` is true
@@ -126,6 +127,8 @@ host's `InputStatus.caps` has `KEYS`, and an older host would skip the unknown p
 `ClientHdr` only to such a host, and a host sends `StreamColor` only to such a client.
 `Hello::supports_keyboard()` is true when the peer's minor is at least `MINOR_KEYBOARD` = 6: a
 client sends `ClientKeyboard` only to such a host.
+`Hello::supports_report()` is true when the peer's minor is at least `MINOR_REPORT` = 7: a host
+sends `StreamReport` only to such a client.
 
 ## Transports
 
@@ -297,6 +300,10 @@ sequenceDiagram
     H->>C: ClientOptions(flags)
     H->>C: InputStatus(caps, note), again whenever it changes
   end
+  opt client minor ≥ 7
+    H->>C: StreamReport(negotiation, encoder attempts, rate control)
+    Note right of H: after the encoder opens, before its first frame,<br/>and again after every reopen
+  end
   H->>C: VideoFrame(CODEC_CONFIG): parameter sets only
   H->>C: VideoFrame(KEYFRAME)
   loop every frame, one in flight (video credit)
@@ -335,7 +342,10 @@ gives up (the host uses 10 s per step).
 * Refresh rate: the highest client rate not above `max_refresh_mhz` (default 120000) and the
   decoder `max_fps`. The encoder frame rate equals the refresh rate.
 * Bitrate: `width * height * fps * 0.07` bit/s for H.264 (`0.05` for HEVC and AV1), clamped to
-  the link ceiling (USB 80 Mbit/s, network 30 Mbit/s by default).
+  the link ceiling (USB 80 Mbit/s, network 30 Mbit/s by default). The bitrate is the encoder's
+  target, not a constant rate: the host encodes at constant quality (NVENC `cq` 19, x264 `crf` 20,
+  VAAPI VBR or fixed QP 20) with a peak of twice the bitrate and a VBV buffer of four frames at
+  that peak, so the first IDR is sharp and still content costs few bits.
 * Encoder: the first hardware encoder for the codec, otherwise the first software one.
 * Dynamic range (`pick_dynamic_range`, used through `negotiate_hdr`): HDR10 is streamed only when
   the source is HDR, `Prefs.hdr` is not `Off`, the client sent `ClientHdr` with
@@ -477,6 +487,28 @@ mastering: Option<Mastering>, max_cll: u16, max_fall: u16 }`. The codes are ITU-
 white: [u16; 2], max_luminance: u32, min_luminance: u32 }` holds the red, green and blue
 chromaticities and the white point in units of 0.00002, and the luminances in units of 0.0001
 cd/m2. A client that receives no `StreamColor` assumes 8-bit limited-range BT.709, as before 0.5.
+
+### Stream report (0.7)
+
+Host to client, on the Control channel, when the client minor is at least 7:
+`StreamReport { wanted_kbps: u32, user_bitrate: bool, ceiling_kbps: u32, attempts:
+Vec<EncoderAttempt>, rate: RateControl }`. It is informational: a client may show it and must not
+depend on it. The host sends it after the encoder opens, before the first frame that encoder
+produced, and again after every reopen (the encoder opens lazily on the first captured frame and
+again when the capture format changes), so it can arrive after `StreamConfig` and the first
+`CODEC_CONFIG` of a session never precedes it.
+
+* `wanted_kbps`: the bitrate the negotiation wanted before the link ceiling, derived from size,
+  rate and codec or the user's fixed value (`user_bitrate` = true); `ceiling_kbps` is the link
+  ceiling that clamped it into `StreamConfig.bitrate_kbps`.
+* `EncoderAttempt { encoder: String, options: String, ok: bool, error: String }`: the encoders and
+  option sets the host tried, in order. `options` is a compact `k=v` label of the rate-control,
+  profile and level options, or `probe` for an encoder found unusable before the session. `error`
+  is a short text (at most 120 characters) when `ok` is false.
+* `RateControl { mode: u8, quality: u16, target_kbps: u32, max_kbps: u32 }` of the encoder that
+  runs. `mode` is 0 unknown, 1 CBR, 2 VBR, 3 constant QP, 4 CRF (unknown codes are read as 0);
+  `quality` is the `cq`, `qp` or `crf` value (0 when the mode has none); `max_kbps` is the peak
+  rate, 0 for constant QP, which has none.
 
 ## Cursor
 

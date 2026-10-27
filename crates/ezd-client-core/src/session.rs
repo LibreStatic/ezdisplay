@@ -4,7 +4,7 @@ use crate::{ClientHandle, now_us};
 use ezd_link::{Link, MuxError, MuxReceiver, MuxSender};
 use ezd_proto::{
     Bye, ClientCaps, ClientHdr, CursorShape, CursorState, FrameAck, Hello, Message, Ping, Pong,
-    Role, StreamColor, StreamConfig, VideoFrame,
+    Role, StreamColor, StreamConfig, StreamReport, VideoFrame,
 };
 use std::time::Duration;
 use tokio::time::{MissedTickBehavior, interval, timeout};
@@ -46,6 +46,10 @@ pub trait ClientHandler: Send {
     /// A fully reassembled non-config video frame. It was already acked.
     /// `received_us` is its [`now_us`] at reassembly.
     fn on_video_frame(&mut self, frame: VideoFrame, received_us: u64) -> HandlerResult;
+
+    /// How the host negotiated and encodes the stream (protocol 0.7). Sent after the encoder
+    /// opens, before the first frame it produced, and again after every reopen.
+    fn on_stream_report(&mut self, _report: &StreamReport) {}
 
     /// A new cursor shape (already cached in the handle).
     fn on_cursor_shape(&mut self, _shape: &CursorShape) {}
@@ -412,6 +416,10 @@ fn on_message<H: ClientHandler>(
             }))?;
             handle.count_received(v.data.len());
             flow(handler.on_video_frame(v, received_us))
+        }
+        Message::StreamReport(r) => {
+            handler.on_stream_report(&r);
+            Ok(None)
         }
         Message::InputStatus(st) => {
             handle.store_input_status(st);
