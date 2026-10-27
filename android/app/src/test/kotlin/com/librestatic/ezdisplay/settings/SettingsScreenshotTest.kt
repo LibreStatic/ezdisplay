@@ -42,6 +42,7 @@ class SettingsScreenshotTest {
         override fun setDoubleClickMs(ms: Int) {}
         override fun setPalmRejection(on: Boolean) {}
         override fun setWifiEnabled(on: Boolean) {}
+        override fun setAudioEnabled(on: Boolean) {}
         override fun startPairing(name: String, shortFp: String, addr: String) {}
         override fun startPairing(link: PairLink) {}
         override fun submitPairing(pin: String) {}
@@ -140,6 +141,14 @@ class SettingsScreenshotTest {
 
     @Test @Config(sdk = [36], qualifiers = "de-w412dp-h915dp-notnight")
     fun phone_main_german_light() { show(tabletState); capture("phone_main_german_light") }
+
+    @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
+    fun phone_audio_dark() {
+        show(tabletState)
+        rule.onNodeWithTag("audio_row").performScrollTo()
+        rule.waitForIdle()
+        capture("phone_audio_dark")
+    }
 
     @Test @Config(sdk = [36], qualifiers = "w841dp-h701dp-night")
     fun foldable_dark() { show(tabletState); capture("foldable_dark") }

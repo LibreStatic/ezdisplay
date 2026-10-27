@@ -2,7 +2,7 @@
 
 use crate::error::ServiceError;
 use ezd_host_core::{LiveStats, SessionSummary};
-use ezd_proto::{DynamicRange, InputStatus, StreamConfig};
+use ezd_proto::{AudioStream, DynamicRange, InputStatus, StreamConfig};
 use std::net::SocketAddr;
 use std::time::Instant;
 
@@ -34,6 +34,8 @@ pub struct LiveSession {
     pub stream: StreamConfig,
     /// Dynamic range of the stream (HDR10, converted SDR with the reason, or plain SDR).
     pub dynamic_range: DynamicRange,
+    /// Negotiated PC audio stream, `None` when the session has no audio.
+    pub audio: Option<AudioStream>,
     /// Devices seen by the adb watcher.
     pub devices: Vec<DeviceInfo>,
     /// Latest live measurements (once per second), `None` until the first window ends.

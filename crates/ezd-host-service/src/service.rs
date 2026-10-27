@@ -6,7 +6,7 @@ use crate::error::ServiceError;
 use crate::status::{DeviceInfo, HostEvent, HostStatus, LiveSession, Transport, WifiInfo};
 #[cfg(feature = "wifi")]
 use crate::store::{ForgetError, PairedDevice, StoreError};
-use ezd_host_core::{SessionEvent, VideoSource, run_host_session_with};
+use ezd_host_core::{AudioBackend, SessionEvent, VideoSource, run_host_session_with};
 use ezd_link::Link;
 use ezd_proto::Prefs;
 use std::net::SocketAddr;
@@ -40,6 +40,9 @@ pub struct ServiceHooks {
     pub create_source: SourceFactory,
     /// How long a pairing window stays open.
     pub pairing_ttl: Duration,
+    /// Replaces the audio backend of the sessions (`None`: the host's own). Not used when the
+    /// configured audio mode is off.
+    pub audio_backend: Option<Arc<dyn AudioBackend>>,
     /// The USB accessory acceptor: backend and timings.
     #[cfg(feature = "aoa")]
     pub aoa: crate::aoa::AoaHooks,
@@ -52,6 +55,7 @@ impl Default for ServiceHooks {
             locate_adb: Arc::new(locate_system_adb),
             create_source: Arc::new(create_source),
             pairing_ttl: DEFAULT_PAIRING_TTL,
+            audio_backend: None,
             #[cfg(feature = "aoa")]
             aoa: crate::aoa::AoaHooks::default(),
         }
@@ -163,12 +167,14 @@ impl Inner {
                 client_hello,
                 stream,
                 dynamic_range,
+                audio,
                 ..
             } => {
                 st.phase = Phase::Streaming(LiveSession {
                     device_name: client_hello.device_name,
                     stream,
                     dynamic_range,
+                    audio,
                     devices: Vec::new(),
                     stats: None,
                     input: None,
@@ -499,8 +505,9 @@ pub(crate) async fn stream_session(
     finish_session(inner, cfg, link, transport, source, stop_rx).await
 }
 
-/// Runs a session with an existing source and reports its end. True when the peer opened with
-/// something other than its handshake: a client still in a session with an earlier host process.
+/// Runs a session with an existing source and reports its end. True when the client is in a
+/// stale session: it opened with something other than its handshake (still in a session with an
+/// earlier host process), or sent a new `Hello` mid-session (its app restarted on the same link).
 pub(crate) async fn finish_session(
     inner: &Inner,
     cfg: &ServiceConfig,
@@ -515,7 +522,11 @@ pub(crate) async fn finish_session(
         Ok(s) => tracing::debug!(end = ?s.end, "session returned"),
         Err(e) => tracing::debug!("session failed: {e}"),
     }
-    let stale = matches!(result, Err(ezd_host_core::SessionError::Unexpected { .. }));
+    let stale = match &result {
+        Err(ezd_host_core::SessionError::Unexpected { .. }) => true,
+        Ok(s) => s.end == ezd_host_core::EndReason::ClientRestarted,
+        Err(_) => false,
+    };
     inner.emit(HostEvent::SessionEnded(result.map_err(|e| e.to_string())));
     stale
 }
@@ -537,12 +548,11 @@ async fn run_session(
         Transport::Tcp | Transport::Aoa => cfg.prefs(),
         Transport::Wifi => cfg.wifi_prefs(),
     };
-    let session = run_host_session_with(
-        link,
-        source,
-        prefs,
-        cfg.session_options(end_rx, Some(ev_tx)),
-    );
+    let mut opts = cfg.session_options(end_rx, Some(ev_tx));
+    if opts.audio.is_some() && inner.hooks.audio_backend.is_some() {
+        opts.audio = inner.hooks.audio_backend.clone();
+    }
+    let session = run_host_session_with(link, source, prefs, opts);
     tokio::pin!(session);
     let mut stop_forwarded = false;
     let result = loop {
@@ -643,8 +653,8 @@ pub(crate) mod tests {
     use ezd_link::adb::DeviceState as AdbState;
     use ezd_link::{MuxReceiver, MuxSender};
     use ezd_proto::{
-        Bye, ClientCaps, ClientHdr, Codec, DEFAULT_CHUNK_LEN, DecoderCaps, DisplayInfo, Hello,
-        Message, Role,
+        Bye, ClientAudio, ClientCaps, ClientHdr, Codec, DEFAULT_CHUNK_LEN, DecoderCaps,
+        DisplayInfo, Hello, Message, Role,
     };
     use tokio::time::timeout;
 
@@ -669,6 +679,7 @@ pub(crate) mod tests {
                 Ok(Box::new(ScriptedSource::new(Duration::from_millis(5), 200)))
             }),
             pairing_ttl: Duration::from_secs(60),
+            audio_backend: None,
             #[cfg(feature = "aoa")]
             aoa: crate::aoa::AoaHooks::default(),
         }
@@ -717,24 +728,40 @@ pub(crate) mod tests {
 
     /// Completes the handshake on `link` like the tablet.
     pub(crate) async fn handshake(link: Link) -> (MuxSender, MuxReceiver) {
+        let (tx, rx, _) = handshake_audio(link, ClientAudio::none()).await;
+        (tx, rx)
+    }
+
+    /// Like [`handshake`] with `audio` as the client's audio capabilities; also returns the
+    /// host's audio decision.
+    pub(crate) async fn handshake_audio(
+        link: Link,
+        audio: ClientAudio,
+    ) -> (MuxSender, MuxReceiver, Option<ezd_proto::AudioStream>) {
         let (tx, mut rx, _t) = link.into_mux(DEFAULT_CHUNK_LEN);
         tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "tablet")))
             .unwrap();
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
+        tx.send_control(Message::ClientAudio(audio)).unwrap();
         let mut seen = 0;
-        while seen < 4 {
+        let mut audio_stream = None;
+        while seen < 5 {
             match timeout(WAIT, rx.recv()).await.unwrap().unwrap().unwrap() {
                 Message::Hello(_)
                 | Message::HostCaps(_)
                 | Message::StreamColor(_)
                 | Message::StreamConfig(_) => seen += 1,
+                Message::AudioConfig(a) => {
+                    audio_stream = a.stream;
+                    seen += 1;
+                }
                 m => panic!("{m:?}"),
             }
         }
         tx.send_control(Message::ConfigAck).unwrap();
-        (tx, rx)
+        (tx, rx, audio_stream)
     }
 
     pub(crate) async fn wait_status(
@@ -798,6 +825,65 @@ pub(crate) mod tests {
         );
         wait_status(&mut status, |s| matches!(s, HostStatus::Waiting { .. })).await;
         svc.stop().await;
+    }
+
+    fn pcm_client() -> ClientAudio {
+        ClientAudio {
+            enabled: true,
+            sample_rates: vec![48_000],
+            max_channels: 2,
+            formats: vec![ezd_proto::SampleFormat::S16],
+            codecs: vec![ezd_proto::AudioCodec::Pcm, ezd_proto::AudioCodec::Opus],
+        }
+    }
+
+    /// One session of a client with audio against a service with the scripted audio backend.
+    async fn audio_session(
+        audio: crate::config::AudioChoice,
+    ) -> (
+        Option<ezd_proto::AudioStream>,
+        Option<ezd_proto::AudioStream>,
+    ) {
+        let svc = start(
+            ServiceConfig { audio, ..cfg() },
+            ServiceHooks {
+                audio_backend: Some(Arc::new(ezd_host_core::testing::ScriptedAudioBackend::new())),
+                ..hooks()
+            },
+        );
+        let mut status = svc.status();
+        let sock = tokio::net::TcpStream::connect(svc.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (_tx, _rx, announced) =
+            handshake_audio(Link::from_tcp(sock).unwrap(), pcm_client()).await;
+        let HostStatus::Streaming(live) =
+            wait_status(&mut status, |s| matches!(s, HostStatus::Streaming(_))).await
+        else {
+            unreachable!()
+        };
+        svc.stop().await;
+        (announced, live.audio)
+    }
+
+    #[tokio::test]
+    async fn audio_is_negotiated_and_shown_in_the_status() {
+        let (announced, live) = audio_session(crate::config::AudioChoice::Auto).await;
+        let stream = announced.expect("audio negotiated");
+        assert_eq!(stream.codec, ezd_proto::AudioCodec::Pcm);
+        assert_eq!((stream.sample_rate, stream.channels), (48_000, 2));
+        assert_eq!(live, Some(stream));
+
+        let (announced, live) = audio_session(crate::config::AudioChoice::Opus).await;
+        let stream = announced.expect("audio negotiated");
+        assert_eq!(stream.codec, ezd_proto::AudioCodec::Opus);
+        assert_eq!(live, Some(stream));
+    }
+
+    #[tokio::test]
+    async fn audio_off_streams_no_audio() {
+        let (announced, live) = audio_session(crate::config::AudioChoice::Off).await;
+        assert_eq!((announced, live), (None, None));
     }
 
     #[tokio::test]

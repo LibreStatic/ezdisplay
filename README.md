@@ -61,6 +61,7 @@ Working today, over USB with ADB:
 | Locally drawn cursor | ✅ | ✅ | 🧪 | 🧪 | 🧪 |
 | Zero-copy hardware encode | ✅ | ✅ | 🧪 | ❌ shared-memory capture | ❌ shared-memory capture |
 | Touch, pen pressure, tilt and hover | ✅ | ✅ | 🧪 | 🧪 | 🧪 |
+| PC audio on the tablet, with volume kept in sync | 🧪 audio only, no volume sync | ✅ | 🧪 | 🧪 | 🧪 |
 | Tray app with settings and live statistics | ✅ | ✅ | 🧪 | 🧪 | 🧪 |
 | Installer / packages | ✅ `.exe` | ✅ AppImage, `.deb`, Arch | 🧪 AppImage, `.deb`, Arch | 🧪 AppImage, `.deb`, Arch | 🧪 AppImage, `.deb`, Arch |
 
@@ -68,9 +69,8 @@ Working today, over USB with ADB:
 headless Mutter (the tray needs the AppIndicator extension there), Sway against a headless sway,
 Hyprland only through unit tests, and X11 against Xorg with the dummy video driver (i3, xfwm4).
 X11 works with any window manager or desktop that honours RandR 1.5 monitors; the proprietary
-NVIDIA driver is untested.
-
-**Not yet:** audio.
+NVIDIA driver is untested. Audio on Windows has only been tested through unit tests, and on Linux
+only on KDE Plasma.
 
 ## How it works
 
@@ -95,6 +95,20 @@ flowchart LR
 All channels share one prioritized, multiplexed link (ADB over USB today), so input and cursor
 updates are never stuck behind a video frame. Details: [docs/architecture.md](docs/architecture.md),
 wire format: [docs/protocol.md](docs/protocol.md), input path: [docs/input.md](docs/input.md).
+
+## Audio
+
+The PC's sound plays on the tablet while a session runs.
+
+- **Linux:** the host adds a PipeWire output named `ezdisplay` and makes it the default for as long
+  as the session lasts, then puts the previous default back. Its volume and mute follow the tablet's
+  and the other way round.
+- **Windows:** the host captures what the default output plays (WASAPI loopback). The PC keeps
+  playing it too, and the volume is not synced.
+- Over a fast link the audio is uncompressed PCM, otherwise Opus. Choose with `--audio
+  auto|pcm|opus|off` or `audio = "..."` in `config.toml`, or in the tray settings.
+- The tablet buffers 20 to 80 ms of audio, growing the buffer when playback stutters and shrinking
+  it again once it is steady.
 
 ## USB without developer mode
 

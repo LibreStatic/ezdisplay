@@ -14,6 +14,7 @@ import android.content.IntentFilter
 import android.content.res.Configuration
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -96,6 +97,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private lateinit var telemetryView: TextView
 
     private val handler = Handler(Looper.getMainLooper())
+    private val volumeWatcher by lazy {
+        VolumeWatcher(
+            this, handler,
+            VolumeSync(
+                AudioManagerVolume(getSystemService(AudioManager::class.java)),
+                NativeBridge::setLocalVolume,
+                NativeBridge::pollHostVolume,
+            ),
+        )
+    }
     private var chosenMode: android.view.Display.Mode? = null
     private var capsJson: String? = null
 
@@ -176,6 +187,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         launchIntent = intent
+        volumeControlStream = AudioManager.STREAM_MUSIC // the volume keys always move the PC's audio
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= 28) {
             window.attributes = window.attributes.also {
@@ -474,8 +486,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private fun connect() {
         if (!started || sessionActive) return
         if (!surfaceReady) return // surfaceCreated reschedules
-        val caps = capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it }
+        val caps = Capabilities.withAudio(
+            capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it },
+            InputPrefs.prefs(this).getBoolean(SettingsStore.AUDIO_ENABLED, true),
+        )
         pushKeyboardState()
+        volumeWatcher.start()
         val acc = accessory?.takeIf { usbManager.hasPermission(it) }
         val wifiChoice = if (tryWifiNext) wifiTarget() else null
         val route = chooseRoute(acc != null, tryWifiNext, wifiChoice != null)
@@ -491,6 +507,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         }
         if (err != null) {
             Log.w(TAG, "start failed: $err")
+            volumeWatcher.stop()
             setStatus(
                 if (route == Route.ACCESSORY) getString(R.string.status_usb_open_failed)
                 else getString(R.string.status_bad_caps, err),
@@ -539,6 +556,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
 
     private fun stopSession() {
         releaseAllKeys()
+        volumeWatcher.stop()
         if (sessionActive) {
             NativeBridge.stop()
             sessionActive = false
@@ -577,6 +595,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         val now = SystemClock.uptimeMillis()
         if (now - lastStatsPoll >= STATS_INTERVAL_MS) {
             lastStatsPoll = now
+            volumeWatcher.pollHost()
+            volumeWatcher.checkLocal()
             updateStats(now)
         }
     }
@@ -862,6 +882,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (inputActive()) {
+            volumeKeyDirection(event.keyCode)?.let { direction ->
+                // Handled here so the system volume panel stays hidden: its blur stalls the video.
+                if (event.action == KeyEvent.ACTION_DOWN) volumeWatcher.onKey(direction)
+                return true
+            }
+        }
         if (inputActive() && isHardwareKey(event)) {
             val code = event.keyCode
             val nanos = event.eventTime * 1_000_000L
@@ -882,6 +909,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    /** The volume change a volume key asks for, or null for any other key. */
+    private fun volumeKeyDirection(code: Int): Int? = when (code) {
+        KeyEvent.KEYCODE_VOLUME_UP -> AudioManager.ADJUST_RAISE
+        KeyEvent.KEYCODE_VOLUME_DOWN -> AudioManager.ADJUST_LOWER
+        KeyEvent.KEYCODE_VOLUME_MUTE -> AudioManager.ADJUST_TOGGLE_MUTE
+        else -> null
     }
 
     /** A key from a physical keyboard that Android does not need for itself. */

@@ -127,6 +127,8 @@ data class SettingsState(
     val doubleClickMs: Int = 300,
     val palmRejection: Boolean = true,
     val airActions: AirActions = AirActions.NotSamsung,
+    /** Play the PC's audio on this device. */
+    val audioEnabled: Boolean = true,
     /** Connect over Wi-Fi when the USB connection is not there. */
     val wifiEnabled: Boolean = false,
     val wifiHosts: List<WifiHost> = emptyList(),
@@ -217,6 +219,7 @@ interface SettingsActions {
     fun setDoubleClickMs(ms: Int)
     fun setPalmRejection(on: Boolean)
     fun setWifiEnabled(on: Boolean)
+    fun setAudioEnabled(on: Boolean)
 
     /** Opens the PIN dialog for a host that was found or typed. */
     fun startPairing(name: String, shortFp: String, addr: String)
@@ -252,6 +255,7 @@ class SettingsStore(
             .coerceIn(InputPrefs.DOUBLE_CLICK_MIN, InputPrefs.DOUBLE_CLICK_MAX),
         palmRejection = prefs.getBoolean(InputPrefs.PALM_REJECTION, true),
         airActions = airActions,
+        audioEnabled = prefs.getBoolean(AUDIO_ENABLED, true),
         wifiEnabled = prefs.getBoolean(WIFI_ENABLED, false),
         wifiHosts = wifi.hosts(),
         deviceFingerprint = wifi.identity(),
@@ -309,6 +313,11 @@ class SettingsStore(
     override fun setPalmRejection(on: Boolean) {
         prefs.edit { putBoolean(InputPrefs.PALM_REJECTION, on) }
         _state.value = _state.value.copy(palmRejection = on)
+    }
+
+    override fun setAudioEnabled(on: Boolean) {
+        prefs.edit { putBoolean(AUDIO_ENABLED, on) }
+        _state.value = _state.value.copy(audioEnabled = on)
     }
 
     override fun setWifiEnabled(on: Boolean) {
@@ -380,6 +389,9 @@ class SettingsStore(
     companion object {
         /** Pref key of the Wi-Fi switch, read by MainActivity. */
         const val WIFI_ENABLED = "wifi_enabled"
+
+        /** Pref key of the audio switch, read by MainActivity when a session starts. */
+        const val AUDIO_ENABLED = "audio_enabled"
 
         fun create(context: Context) = SettingsStore(
             InputPrefs.prefs(context), readAirActions(context), NativeWifiBackend(context),

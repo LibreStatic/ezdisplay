@@ -93,6 +93,19 @@ object NativeBridge {
      */
     @JvmStatic external fun setKeyboardAttached(attached: Boolean)
 
+    /**
+     * The tablet's media volume as a perceptual 0..1 value plus the mute flag. Kept across
+     * sessions: the host gets the last value once audio starts, and every later change at once.
+     * Do not report a value that was just applied from the host ([pollHostVolume]).
+     */
+    @JvmStatic external fun setLocalVolume(volume: Float, muted: Boolean)
+
+    /**
+     * `[seq, volume, muted (0/1)]`: the latest volume the host sent in this session. `seq` grows
+     * with every message and is 0 while there is none.
+     */
+    @JvmStatic external fun pollHostVolume(): FloatArray
+
     /** Fires the engine timers that are due; call once per frame. */
     @JvmStatic external fun inputTick()
 

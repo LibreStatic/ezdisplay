@@ -27,7 +27,7 @@ android_logger = "0.15"
 jni = "0.22"
 libc = "0.2"
 log = "0.4"
-ndk = { version = "0.9", default-features = false, features = ["media", "nativewindow", "api-level-26"] }
+ndk = { version = "0.9", default-features = false, features = ["audio", "media", "nativewindow", "api-level-26"] }
 
 [lints]
 workspace = true

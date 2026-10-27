@@ -56,7 +56,7 @@ import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.R
 
 /** Settings sections; AirActions only exists while its card is shown (and is always last). */
-enum class SettingsSection { Pen, Zoom, Touch, Connection, AirActions }
+enum class SettingsSection { Pen, Zoom, Touch, Audio, Connection, AirActions }
 
 private fun airCardShown(state: SettingsState) =
     state.airActions == AirActions.On || state.airActions == AirActions.Unknown
@@ -179,6 +179,8 @@ private fun PhoneMain(state: SettingsState, actions: SettingsActions, onOpenEdit
             SectionTitle(stringResource(R.string.section_touch))
             PalmRow(state.palmRejection, actions::setPalmRejection)
             AirActionsCard(state.airActions, Modifier.padding(top = profileGap(2)))
+            SectionTitle(stringResource(R.string.section_audio))
+            AudioRow(state.audioEnabled, actions::setAudioEnabled)
             SectionTitle(stringResource(R.string.section_connection))
             ConnectionContent(state, actions)
         }
@@ -229,7 +231,7 @@ private fun ListDetailLayout(
 ) {
     val colors = MaterialTheme.colorScheme
     val sections = buildList {
-        add(SettingsSection.Pen); add(SettingsSection.Zoom); add(SettingsSection.Touch); add(SettingsSection.Connection)
+        add(SettingsSection.Pen); add(SettingsSection.Zoom); add(SettingsSection.Touch); add(SettingsSection.Audio); add(SettingsSection.Connection)
         if (airCardShown(state)) add(SettingsSection.AirActions)
     }
     val current = selected.takeIf { it in sections } ?: SettingsSection.Pen
@@ -288,6 +290,7 @@ private fun ListDetailLayout(
                     )
                     SettingsSection.Zoom -> ZoomGroup(state, actions)
                     SettingsSection.Touch -> PalmRow(state.palmRejection, actions::setPalmRejection)
+                    SettingsSection.Audio -> AudioRow(state.audioEnabled, actions::setAudioEnabled)
                     SettingsSection.Connection -> ConnectionContent(state, actions)
                     SettingsSection.AirActions -> AirActionsCard(state.airActions)
                 }
@@ -300,6 +303,7 @@ private fun sectionTitle(s: SettingsSection) = when (s) {
     SettingsSection.Pen -> R.string.settings_profile
     SettingsSection.Zoom -> R.string.section_zoom
     SettingsSection.Touch -> R.string.settings_palm_title
+    SettingsSection.Audio -> R.string.section_audio
     SettingsSection.Connection -> R.string.section_connection
     SettingsSection.AirActions -> R.string.section_air_actions
 }
@@ -308,6 +312,7 @@ private fun sectionIcon(s: SettingsSection) = when (s) {
     SettingsSection.Pen -> R.drawable.ic_stylus
     SettingsSection.Zoom -> R.drawable.ic_zoom_in
     SettingsSection.Touch -> R.drawable.ic_back_hand
+    SettingsSection.Audio -> R.drawable.ic_volume_up
     SettingsSection.Connection -> R.drawable.ic_wifi
     SettingsSection.AirActions -> R.drawable.ic_info
 }
@@ -317,6 +322,7 @@ private fun sectionValue(s: SettingsSection, state: SettingsState): String = whe
     SettingsSection.Pen -> stringResource(Profiles.firstOrNull { it.value == state.profile }?.title ?: R.string.profile_raw)
     SettingsSection.Zoom -> stringResource(R.string.settings_zoom_summary, formatZoom(state.zoomFactor), state.doubleClickMs)
     SettingsSection.Touch -> stringResource(if (state.palmRejection) R.string.settings_on else R.string.settings_off)
+    SettingsSection.Audio -> stringResource(if (state.audioEnabled) R.string.settings_on else R.string.settings_off)
     SettingsSection.Connection -> connectionSummary(state)
     SettingsSection.AirActions -> stringResource(R.string.section_air_actions_value)
 }
@@ -422,6 +428,9 @@ private fun WideLayout(
                                 WideHeading(stringResource(R.string.section_touch))
                                 PalmRow(state.palmRejection, actions::setPalmRejection)
                                 AirActionsCard(state.airActions, Modifier.padding(top = profileGap(3)))
+                                // No heading of its own: the row already reads "Audio", and the graphics tablet
+                                // profile's shortcut rows leave no room for one without scrolling.
+                                AudioRow(state.audioEnabled, actions::setAudioEnabled, Modifier.padding(top = profileGap(3)))
                             }
                             Column(Modifier.weight(1f)) {
                                 WideHeading(stringResource(R.string.section_connection))
@@ -435,6 +444,9 @@ private fun WideLayout(
                         WideHeading(stringResource(R.string.section_touch))
                         PalmRow(state.palmRejection, actions::setPalmRejection)
                         AirActionsCard(state.airActions, Modifier.padding(top = profileGap(2)))
+                        Spacer(Modifier.height(20.dp))
+                        WideHeading(stringResource(R.string.section_audio))
+                        AudioRow(state.audioEnabled, actions::setAudioEnabled)
                         Spacer(Modifier.height(20.dp))
                         WideHeading(stringResource(R.string.section_connection))
                         ConnectionSummary(state, actions)

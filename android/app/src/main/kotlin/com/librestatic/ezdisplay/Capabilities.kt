@@ -62,6 +62,13 @@ object Capabilities {
         return json.toString()
     }
 
+    /**
+     * [caps] (from [toJson]) with the `audio` switch set. The switch is a user setting that can change between
+     * sessions, so it is applied on every connect instead of being cached with the rest.
+     */
+    fun withAudio(caps: String, enabled: Boolean): String =
+        JSONObject(caps).put("audio", enabled).toString()
+
     /** HDR10 support and luminance of the panel; luminance members are 0 when the platform does not report them. */
     @Suppress("DEPRECATION")
     private fun hdr(display: Display): JSONObject {
