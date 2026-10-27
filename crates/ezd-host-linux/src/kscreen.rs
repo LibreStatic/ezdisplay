@@ -160,11 +160,14 @@ pub fn find_mode(out: &KOutput, width: u32, height: u32, refresh_mhz: u32) -> Op
 }
 
 /// Argument for `kscreen-doctor` that adds a reduced-blanking custom mode.
+///
+/// `output` must be the numeric id: kscreen-doctor splits arguments on dots, and portal virtual
+/// outputs are named after the caller's app id (`Virtual-virtual-xdp-kde-org.example.App`).
 pub fn add_custom_mode_arg(output: &str, width: u32, height: u32, refresh_mhz: u32) -> String {
     format!("output.{output}.addCustomMode.{width}.{height}.{refresh_mhz}.reduced")
 }
 
-/// Argument for `kscreen-doctor` that switches `output` to mode `mode` (id or `WxH@R`).
+/// Argument for `kscreen-doctor` that switches `output` (numeric id) to mode `mode` (id or `WxH@R`).
 pub fn set_mode_arg(output: &str, mode: &str) -> String {
     format!("output.{output}.mode.{mode}")
 }
@@ -225,7 +228,12 @@ pub fn apply_mode(
     let (mut out, mut mode) =
         find(&list_outputs()?).ok_or_else(|| format!("output {output} not found"))?;
     if mode.is_none() {
-        run(&[add_custom_mode_arg(output, width, height, refresh_mhz)])?;
+        run(&[add_custom_mode_arg(
+            &out.id.to_string(),
+            width,
+            height,
+            refresh_mhz,
+        )])?;
         // KWin applies the new mode list asynchronously.
         for _ in 0..10 {
             std::thread::sleep(Duration::from_millis(100));
@@ -238,19 +246,28 @@ pub fn apply_mode(
             }
         }
     }
+    let id = out.id.to_string();
     let target = mode.unwrap_or_else(|| mode_name(width, height, refresh_mhz));
     if out.current_mode_id != target {
-        run(&[set_mode_arg(output, &target)])?;
+        run(&[set_mode_arg(&id, &target)])?;
     }
     for _ in 0..10 {
         if let Some(o) = list_outputs()?.into_iter().find(|o| o.name == output)
-            && o.size == (width, height)
+            && runs_mode(&o, width, height, refresh_mhz)
         {
             return Ok(o);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    Err(format!("{output} did not switch to {width}x{height}"))
+    Err(format!(
+        "{output} did not switch to {}",
+        mode_name(width, height, refresh_mhz)
+    ))
+}
+
+/// True if the current mode of `out` is `width`x`height` at `refresh_mhz`.
+fn runs_mode(out: &KOutput, width: u32, height: u32, refresh_mhz: u32) -> bool {
+    find_mode(out, width, height, refresh_mhz).is_some_and(|m| m.id == out.current_mode_id)
 }
 
 #[cfg(test)]
@@ -349,6 +366,16 @@ mod tests {
             "output.Virtual-1.mode.2560x1600@120"
         );
         assert_eq!(mode_name(2560, 1600, 119_880), "2560x1600@120");
+    }
+
+    #[test]
+    fn runs_mode_checks_the_refresh_rate() {
+        let mut v = parse_outputs(&with_virtual()).unwrap().remove(1);
+        v.current_mode_id = "m1".into();
+        assert!(runs_mode(&v, 2560, 1600, 120_000));
+        assert!(!runs_mode(&v, 2560, 1600, 60_000));
+        v.current_mode_id = "other".into();
+        assert!(!runs_mode(&v, 2560, 1600, 120_000));
     }
 
     #[test]
