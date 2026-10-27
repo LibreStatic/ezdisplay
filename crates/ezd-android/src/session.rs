@@ -1,5 +1,6 @@
 //! One connection attempt to the host: client core on a small tokio runtime plus the decoder.
 
+use crate::audio::{AudioPlayer, opus_available};
 use crate::caps::ParsedCaps;
 use crate::decoder::{Cmd, DecoderCtl, SendWindow};
 use crate::status::{Phase, Shared};
@@ -11,7 +12,10 @@ use ezd_client_core::{
 };
 use ezd_link::{BlockingOptions, Link};
 use ezd_proto::pair::Fingerprint;
-use ezd_proto::{CursorShape, StreamColor, StreamConfig, VideoFrame};
+use ezd_proto::{
+    AudioCodec, AudioConfig, AudioPacket, AudioVolume, ClientAudio, CursorShape, SampleFormat,
+    StreamColor, StreamConfig, VideoFrame,
+};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -175,9 +179,38 @@ struct Handler {
     dec: Arc<DecoderCtl>,
     /// Sent right before the matching `StreamConfig`; SDR BT.709 when the host sends none.
     color: StreamColor,
+    /// Output for the PC's audio; present between an `AudioConfig` with a stream and the next one.
+    audio: Option<AudioPlayer>,
 }
 
 impl ClientHandler for Handler {
+    fn on_audio_config(&mut self, cfg: &AudioConfig) {
+        // Drop the previous output first: it holds the audio device.
+        self.audio = None;
+        let Some(stream) = &cfg.stream else {
+            tracing::info!("no audio in this session");
+            return;
+        };
+        tracing::info!(
+            "audio {:?} {} Hz, {} ch, {:?}, {} samples per packet",
+            stream.codec,
+            stream.sample_rate,
+            stream.channels,
+            stream.format,
+            stream.frame_samples
+        );
+        match AudioPlayer::new(stream) {
+            Ok(p) => self.audio = Some(p),
+            Err(e) => tracing::warn!("audio disabled: {e}"),
+        }
+    }
+
+    fn on_audio_packet(&mut self, pkt: AudioPacket) {
+        if let Some(p) = &mut self.audio {
+            p.on_packet(pkt);
+        }
+    }
+
     fn on_stream_color(&mut self, color: &StreamColor) {
         tracing::info!(
             "stream colour {}-bit primaries {} transfer {} matrix {} full_range {}",
@@ -316,6 +349,17 @@ impl Session {
         self.handle.set_keyboard_attached(attached);
     }
 
+    /// Reports the local audio volume to the host (kept for the session; sent once the host
+    /// has announced audio).
+    pub fn set_audio_volume(&self, volume: AudioVolume) {
+        self.handle.set_audio_volume(volume);
+    }
+
+    /// Latest volume of the host with its sequence number.
+    pub fn host_audio_volume(&self) -> Option<(u64, AudioVolume)> {
+        self.handle.host_audio_volume()
+    }
+
     /// Latest cursor state.
     pub fn cursor(&self) -> Option<CursorSnapshot> {
         self.handle.cursor()
@@ -379,6 +423,24 @@ async fn connect(target: &Target) -> Result<Link, ConnectError> {
     }
 }
 
+/// What this device plays: 48 kHz stereo PCM, and Opus when the device has a decoder.
+fn client_audio(enabled: bool) -> ClientAudio {
+    if !enabled {
+        return ClientAudio::none();
+    }
+    let mut codecs = vec![AudioCodec::Pcm];
+    if opus_available() {
+        codecs.push(AudioCodec::Opus);
+    }
+    ClientAudio {
+        enabled: true,
+        sample_rates: vec![crate::jitter::SAMPLE_RATE],
+        max_channels: 2,
+        formats: vec![SampleFormat::F32, SampleFormat::S16],
+        codecs,
+    }
+}
+
 fn run(
     handle: ClientHandle,
     shared: Arc<Shared>,
@@ -417,10 +479,12 @@ fn run(
         let mut cfg = ClientConfig::new(caps.device_name, caps.caps);
         cfg.app_version = env!("CARGO_PKG_VERSION").into();
         cfg.hdr = caps.hdr;
+        cfg.audio = Some(client_audio(caps.audio));
         let mut handler = Handler {
             shared: shared.clone(),
             dec: dec.clone(),
             color: StreamColor::default(),
+            audio: None,
         };
         match run_client(link, cfg, &handle, &mut handler).await {
             Ok(o) => {

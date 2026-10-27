@@ -148,6 +148,8 @@ data class SettingsState(
     /** How the shapes travel: across the screen or bouncing off the edges. */
     val screensaverMotion: ScreensaverMotionMode = ScreensaverMotionMode.Drift,
     val airActions: AirActions = AirActions.NotSamsung,
+    /** Play the PC's audio on this device. */
+    val audioEnabled: Boolean = true,
     /** Connect over Wi-Fi when the USB connection is not there. */
     val wifiEnabled: Boolean = false,
     val wifiHosts: List<WifiHost> = emptyList(),
@@ -262,6 +264,7 @@ interface SettingsActions {
 
     /** Opens the getting-started guide again. */
     fun replayOnboarding() {}
+    fun setAudioEnabled(on: Boolean)
 
     /** Opens the PIN dialog for a host that was found or typed. */
     fun startPairing(name: String, shortFp: String, addr: String)
@@ -315,6 +318,7 @@ class SettingsStore(
         ),
         screensaverMotion = ScreensaverMotionMode.fromKey(prefs.getString(InputPrefs.SCREENSAVER_MOTION, null)),
         airActions = airActions,
+        audioEnabled = prefs.getBoolean(AUDIO_ENABLED, true),
         wifiEnabled = prefs.getBoolean(WIFI_ENABLED, false),
         wifiHosts = wifi.hosts(),
         deviceFingerprint = wifi.identity(),
@@ -412,6 +416,11 @@ class SettingsStore(
 
     override fun replayOnboarding() = onReplayOnboarding()
 
+    override fun setAudioEnabled(on: Boolean) {
+        prefs.edit { putBoolean(AUDIO_ENABLED, on) }
+        _state.value = _state.value.copy(audioEnabled = on)
+    }
+
     override fun setWifiEnabled(on: Boolean) {
         prefs.edit { putBoolean(WIFI_ENABLED, on) }
         _state.value = _state.value.copy(wifiEnabled = on)
@@ -481,6 +490,9 @@ class SettingsStore(
     companion object {
         /** Pref key of the Wi-Fi switch, read by MainActivity. */
         const val WIFI_ENABLED = "wifi_enabled"
+
+        /** Pref key of the audio switch, read by MainActivity when a session starts. */
+        const val AUDIO_ENABLED = "audio_enabled"
 
         fun create(
             context: Context,

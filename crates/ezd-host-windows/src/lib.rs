@@ -12,6 +12,7 @@
 
 pub mod accent;
 pub mod annexb;
+pub mod audio_math;
 pub mod cursor_shape;
 pub mod display_topology;
 pub mod hdr_math;
@@ -29,7 +30,7 @@ pub mod vdd_xml;
 mod win;
 
 pub use ezd_host_core::PlatformOptions;
-use ezd_host_core::{InputBackend, PlatformError, VideoSource};
+use ezd_host_core::{AudioSource, InputBackend, PlatformError, VideoSource};
 use std::sync::Arc;
 
 /// Creates the virtual display + capture + encode pipeline.
@@ -52,6 +53,20 @@ pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
     #[cfg(windows)]
     {
         Some(Arc::new(win::input::WinInputBackend::new()))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// System audio capture (WASAPI loopback of the default output device); `None` on other
+/// targets. Creating it does no device work: that starts in `AudioSource::start`. The PC keeps
+/// playing the audio locally.
+pub fn audio_source() -> Option<Box<dyn AudioSource>> {
+    #[cfg(windows)]
+    {
+        Some(Box::new(win::audio::WasapiLoopback::new()))
     }
     #[cfg(not(windows))]
     {

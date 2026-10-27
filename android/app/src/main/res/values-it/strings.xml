@@ -86,6 +86,9 @@
     <string name="settings_zoom_summary">%1$s× · %2$d ms</string>
     <string name="settings_palm_title">Rifiuto del palmo</string>
     <string name="settings_palm_desc">Ignora le dita mentre la penna è vicina</string>
+    <string name="section_audio">Audio</string>
+    <string name="settings_audio_title">Audio</string>
+    <string name="settings_audio_desc">Riproduci l\'audio del PC sul tablet</string>
     <string name="settings_on">Attivo</string>
     <string name="settings_off">Disattivato</string>
     <string name="keys_current_combination">Combinazione attuale</string>

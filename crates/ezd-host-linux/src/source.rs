@@ -12,6 +12,7 @@ use crate::portal::SourceKind;
 use crate::provider::{FrameSource, OutputRequest, VirtualOutputProvider};
 use crate::pw::{Frames, PwCapture, PwParams, default_intel_modifiers, default_nvidia_modifiers};
 use crate::wl_capture::WlCapture;
+use crate::x11_capture::X11Capture;
 use ezd_host_core::{
     CursorSink, EncodedFrame, OutputInfo, PlatformOptions, SourceError, SourceHdr, VideoSource,
 };
@@ -103,11 +104,12 @@ enum Input {
     },
 }
 
-/// Where the frames come from: PipeWire (KDE, GNOME) or the compositor's Wayland capture
-/// protocols (sway, Hyprland).
+/// Where the frames come from: PipeWire (KDE, GNOME), the compositor's Wayland capture
+/// protocols (sway, Hyprland) or `GetImage` on the root window (X11).
 enum Capture {
     Pw(PwCapture),
     Wl(WlCapture),
+    X11(X11Capture),
 }
 
 impl Capture {
@@ -115,6 +117,7 @@ impl Capture {
         match self {
             Capture::Pw(c) => c.wait_format(want, timeout),
             Capture::Wl(c) => c.wait_format(want, timeout),
+            Capture::X11(c) => c.wait_format(want, timeout),
         }
     }
 
@@ -122,6 +125,7 @@ impl Capture {
         match self {
             Capture::Pw(c) => c.wait_any_format(timeout),
             Capture::Wl(c) => c.wait_any_format(timeout),
+            Capture::X11(c) => c.wait_any_format(timeout),
         }
     }
 
@@ -129,6 +133,7 @@ impl Capture {
         match self {
             Capture::Pw(c) => c.next(timeout),
             Capture::Wl(c) => c.next(timeout),
+            Capture::X11(c) => c.next(timeout),
         }
     }
 
@@ -136,6 +141,7 @@ impl Capture {
         match self {
             Capture::Pw(c) => c.frames(),
             Capture::Wl(c) => c.frames(),
+            Capture::X11(c) => c.frames(),
         }
     }
 
@@ -143,10 +149,11 @@ impl Capture {
         match self {
             Capture::Pw(c) => c.counters(),
             Capture::Wl(c) => c.counters(),
+            Capture::X11(c) => c.counters(),
         }
     }
 
-    /// Falls back to shared memory (PipeWire only: Wayland capture never uses DMA-BUF).
+    /// Falls back to shared memory (PipeWire only: Wayland and X11 capture never use DMA-BUF).
     fn disable_dmabuf(&self) {
         if let Capture::Pw(c) = self {
             c.disable_dmabuf();
@@ -330,6 +337,12 @@ impl VideoSource for LinuxSource {
                     "capturing {output} over Wayland"
                 );
                 Capture::Wl(wl)
+            }
+            FrameSource::X11 { rect } => {
+                let x =
+                    X11Capture::start(rect, cfg.refresh_mhz, cursor).map_err(SourceError::msg)?;
+                tracing::info!(shm = x.uses_shm(), ?rect, "capturing the X screen");
+                Capture::X11(x)
             }
         };
         let fmt = capture

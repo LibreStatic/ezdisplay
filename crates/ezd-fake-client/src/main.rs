@@ -38,6 +38,8 @@ struct Args {
     input_script: Option<ScriptArg>,
     #[arg(long)]
     exit_after_script: bool,
+    #[arg(long)]
+    audio: bool,
     #[arg(long, hide = true)]
     proto_minor: Option<u16>,
     #[cfg(feature = "wifi")]
@@ -85,7 +87,8 @@ fn command(l: &FluentLanguageLoader) -> Command {
         .mut_arg("input_script", |a| a.help(fl!(l, "arg-input-script")))
         .mut_arg("exit_after_script", |a| {
             a.help(fl!(l, "arg-exit-after-script"))
-        });
+        })
+        .mut_arg("audio", |a| a.help(fl!(l, "arg-audio")));
     #[cfg(feature = "wifi")]
     let cmd = cmd
         .mut_arg("wifi", |a| a.help(fl!(l, "arg-wifi")))
@@ -136,6 +139,7 @@ async fn main() -> Result<()> {
         }),
         stop_after_script: a.exit_after_script,
         proto_minor: a.proto_minor,
+        audio: a.audio,
         ..Default::default()
     };
 

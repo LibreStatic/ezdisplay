@@ -79,6 +79,7 @@ pub fn section() -> Value {
     });
     let extra = match detected {
         Ok(LinuxBackend::Gnome) => json!({ "gnome": crate::gnome::diag() }),
+        Ok(LinuxBackend::X11) => json!({ "x11": crate::x11_output::diag() }),
         Ok(b @ (LinuxBackend::Sway | LinuxBackend::Hyprland)) => {
             let compositor = if b == LinuxBackend::Sway {
                 crate::sway::diag()

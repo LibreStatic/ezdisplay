@@ -660,6 +660,11 @@ mod tests {
                         t0_us: 7,
                     }))
                     .unwrap();
+                    tx.send(&ezd_proto::Message::AudioPacket(ezd_proto::AudioPacket {
+                        pts_us: 9,
+                        data: vec![1, 2, 3],
+                    }))
+                    .unwrap();
                     // Waits for the client's Bye so the connection outlives the exchange.
                     let _ = rx.recv().await;
                 } else {
@@ -700,7 +705,9 @@ mod tests {
             let link = conn.open_session().await.unwrap();
             assert!(link.has_video_stream());
             let (tx, mut rx, _t) = link.into_mux(1024);
-            let m = rx.recv().await.unwrap().unwrap();
+            // The ping travels on the control stream, the audio packet on its own stream.
+            let mut m = vec![rx.recv().await.unwrap().unwrap()];
+            m.push(rx.recv().await.unwrap().unwrap());
             tx.send(&ezd_proto::Message::Bye(ezd_proto::Bye {
                 reason: "done".into(),
             }))
@@ -709,9 +716,15 @@ mod tests {
         };
         let (h, m) = tokio::join!(host_once(&f, Some(host.fingerprint)), session);
         h.unwrap();
-        assert_eq!(
-            m,
-            ezd_proto::Message::Ping(ezd_proto::Ping { seq: 1, t0_us: 7 })
+        assert!(m.contains(&ezd_proto::Message::Ping(ezd_proto::Ping {
+            seq: 1,
+            t0_us: 7
+        })));
+        assert!(
+            m.contains(&ezd_proto::Message::AudioPacket(ezd_proto::AudioPacket {
+                pts_us: 9,
+                data: vec![1, 2, 3],
+            }))
         );
     }
 

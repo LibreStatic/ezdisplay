@@ -8,6 +8,7 @@
 //!   "decoders": [{"codec": "h264", "name": "c2.qti.avc.decoder", "hardware": true,
 //!                 "low_latency": true, "max_width": 4096, "max_height": 4096, "max_fps": 240, "hdr10": false}],
 //!   "hdr": {"display_hdr10": true, "max_nits": 1000, "max_avg_nits": 600, "min_millinits": 0},
+//!   "audio": true,
 //!   "stylus": true,
 //!   "max_touch_points": 10
 //! }
@@ -25,6 +26,8 @@ pub struct ParsedCaps {
     pub caps: ClientCaps,
     /// HDR10 capabilities for `ClientConfig.hdr`; `None` when the JSON has no `hdr` object.
     pub hdr: Option<ClientHdr>,
+    /// The user wants the PC's audio on this device (`"audio"`, default false).
+    pub audio: bool,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +39,8 @@ struct JsonCaps {
     decoders: Vec<JsonDecoder>,
     #[serde(default)]
     hdr: Option<JsonHdr>,
+    #[serde(default)]
+    audio: bool,
     #[serde(default)]
     stylus: bool,
     #[serde(default = "default_touch")]
@@ -145,6 +150,7 @@ pub fn parse_caps(json: &str) -> Result<ParsedCaps, String> {
     });
     Ok(ParsedCaps {
         hdr,
+        audio: j.audio,
         device_name: if j.device_name.is_empty() {
             "android".into()
         } else {
@@ -248,6 +254,14 @@ mod tests {
             choose_decoder(&c, Codec::H264).unwrap().name,
             "c2.a.avc.decoder"
         );
+    }
+
+    #[test]
+    fn audio_switch_defaults_off() {
+        assert!(!parse_caps(JSON).unwrap().audio);
+        let json = r#"{"audio": true,
+            "display": {"width_px": 1, "height_px": 1, "refresh_rates_mhz": [60000]}}"#;
+        assert!(parse_caps(json).unwrap().audio);
     }
 
     #[test]

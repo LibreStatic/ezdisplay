@@ -86,6 +86,9 @@
     <string name="settings_zoom_summary">%1$s× · %2$d ms</string>
     <string name="settings_palm_title">Handballenerkennung</string>
     <string name="settings_palm_desc">Ignoriert Finger, solange der Stift in der Nähe ist</string>
+    <string name="section_audio">Audio</string>
+    <string name="settings_audio_title">Audio</string>
+    <string name="settings_audio_desc">Gib den Ton des PCs auf dem Tablet wieder</string>
     <string name="settings_on">Ein</string>
     <string name="settings_off">Aus</string>
     <string name="keys_current_combination">Aktuelle Kombination</string>

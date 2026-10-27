@@ -1,9 +1,10 @@
 //! Which Linux desktop the host runs on: picks the virtual output provider and the input backend.
 //!
 //! Detection is a pure function over the environment and two bus probes, so it can be tested
-//! without a session: `EZD_LINUX_BACKEND`, then `XDG_CURRENT_DESKTOP`, then the compositors' bus
-//! names (a host started over ssh or from a stripped environment has no desktop variable), then
-//! the sway and Hyprland variables.
+//! without a session: `EZD_LINUX_BACKEND`, then an X11 session (any desktop on X11 is driven
+//! through RandR, whatever `XDG_CURRENT_DESKTOP` says), then `XDG_CURRENT_DESKTOP`, then the
+//! compositors' bus names (a host started over ssh or from a stripped environment has no desktop
+//! variable), then the sway and Hyprland variables.
 
 use std::fmt;
 
@@ -19,6 +20,9 @@ pub enum LinuxBackend {
     /// Hyprland: headless output over its command socket, direct Wayland capture, per-device
     /// input mapping.
     Hyprland,
+    /// Any desktop on an X server: RandR 1.5 monitor, `XGetImage` capture, per-device input
+    /// transformation matrix.
+    X11,
 }
 
 impl LinuxBackend {
@@ -29,6 +33,7 @@ impl LinuxBackend {
             LinuxBackend::Gnome => "gnome",
             LinuxBackend::Sway => "sway",
             LinuxBackend::Hyprland => "hyprland",
+            LinuxBackend::X11 => "x11",
         }
     }
 
@@ -39,6 +44,7 @@ impl LinuxBackend {
             "gnome" => Some(LinuxBackend::Gnome),
             "sway" => Some(LinuxBackend::Sway),
             "hyprland" => Some(LinuxBackend::Hyprland),
+            "x11" => Some(LinuxBackend::X11),
             _ => None,
         }
     }
@@ -57,6 +63,12 @@ pub struct DetectEnv {
     pub override_backend: Option<String>,
     /// `XDG_CURRENT_DESKTOP`.
     pub desktop: Option<String>,
+    /// `XDG_SESSION_TYPE`.
+    pub session_type: Option<String>,
+    /// `DISPLAY` is set.
+    pub display: bool,
+    /// `WAYLAND_DISPLAY` is set.
+    pub wayland_display: bool,
     /// `SWAYSOCK` is set.
     pub sway_sock: bool,
     /// `HYPRLAND_INSTANCE_SIGNATURE` is set.
@@ -70,6 +82,9 @@ impl DetectEnv {
         DetectEnv {
             override_backend: var("EZD_LINUX_BACKEND"),
             desktop: var("XDG_CURRENT_DESKTOP"),
+            session_type: var("XDG_SESSION_TYPE"),
+            display: var("DISPLAY").is_some(),
+            wayland_display: var("WAYLAND_DISPLAY").is_some(),
             sway_sock: var("SWAYSOCK").is_some(),
             hyprland_signature: var("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
         }
@@ -98,6 +113,20 @@ pub fn from_desktop(desktop: &str) -> Option<LinuxBackend> {
         })
 }
 
+impl DetectEnv {
+    /// True for an X11 session: `XDG_SESSION_TYPE=x11`, or an X display without a Wayland one
+    /// (Xwayland sets `DISPLAY` on every Wayland session, so `WAYLAND_DISPLAY` wins).
+    /// A service started without `WAYLAND_DISPLAY` on a Wayland session still says `wayland` in
+    /// `XDG_SESSION_TYPE`, so that wins over a bare `DISPLAY`.
+    pub fn is_x11_session(&self) -> bool {
+        let session = self.session_type.as_deref().map(str::trim);
+        session.is_some_and(|t| t.eq_ignore_ascii_case("x11"))
+            || (self.display
+                && !self.wayland_display
+                && !session.is_some_and(|t| t.eq_ignore_ascii_case("wayland")))
+    }
+}
+
 /// Detects the backend. `probe` is only called when the environment does not decide. `Err` is an
 /// invalid `EZD_LINUX_BACKEND`; `Ok(None)` means nothing was recognized.
 pub fn detect(
@@ -106,8 +135,11 @@ pub fn detect(
 ) -> Result<Option<LinuxBackend>, String> {
     if let Some(v) = &env.override_backend {
         return LinuxBackend::parse(v).map(Some).ok_or_else(|| {
-            format!("EZD_LINUX_BACKEND={v:?} is not one of kde, gnome, sway, hyprland")
+            format!("EZD_LINUX_BACKEND={v:?} is not one of kde, gnome, sway, hyprland, x11")
         });
+    }
+    if env.is_x11_session() {
+        return Ok(Some(LinuxBackend::X11));
     }
     if let Some(b) = env.desktop.as_deref().and_then(from_desktop) {
         return Ok(Some(b));
@@ -167,7 +199,7 @@ pub fn current() -> Result<LinuxBackend, String> {
         Some(b) => Ok(b),
         None => {
             tracing::warn!(
-                "no supported desktop recognized; assuming KDE (set EZD_LINUX_BACKEND=kde|gnome to choose)"
+                "no supported desktop recognized; assuming KDE (set EZD_LINUX_BACKEND=kde|gnome|sway|hyprland|x11 to choose)"
             );
             Ok(LinuxBackend::Kde)
         }
@@ -276,8 +308,59 @@ mod tests {
             LinuxBackend::Gnome,
             LinuxBackend::Sway,
             LinuxBackend::Hyprland,
+            LinuxBackend::X11,
         ] {
             assert_eq!(LinuxBackend::parse(b.name()), Some(b));
         }
+    }
+
+    fn x11_env(session: Option<&str>, display: bool, wayland: bool, desktop: &str) -> DetectEnv {
+        DetectEnv {
+            session_type: session.map(str::to_string),
+            display,
+            wayland_display: wayland,
+            ..env(Some(desktop))
+        }
+    }
+
+    #[test]
+    fn x11_sessions_win_over_the_desktop_name() {
+        for desktop in ["KDE", "GNOME", "XFCE", "X-Cinnamon", "MATE", "i3"] {
+            let e = x11_env(Some("x11"), true, false, desktop);
+            assert_eq!(
+                detect(&e, || panic!("no probe")),
+                Ok(Some(LinuxBackend::X11)),
+                "{desktop}"
+            );
+        }
+        // A session type alone is enough, and so is a bare DISPLAY.
+        let e = x11_env(Some("X11"), false, false, "KDE");
+        assert_eq!(detect(&e, || NO_BUS), Ok(Some(LinuxBackend::X11)));
+        let e = x11_env(Some("tty"), true, false, "");
+        assert_eq!(detect(&e, || NO_BUS), Ok(Some(LinuxBackend::X11)));
+    }
+
+    #[test]
+    fn xwayland_does_not_make_a_wayland_session_x11() {
+        // Every Wayland session also has DISPLAY (Xwayland).
+        let e = x11_env(Some("wayland"), true, true, "GNOME");
+        assert_eq!(detect(&e, || NO_BUS), Ok(Some(LinuxBackend::Gnome)));
+        let e = x11_env(None, true, true, "KDE");
+        assert_eq!(detect(&e, || NO_BUS), Ok(Some(LinuxBackend::Kde)));
+        // A service that lost WAYLAND_DISPLAY but still has the session type.
+        let e = x11_env(Some("wayland"), true, false, "KDE");
+        assert_eq!(detect(&e, || NO_BUS), Ok(Some(LinuxBackend::Kde)));
+        let mut e = x11_env(None, true, true, "");
+        e.sway_sock = true;
+        assert_eq!(detect(&e, || NO_BUS), Ok(Some(LinuxBackend::Sway)));
+    }
+
+    #[test]
+    fn the_override_beats_the_x11_session() {
+        let mut e = x11_env(Some("x11"), true, false, "KDE");
+        e.override_backend = Some("kde".into());
+        assert_eq!(detect(&e, || NO_BUS), Ok(Some(LinuxBackend::Kde)));
+        e.override_backend = Some("X11".into());
+        assert_eq!(detect(&e, || NO_BUS), Ok(Some(LinuxBackend::X11)));
     }
 }

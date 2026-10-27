@@ -1,6 +1,8 @@
 package com.librestatic.ezdisplay.settings
 
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -31,7 +33,8 @@ class SettingsListDetailTest : SettingsUiTestBase() {
     @Test fun sectionValuesSummarizeState() {
         launch { putString(InputPrefs.PROFILE, "drawing") }
         rule.onNodeWithText("2× · 300 ms").assertExists()
-        rule.onNodeWithText(str(R.string.settings_on)).assertExists()
+        // Touch (palm rejection) and Audio are both on by default.
+        rule.onAllNodesWithText(str(R.string.settings_on)).assertCountEquals(2)
     }
 
     @Test fun selectingZoomShowsZoomContent() {

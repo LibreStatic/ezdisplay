@@ -9,23 +9,23 @@
 //! Streams (see `docs/protocol.md`):
 //! * control, bidirectional, opened by the client: [`LinkOpen`] / [`LinkReply`], then the framed
 //!   control traffic;
-//! * cursor and video, unidirectional, opened by the host after [`LinkReply::Accepted`];
+//! * cursor, video and audio, unidirectional, opened by the host after [`LinkReply::Accepted`]
+//!   (the audio stream stays empty when the session has no audio);
 //! * input, unidirectional, opened by the client after it read [`LinkReply::Accepted`].
 //!
 //! Every unidirectional stream starts with one tag byte ([`CURSOR_STREAM_TAG`],
-//! [`VIDEO_STREAM_TAG`], [`INPUT_STREAM_TAG`]) and then carries the framed messages of its
-//! channel. The receiver dispatches by tag, not by arrival order. Audio will be one more stream
-//! ([`AUDIO_STREAM_TAG`] is reserved).
+//! [`VIDEO_STREAM_TAG`], [`AUDIO_STREAM_TAG`], [`INPUT_STREAM_TAG`]) and then carries the framed messages of its
+//! channel. The receiver dispatches by tag, not by arrival order.
 //!
-//! Send priorities (higher first): control 4, input 3, cursor 2, audio 1 (reserved), video 0.
+//! Send priorities (higher first): control 4, input 3, cursor 2, audio 1, video 0.
 //! Each channel has its own stream, so a lost packet delays only the channel it belongs to.
 
 use crate::identity::{Identity, fingerprint_of};
 use crate::link::{BoxRead, BoxWrite, Lanes, Link};
 use ezd_proto::ProtoError;
 use ezd_proto::pair::{
-    self, ALPN, CURSOR_STREAM_TAG, Fingerprint, INPUT_STREAM_TAG, LinkOpen, LinkReply,
-    MAX_PREAMBLE_LEN, Refusal, VIDEO_STREAM_TAG,
+    self, ALPN, AUDIO_STREAM_TAG, CURSOR_STREAM_TAG, Fingerprint, INPUT_STREAM_TAG, LinkOpen,
+    LinkReply, MAX_PREAMBLE_LEN, Refusal, VIDEO_STREAM_TAG,
 };
 use quinn::{Connection, Endpoint, RecvStream, SendStream, VarInt};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -48,13 +48,15 @@ use tokio::io::{AsyncRead, ReadBuf};
 const SERVER_NAME: &str = "ezdisplay";
 /// Time allowed for each preamble step (open, reply, lane streams).
 pub const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long to wait for the audio stream, which a peer from before audio never opens or allows.
+const OPTIONAL_STREAM_GRACE: Duration = Duration::from_millis(500);
 /// Application close code for a normal end or a refusal.
 const CLOSE_OK: u32 = 0;
-/// Send priorities (higher is served first). 1 is left for audio, which slots between cursor
-/// and video.
+/// Send priorities (higher is served first); audio slots between cursor and video.
 const CONTROL_PRIORITY: i32 = 4;
 const INPUT_PRIORITY: i32 = 3;
 const CURSOR_PRIORITY: i32 = 2;
+const AUDIO_PRIORITY: i32 = 1;
 const VIDEO_PRIORITY: i32 = 0;
 
 /// Congestion controller of a Wi-Fi link.
@@ -168,7 +170,7 @@ fn transport(cc: Congestion, side: Side) -> quinn::TransportConfig {
             .stream_receive_window(VarInt::from_u32(8 << 20))
             .receive_window(VarInt::from_u32(16 << 20))
             .max_concurrent_bidi_streams(VarInt::from_u32(0))
-            .max_concurrent_uni_streams(VarInt::from_u32(2)),
+            .max_concurrent_uni_streams(VarInt::from_u32(3)),
     };
     if cc == Congestion::Bbr {
         t.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
@@ -366,18 +368,24 @@ impl QuicConn {
             }
         }
         let input = open_tagged(&self.conn, INPUT_STREAM_TAG, INPUT_PRIORITY).await?;
-        let [cursor, video] =
-            accept_tagged(&self.conn, [CURSOR_STREAM_TAG, VIDEO_STREAM_TAG]).await?;
+        let ([cursor, video], audio) = accept_tagged_with_optional(
+            &self.conn,
+            [CURSOR_STREAM_TAG, VIDEO_STREAM_TAG],
+            AUDIO_STREAM_TAG,
+        )
+        .await?;
         let peer = format!("quic:{}", self.conn.remote_address());
         let keep = Arc::new(Lingering(self));
         let read = Lanes {
             input: None,
             cursor: Some(Box::new(Keep::new(cursor, &keep)) as BoxRead),
+            audio: audio.map(|a| Box::new(Keep::new(a, &keep)) as BoxRead),
             video: Some(Box::new(Keep::new(video, &keep)) as BoxRead),
         };
         let write = Lanes {
             input: Some(Box::new(input) as BoxWrite),
             cursor: None,
+            audio: None,
             video: None,
         };
         Ok(
@@ -423,23 +431,39 @@ impl Opened {
         self.conn.remote_address()
     }
 
-    /// Accepts a session: answers [`LinkReply::Accepted`], opens the cursor and video streams,
+    /// Accepts a session: answers [`LinkReply::Accepted`], opens the cursor, video and audio streams,
     /// accepts the client's input stream and returns the link.
     pub async fn accept_session(mut self) -> Result<Link, QuicError> {
         write_msg(&mut self.send, &LinkReply::Accepted).await?;
         let cursor = open_tagged(&self.conn.conn, CURSOR_STREAM_TAG, CURSOR_PRIORITY).await?;
         let video = open_tagged(&self.conn.conn, VIDEO_STREAM_TAG, VIDEO_PRIORITY).await?;
+        // A client from before audio allows only two unidirectional streams, so the open would
+        // wait for credit that never comes: give up after a short grace and go without the lane.
+        let audio = match tokio::time::timeout(
+            OPTIONAL_STREAM_GRACE,
+            open_tagged(&self.conn.conn, AUDIO_STREAM_TAG, AUDIO_PRIORITY),
+        )
+        .await
+        {
+            Ok(stream) => Some(stream?),
+            Err(_) => {
+                tracing::debug!("client takes no audio stream");
+                None
+            }
+        };
         let [input] = accept_tagged(&self.conn.conn, [INPUT_STREAM_TAG]).await?;
         let peer = format!("quic:{}", self.conn.remote_address());
         let keep = Arc::new(Lingering(self.conn));
         let read = Lanes {
             input: Some(Box::new(Keep::new(input, &keep)) as BoxRead),
             cursor: None,
+            audio: None,
             video: None,
         };
         let write = Lanes {
             input: None,
             cursor: Some(Box::new(cursor) as BoxWrite),
+            audio: audio.map(|a| Box::new(a) as BoxWrite),
             video: Some(Box::new(video) as BoxWrite),
         };
         Ok(Link::new(
@@ -496,6 +520,58 @@ async fn accept_tagged<const N: usize>(
         .await
         .map_err(|_| QuicError::Timeout)??;
     Ok(found.map(|s| s.expect("every tag was filled once")))
+}
+
+/// Like [`accept_tagged`] for `N` required streams plus one that an older peer never opens: after
+/// the required ones arrived, waits only [`OPTIONAL_STREAM_GRACE`] more for the `optional` one.
+async fn accept_tagged_with_optional<const N: usize>(
+    conn: &Connection,
+    tags: [u8; N],
+    optional: u8,
+) -> Result<([RecvStream; N], Option<RecvStream>), QuicError> {
+    async fn accept_one<const N: usize>(
+        conn: &Connection,
+        tags: &[u8; N],
+        optional: u8,
+        found: &mut [Option<RecvStream>; N],
+        extra: &mut Option<RecvStream>,
+    ) -> Result<(), QuicError> {
+        let mut stream = conn.accept_uni().await?;
+        let mut tag = [0u8; 1];
+        stream.read_exact(&mut tag).await?;
+        let slot = if tag[0] == optional {
+            extra
+        } else {
+            let i = tags
+                .iter()
+                .position(|&t| t == tag[0])
+                .ok_or(QuicError::Unexpected("unknown stream tag"))?;
+            &mut found[i]
+        };
+        if slot.replace(stream).is_some() {
+            return Err(QuicError::Unexpected("duplicate stream tag"));
+        }
+        Ok(())
+    }
+    let mut found: [Option<RecvStream>; N] = std::array::from_fn(|_| None);
+    let mut extra: Option<RecvStream> = None;
+    let required = async {
+        while found.iter().any(Option::is_none) {
+            accept_one(conn, &tags, optional, &mut found, &mut extra).await?;
+        }
+        Ok::<_, QuicError>(())
+    };
+    tokio::time::timeout(PREAMBLE_TIMEOUT, required)
+        .await
+        .map_err(|_| QuicError::Timeout)??;
+    if extra.is_none() {
+        let more = accept_one(conn, &tags, optional, &mut found, &mut extra);
+        match tokio::time::timeout(OPTIONAL_STREAM_GRACE, more).await {
+            Ok(r) => r?,
+            Err(_) => tracing::debug!("host opened no audio stream"),
+        }
+    }
+    Ok((found.map(|s| s.expect("every tag was filled once")), extra))
 }
 
 /// Finishes `send`, waits briefly for the peer to read it, then closes the connection.
