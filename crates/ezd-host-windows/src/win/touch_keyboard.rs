@@ -52,9 +52,11 @@ fn read_dword(subkey: &str, name: &str) -> Result<Option<u32>, String> {
     check(r).map(|()| Some(v))
 }
 
-fn read_string(subkey: &str, name: &str) -> Result<Option<String>, String> {
+/// Reads a REG_SZ value of the current user (up to 255 characters); `Ok(None)` if it does not
+/// exist.
+pub(super) fn read_string(subkey: &str, name: &str) -> Result<Option<String>, String> {
     let (sk, n) = (wide(subkey), wide(name));
-    let mut buf = [0u16; 64];
+    let mut buf = [0u16; 256];
     let mut bytes = std::mem::size_of_val(&buf) as u32;
     // SAFETY: valid NUL-terminated strings; `buf` is `bytes` bytes long.
     let r = unsafe {
@@ -89,7 +91,7 @@ fn write_dword(subkey: &str, name: &str, v: u32) -> Result<(), String> {
     })
 }
 
-fn write_string(subkey: &str, name: &str, s: &str) -> Result<(), String> {
+pub(super) fn write_string(subkey: &str, name: &str, s: &str) -> Result<(), String> {
     let (sk, n, data) = (wide(subkey), wide(name), wide(s));
     // SAFETY: valid NUL-terminated strings; `data` is `2 * len` bytes including the NUL.
     check(unsafe {
@@ -105,7 +107,7 @@ fn write_string(subkey: &str, name: &str, s: &str) -> Result<(), String> {
 }
 
 /// Deletes a value; a value that does not exist counts as deleted.
-fn delete_value(subkey: &str, name: &str) -> Result<(), String> {
+pub(super) fn delete_value(subkey: &str, name: &str) -> Result<(), String> {
     let (sk, n) = (wide(subkey), wide(name));
     // SAFETY: valid NUL-terminated strings.
     let r =

@@ -61,8 +61,8 @@ pub fn input_backend() -> Option<Arc<dyn InputBackend>> {
 }
 
 /// System audio capture (WASAPI loopback of the default output device); `None` on other
-/// targets. Creating it does no device work: that starts in `AudioSource::start`. The PC keeps
-/// playing the audio locally.
+/// targets. Creating it does no device work: that starts in `AudioSource::start`, which also
+/// mutes the PC output until capture stops.
 pub fn audio_source() -> Option<Box<dyn AudioSource>> {
     #[cfg(windows)]
     {
@@ -72,6 +72,13 @@ pub fn audio_source() -> Option<Box<dyn AudioSource>> {
     {
         None
     }
+}
+
+/// Puts back the PC audio output if a host that crashed during a session left it muted. Call
+/// once when the host starts serving. No-op on other targets.
+pub fn recover_audio_after_crash() {
+    #[cfg(windows)]
+    win::audio::recover_after_crash();
 }
 
 /// Platform-specific diagnostics for `ezd-host diag`.

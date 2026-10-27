@@ -61,7 +61,7 @@ Working today, over USB with ADB:
 | Locally drawn cursor | ✅ | ✅ | 🧪 | 🧪 | 🧪 |
 | Zero-copy hardware encode | ✅ | ✅ | 🧪 | ❌ shared-memory capture | ❌ shared-memory capture |
 | Touch, pen pressure, tilt and hover | ✅ | ✅ | 🧪 | 🧪 | 🧪 |
-| PC audio on the tablet, with volume kept in sync | 🧪 audio only, no volume sync | ✅ | 🧪 | 🧪 | 🧪 |
+| PC audio on the tablet, with volume kept in sync | 🧪 | ✅ | 🧪 | 🧪 | 🧪 |
 | Tray app with settings and live statistics | ✅ | ✅ | 🧪 | 🧪 | 🧪 |
 | Installer / packages | ✅ `.exe` | ✅ AppImage, `.deb`, Arch | 🧪 AppImage, `.deb`, Arch | 🧪 AppImage, `.deb`, Arch | 🧪 AppImage, `.deb`, Arch |
 
@@ -103,8 +103,12 @@ The PC's sound plays on the tablet while a session runs.
 - **Linux:** the host adds a PipeWire output named `ezdisplay` and makes it the default for as long
   as the session lasts, then puts the previous default back. Its volume and mute follow the tablet's
   and the other way round.
-- **Windows:** the host captures what the default output plays (WASAPI loopback). The PC keeps
-  playing it too, and the volume is not synced.
+- **Windows:** the host captures what the default output plays (WASAPI loopback) and mutes that
+  output for as long as the session lasts, so the PC stays quiet; the capture is unaffected by the
+  mute and the volume slider. The slider follows the tablet's volume and the other way round; the
+  tablet's mute stays on the tablet. Afterwards the output gets its volume back and is unmuted.
+  Unmute it with the speaker button to hear the PC as well. If the host crashes, it restores the
+  output on its next start.
 - Over a fast link the audio is uncompressed PCM, otherwise Opus. Choose with `--audio
   auto|pcm|opus|off` or `audio = "..."` in `config.toml`, or in the tray settings.
 - The tablet buffers 20 to 80 ms of audio, growing the buffer when playback stutters and shrinking

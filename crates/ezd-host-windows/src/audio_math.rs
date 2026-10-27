@@ -1,6 +1,6 @@
 //! Pure logic of the WASAPI loopback capture (`win/audio.rs`): the shared-mode format request,
-//! frame/sample math, the silent-packet flag and the packet timestamp. Platform independent and
-//! unit-tested everywhere.
+//! frame/sample math, the silent-packet flag, the packet timestamp and the saved state of the
+//! output device. Platform independent and unit-tested everywhere.
 
 /// Sample rate of the audio stream (fixed by the protocol).
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -83,6 +83,56 @@ pub fn packet_samples(raw: &[u8], frames: u32, channels: u16, flags: u32) -> Vec
         .collect()
 }
 
+/// What a session changed on the output device, persisted while it runs so a host that crashed
+/// can put it back on its next start.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedOutput {
+    /// `IMMDevice::GetId` of the output device.
+    pub device_id: String,
+    /// Master volume (the slider value, 0..=1) before the session.
+    pub volume: f32,
+    /// True if the session muted the device (it was not muted before).
+    pub muted_by_us: bool,
+}
+
+impl SavedOutput {
+    const VERSION: &str = "v1";
+
+    /// `v1;<muted_by_us 0|1>;<volume>;<device id>`.
+    pub fn encode(&self) -> String {
+        format!(
+            "{};{};{};{}",
+            Self::VERSION,
+            u8::from(self.muted_by_us),
+            self.volume,
+            self.device_id
+        )
+    }
+
+    /// Inverse of [`encode`](Self::encode); `None` for anything malformed.
+    pub fn decode(s: &str) -> Option<Self> {
+        let mut parts = s.splitn(4, ';');
+        if parts.next()? != Self::VERSION {
+            return None;
+        }
+        let muted_by_us = match parts.next()? {
+            "0" => false,
+            "1" => true,
+            _ => return None,
+        };
+        let volume: f32 = parts.next()?.parse().ok()?;
+        let device_id = parts.next()?;
+        if !(0.0..=1.0).contains(&volume) || device_id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            device_id: device_id.to_owned(),
+            volume,
+            muted_by_us,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +188,38 @@ mod tests {
         assert_eq!(packet_samples(&raw, 2, 2, 0), vec![0.5, -0.25, 1.0, 0.0]);
         assert_eq!(packet_samples(&raw, 1, 2, 0), vec![0.5, -0.25]);
         assert_eq!(packet_samples(&raw[..6], 2, 2, 0), vec![0.5]);
+    }
+
+    #[test]
+    fn saved_output_round_trips() {
+        let saved = SavedOutput {
+            device_id: "{0.0.0.00000000}.{6a1f2c3d-0000-4e5f-8a9b-0123456789ab}".into(),
+            volume: 0.42,
+            muted_by_us: true,
+        };
+        assert_eq!(SavedOutput::decode(&saved.encode()), Some(saved.clone()));
+        let unmuted = SavedOutput {
+            muted_by_us: false,
+            volume: 1.0,
+            ..saved
+        };
+        assert_eq!(SavedOutput::decode(&unmuted.encode()), Some(unmuted));
+    }
+
+    #[test]
+    fn malformed_saved_output_is_rejected() {
+        for s in [
+            "",
+            "v1",
+            "v2;1;0.5;{dev}",
+            "v1;2;0.5;{dev}",
+            "v1;1;loud;{dev}",
+            "v1;1;1.5;{dev}",
+            "v1;1;NaN;{dev}",
+            "v1;1;0.5;",
+            "v1;1;0.5",
+        ] {
+            assert_eq!(SavedOutput::decode(s), None, "{s:?}");
+        }
     }
 }

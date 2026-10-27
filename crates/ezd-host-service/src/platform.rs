@@ -47,6 +47,12 @@ pub fn audio_source() -> Option<Box<dyn AudioSource>> {
     }
 }
 
+/// Puts back what a crashed session left changed in the PC audio output (Windows mutes it).
+pub fn recover_audio_after_crash() {
+    #[cfg(windows)]
+    imp::recover_audio_after_crash();
+}
+
 /// Removes a virtual display left on the desktop for a quick reconnect (Windows).
 pub fn release_virtual_display() {
     #[cfg(windows)]
