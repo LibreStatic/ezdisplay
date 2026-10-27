@@ -55,5 +55,19 @@
                 <data android:scheme="ezd" android:host="pair" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".screensaver.ScreensaverPreviewActivity"
+            android:exported="false"
+            android:theme="@style/Theme.EzDisplay">
+            <intent-filter>
+                <action android:name="com.librestatic.ezdisplay.action.PREVIEW_SCREENSAVER" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".onboarding.OnboardingActivity"
+            android:exported="false"
+            android:label="@string/onboarding_welcome_title"
+            android:theme="@style/Theme.EzDisplay.Settings" />
     </application>
 </manifest>

@@ -25,6 +25,7 @@ run-video-window = Fotogrammi video che possono essere inviati senza conferma da
 run-telemetry = Chiede al tablet di mostrare la sovrapposizione di telemetria.
 run-no-input = Non inietta l'input dal tablet.
 run-pen-mode = Come viene iniettata la penna: "tablet" è una tavoletta grafica con pressione e inclinazione, "mouse" è un puntatore del mouse assoluto.
+run-audio = Audio del PC trasmesso al tablet: "auto" usa il PCM non compresso se il collegamento lo permette e Opus altrimenti, "pcm" preferisce il PCM, "opus" preferisce Opus, "off" non trasmette audio.
 
 vdd-status = Mostra lo stato dell'installazione del VDD in JSON (non modifica nulla).
 vdd-setup = Configurazione una tantum, da eseguire come amministratore: consente agli utenti normali di modificare le impostazioni del VDD, assegna facoltativamente la GPU e aggiunge modalità in anticipo, poi ricarica il driver.

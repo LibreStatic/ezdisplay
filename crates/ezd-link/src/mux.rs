@@ -2,7 +2,7 @@
 //!
 //! [`MuxSender`] (cloneable) queues messages; a single writer task serializes
 //! them onto the link with strict priority
-//! `Control > Input > CursorShape > CursorState > Video`:
+//! `Control > Input > CursorShape > CursorState > Audio > Video`:
 //!
 //! * control messages and cursor shapes are reliable FIFO;
 //! * input messages (pen, touch, buttons, scroll) are reliable FIFO too. When
@@ -13,6 +13,9 @@
 //!   frame, replaces it; transitions are never dropped;
 //! * [`CursorState`] is *latest wins*: a newer state replaces one that has not
 //!   been written yet;
+//! * audio packets are a short FIFO: when more than [`AUDIO_BACKLOG`] are queued the oldest is
+//!   dropped (counted in [`MuxStats::audio_dropped`]), so a stalled link plays at most about
+//!   100 ms of stale sound once it recovers;
 //! * video frames are fragmented into chunks and the writer re-checks the
 //!   higher-priority queues between chunks, so a large keyframe delays control
 //!   or cursor traffic by at most one chunk;
@@ -25,7 +28,7 @@
 //!   pulling the newest frame only when a slot is free.
 //!
 //! [`spawn_mux_lanes`] serves the same queues onto several byte streams: a control
-//! stream plus, optionally, one *lane* each for input, cursor and video (audio will be one more).
+//! stream plus, optionally, one *lane* each for input, cursor, audio and video.
 //! A stalled or retransmitting lane cannot delay the others (head-of-line blocking on a
 //! QUIC-like transport). A channel without a lane is written on the control stream in the
 //! priority order above. Each lane has its own writer loop and wake-up. [`MuxReceiver::new_lanes`]
@@ -80,6 +83,10 @@ pub struct MuxStats {
     pub inputs_sent: u64,
     /// Input messages dropped by backlog coalescing (replaced by a newer one).
     pub inputs_coalesced: u64,
+    /// Audio packets written.
+    pub audio_sent: u64,
+    /// Audio packets dropped because more than [`AUDIO_BACKLOG`] were queued.
+    pub audio_dropped: u64,
     /// Video frames fully written.
     pub video_frames_sent: u64,
     /// Total frames (all channels, fragments counted individually) written.
@@ -87,6 +94,9 @@ pub struct MuxStats {
     /// Video frames whose ack did not arrive in time (credit released by timeout).
     pub ack_timeouts: u64,
 }
+
+/// Queued audio packets beyond which the oldest is dropped (about 100 ms of 10 ms packets).
+pub const AUDIO_BACKLOG: usize = 10;
 
 /// When a sent video frame stops holding the video credit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +207,7 @@ struct Queues {
     input: VecDeque<QueuedInput>,
     cursor_shapes: VecDeque<Encoded>,
     cursor_state: Option<Encoded>,
+    audio: VecDeque<Encoded>,
     video: VecDeque<Encoded>,
     /// A video frame is being written (popped from `video`).
     writing: bool,
@@ -221,6 +232,7 @@ struct Shared {
     /// Wakes the writer of each lane that exists; the other channels use `wake`.
     wake_input: Notify,
     wake_cursor: Notify,
+    wake_audio: Notify,
     wake_video: Notify,
     /// Which channels have their own stream.
     lanes: Lanes<()>,
@@ -229,6 +241,8 @@ struct Shared {
     states_sent: AtomicU64,
     inputs_sent: AtomicU64,
     inputs_coalesced: AtomicU64,
+    audio_sent: AtomicU64,
+    audio_dropped: AtomicU64,
     videos_sent: AtomicU64,
     frames_written: AtomicU64,
     ack_timeouts: AtomicU64,
@@ -260,6 +274,7 @@ impl Shared {
         self.wake.notify_one();
         self.wake_input.notify_one();
         self.wake_cursor.notify_one();
+        self.wake_audio.notify_one();
         self.wake_video.notify_one();
     }
 
@@ -269,6 +284,7 @@ impl Shared {
             Lane::Control => (false, &self.wake),
             Lane::Input => (self.lanes.input.is_some(), &self.wake_input),
             Lane::Cursor => (self.lanes.cursor.is_some(), &self.wake_cursor),
+            Lane::Audio => (self.lanes.audio.is_some(), &self.wake_audio),
             Lane::Video => (self.lanes.video.is_some(), &self.wake_video),
         };
         if present {
@@ -285,6 +301,7 @@ enum Lane {
     Control,
     Input,
     Cursor,
+    Audio,
     Video,
 }
 
@@ -315,6 +332,8 @@ impl MuxSender {
     /// Queues any message on its channel.
     ///
     /// * [`CursorState`] replaces a pending one (latest wins);
+    /// * an [`AudioPacket`](ezd_proto::AudioPacket) is queued FIFO; beyond [`AUDIO_BACKLOG`]
+    ///   queued packets the oldest is dropped;
     /// * [`VideoFrame`] is queued behind earlier video frames, never dropped
     ///   (the credit is advisory, see [`wait_video_slot`](Self::wait_video_slot));
     /// * input messages go to a reliable FIFO served right after control; under
@@ -367,6 +386,14 @@ impl MuxSender {
                 Message::CursorShape(_) => {
                     q.cursor_shapes.push_back(enc);
                     Lane::Cursor
+                }
+                Message::AudioPacket(_) => {
+                    q.audio.push_back(enc);
+                    while q.audio.len() > AUDIO_BACKLOG {
+                        q.audio.pop_front();
+                        self.shared.audio_dropped.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Lane::Audio
                 }
                 Message::VideoFrame(_) => {
                     q.video.push_back(enc);
@@ -451,6 +478,8 @@ impl MuxSender {
             cursor_states_sent: self.shared.states_sent.load(Ordering::Relaxed),
             inputs_sent: self.shared.inputs_sent.load(Ordering::Relaxed),
             inputs_coalesced: self.shared.inputs_coalesced.load(Ordering::Relaxed),
+            audio_sent: self.shared.audio_sent.load(Ordering::Relaxed),
+            audio_dropped: self.shared.audio_dropped.load(Ordering::Relaxed),
             video_frames_sent: self.shared.videos_sent.load(Ordering::Relaxed),
             frames_written: self.shared.frames_written.load(Ordering::Relaxed),
             ack_timeouts: self.shared.ack_timeouts.load(Ordering::Relaxed),
@@ -488,6 +517,7 @@ fn new_shared(opts: MuxOptions, lanes: Lanes<()>) -> Arc<Shared> {
         wake: Notify::new(),
         wake_input: Notify::new(),
         wake_cursor: Notify::new(),
+        wake_audio: Notify::new(),
         wake_video: Notify::new(),
         lanes,
         slot,
@@ -495,6 +525,8 @@ fn new_shared(opts: MuxOptions, lanes: Lanes<()>) -> Arc<Shared> {
         states_sent: AtomicU64::new(0),
         inputs_sent: AtomicU64::new(0),
         inputs_coalesced: AtomicU64::new(0),
+        audio_sent: AtomicU64::new(0),
+        audio_dropped: AtomicU64::new(0),
         videos_sent: AtomicU64::new(0),
         frames_written: AtomicU64::new(0),
         ack_timeouts: AtomicU64::new(0),
@@ -530,6 +562,7 @@ pub fn spawn_mux_lanes(
     let present = Lanes {
         input: lanes.input.as_ref().map(|_| ()),
         cursor: lanes.cursor.as_ref().map(|_| ()),
+        audio: lanes.audio.as_ref().map(|_| ()),
         video: lanes.video.as_ref().map(|_| ()),
     };
     let shared = new_shared(opts, present);
@@ -560,11 +593,11 @@ async fn lanes_task(
     let serves = Serves {
         input: lanes.input.is_none(),
         cursor: lanes.cursor.is_none(),
+        audio: lanes.audio.is_none(),
         video: lanes.video.is_none(),
     };
     let res = {
         // `try_join!` returns at the first error and otherwise waits for every loop to drain.
-        // Audio: add its lane to `Lanes`, `Serves` and this join.
         tokio::try_join!(
             writer_loop(&shared, &mut control, chunk_len, serves),
             async {
@@ -576,6 +609,12 @@ async fn lanes_task(
             async {
                 match lanes.cursor.as_mut() {
                     Some(w) => cursor_loop(&shared, w, chunk_len).await,
+                    None => Ok(()),
+                }
+            },
+            async {
+                match lanes.audio.as_mut() {
+                    Some(w) => audio_loop(&shared, w, chunk_len).await,
                     None => Ok(()),
                 }
             },
@@ -599,6 +638,7 @@ async fn lanes_task(
         shut(Some(&mut control)),
         shut(lanes.input.as_mut()),
         shut(lanes.cursor.as_mut()),
+        shut(lanes.audio.as_mut()),
         shut(lanes.video.as_mut()),
     );
     if let Err(e) = &res {
@@ -612,11 +652,12 @@ async fn lanes_task(
 struct Serves {
     input: bool,
     cursor: bool,
+    audio: bool,
     video: bool,
 }
 
 /// Writer of the control stream: control, then (when they have no lane) input, cursor shapes,
-/// cursor state and video chunks, in that order.
+/// cursor state, audio and video chunks, in that order.
 async fn writer_loop(
     shared: &Shared,
     w: &mut BoxWrite,
@@ -642,6 +683,8 @@ async fn writer_loop(
                 Next::Whole(m, false)
             } else if let Some(m) = serves.cursor.then(|| q.cursor_state.take()).flatten() {
                 Next::Whole(m, true)
+            } else if let Some(m) = serves.audio.then(|| q.audio.pop_front()).flatten() {
+                Next::Whole(m, false)
             } else if in_flight.is_some() {
                 Next::VideoChunk
             } else if let Some(v) = serves.video.then(|| q.video.pop_front()).flatten() {
@@ -714,6 +757,9 @@ async fn write_whole(
     w.flush().await?;
     if is_state {
         shared.states_sent.fetch_add(1, Ordering::Relaxed);
+    }
+    if m.channel == Channel::Audio as u8 {
+        shared.audio_sent.fetch_add(1, Ordering::Relaxed);
     }
     Ok(())
 }
@@ -796,6 +842,22 @@ async fn cursor_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io:
                 write_whole(shared, w, &mut buf, &m, is_state, chunk_len).await?;
             }
             _ => shared.wake_cursor.notified().await,
+        }
+    }
+}
+
+/// Writer of the audio lane: FIFO, one write and flush per packet.
+async fn audio_loop(shared: &Shared, w: &mut BoxWrite, chunk_len: usize) -> io::Result<()> {
+    let mut buf: Vec<u8> = Vec::with_capacity(chunk_len + 16);
+    loop {
+        let (next, closing) = {
+            let mut q = shared.lock();
+            (q.audio.pop_front(), q.closing)
+        };
+        match next {
+            Some(m) => write_whole(shared, w, &mut buf, &m, false, chunk_len).await?,
+            None if closing => return Ok(()),
+            None => shared.wake_audio.notified().await,
         }
     }
 }
@@ -1005,7 +1067,9 @@ pub fn priority(ch: Channel) -> u8 {
 mod tests {
     use super::*;
     use crate::Link;
-    use ezd_proto::{Bye, CursorShape, Key, PenSample, Ping, PointerButton, Scroll, TouchFrame};
+    use ezd_proto::{
+        AudioPacket, Bye, CursorShape, Key, PenSample, Ping, PointerButton, Scroll, TouchFrame,
+    };
     use std::time::Duration;
     use tokio::time::{sleep, timeout};
 
@@ -1617,6 +1681,7 @@ mod tests {
         Lanes {
             input: Some(cap),
             cursor: Some(cap),
+            audio: Some(cap),
             video: Some(cap),
         }
     }
@@ -1634,6 +1699,7 @@ mod tests {
         for (cap, w, r) in [
             (caps.input, &mut writes.input, &mut reads.input),
             (caps.cursor, &mut writes.cursor, &mut reads.cursor),
+            (caps.audio, &mut writes.audio, &mut reads.audio),
             (caps.video, &mut writes.video, &mut reads.video),
         ] {
             if let Some(cap) = cap {
@@ -1678,6 +1744,13 @@ mod tests {
             hot_x: 0,
             hot_y: 0,
             rgba: vec![0; 4],
+        })
+    }
+
+    fn ap(pts: u64, n: usize) -> Message {
+        Message::AudioPacket(AudioPacket {
+            pts_us: pts,
+            data: vec![pts as u8; n],
         })
     }
 
@@ -1726,6 +1799,7 @@ mod tests {
         let lanes = Lanes {
             input: Some(Box::new(iw) as BoxWrite),
             cursor: Some(Box::new(kw) as BoxWrite),
+            audio: None,
             video: Some(Box::new(vw) as BoxWrite),
         };
         let (tx, _task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(4096));
@@ -1746,6 +1820,7 @@ mod tests {
         let lanes = Lanes {
             input: Some(Box::new(iw) as BoxWrite),
             cursor: Some(Box::new(kw) as BoxWrite),
+            audio: None,
             video: None,
         };
         let (tx, _task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(4096));
@@ -1799,10 +1874,82 @@ mod tests {
         tx.send(&shape(1)).unwrap();
         tx.send(&pen(1, PenSample::IN_RANGE)).unwrap();
         tx.send_control(ping(1)).unwrap();
+        tx.send(&ap(1, 8)).unwrap();
+        tx.send_video(vf(1, 100)).unwrap();
         assert!(matches!(recv(&mut rx).await, Message::Ping(_)));
         assert!(matches!(recv(&mut rx).await, Message::Pen(_)));
         assert!(matches!(recv(&mut rx).await, Message::CursorShape(_)));
         assert!(matches!(recv(&mut rx).await, Message::CursorState(_)));
+        assert!(matches!(recv(&mut rx).await, Message::AudioPacket(_)));
+        assert!(matches!(recv(&mut rx).await, Message::VideoFrame(_)));
+    }
+
+    #[tokio::test]
+    async fn audio_overtakes_big_video_on_one_stream() {
+        let (a, b) = Link::duplex_pair(8 * 1024);
+        let (tx, _arx, _t) = a.into_mux_with(onwrite(16 * 1024));
+        let (_btx, mut rx, _t2) = b.into_mux(16 * 1024);
+        tx.send_video(vf(1, 2 * 1024 * 1024)).unwrap();
+        sleep(Duration::from_millis(50)).await; // writer is now blocked mid-frame
+        tx.send(&ap(3, 16)).unwrap();
+        assert!(matches!(recv(&mut rx).await, Message::AudioPacket(p) if p.pts_us == 3));
+        assert!(matches!(recv(&mut rx).await, Message::VideoFrame(_)));
+        assert_eq!(tx.stats().audio_sent, 1);
+    }
+
+    #[tokio::test]
+    async fn audio_drops_the_oldest_beyond_the_backlog() {
+        for lanes in [false, true] {
+            let (tx, _task, mut rx) = if lanes {
+                lanes_pair(
+                    1 << 20,
+                    Lanes {
+                        audio: Some(1 << 20),
+                        ..Lanes::default()
+                    },
+                    onwrite(4096),
+                )
+            } else {
+                lanes_pair(1 << 20, Lanes::default(), onwrite(4096))
+            };
+            // Everything is queued before the writer can run (single-threaded test runtime).
+            for i in 0..25u64 {
+                tx.send(&ap(i, 8)).unwrap();
+            }
+            let mut got = vec![];
+            for _ in 0..AUDIO_BACKLOG {
+                match recv(&mut rx).await {
+                    Message::AudioPacket(p) => got.push(p.pts_us),
+                    m => panic!("{m:?}"),
+                }
+            }
+            let want: Vec<u64> = (25 - AUDIO_BACKLOG as u64..25).collect();
+            assert_eq!(got, want, "lanes: {lanes}");
+            let st = tx.stats();
+            assert_eq!(
+                (st.audio_dropped, st.audio_sent),
+                (15, 10),
+                "lanes: {lanes}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lanes_stalled_video_does_not_delay_audio_lane() {
+        let (cw, _cr) = tokio::io::duplex(64 * 1024);
+        let (aw, ar) = tokio::io::duplex(64 * 1024);
+        let (vw, _vr_never_read) = tokio::io::duplex(1024);
+        let lanes = Lanes {
+            audio: Some(Box::new(aw) as BoxWrite),
+            video: Some(Box::new(vw) as BoxWrite),
+            ..Lanes::default()
+        };
+        let (tx, _task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(4096));
+        let mut rx = MuxReceiver::new(Box::new(ar));
+        tx.send_video(vf(1, 1024 * 1024)).unwrap();
+        sleep(Duration::from_millis(50)).await;
+        tx.send(&ap(7, 32)).unwrap();
+        assert!(matches!(recv(&mut rx).await, Message::AudioPacket(p) if p.pts_us == 7));
     }
 
     #[tokio::test]
@@ -1810,10 +1957,12 @@ mod tests {
         let (cw, cr) = tokio::io::duplex(1 << 20);
         let (iw, ir) = tokio::io::duplex(1 << 20);
         let (kw, kr) = tokio::io::duplex(1 << 20);
+        let (aw, ar) = tokio::io::duplex(1 << 20);
         let (vw, vr) = tokio::io::duplex(1 << 20);
         let lanes = Lanes {
             input: Some(Box::new(iw) as BoxWrite),
             cursor: Some(Box::new(kw) as BoxWrite),
+            audio: Some(Box::new(aw) as BoxWrite),
             video: Some(Box::new(vw) as BoxWrite),
         };
         let (tx, _task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(4096));
@@ -1821,15 +1970,18 @@ mod tests {
         tx.send(&pen(1, PenSample::IN_RANGE)).unwrap();
         tx.send(&shape(1)).unwrap();
         tx.send_cursor_state(cs(1)).unwrap();
+        tx.send(&ap(1, 4)).unwrap();
         tx.send_video(vf(1, 100)).unwrap();
         let mut c = MuxReceiver::new(Box::new(cr));
         let mut i = MuxReceiver::new(Box::new(ir));
         let mut k = MuxReceiver::new(Box::new(kr));
+        let mut a = MuxReceiver::new(Box::new(ar));
         let mut v = MuxReceiver::new(Box::new(vr));
         assert!(matches!(recv(&mut c).await, Message::Ping(_)));
         assert!(matches!(recv(&mut i).await, Message::Pen(_)));
         assert!(matches!(recv(&mut k).await, Message::CursorShape(_)));
         assert!(matches!(recv(&mut k).await, Message::CursorState(_)));
+        assert!(matches!(recv(&mut a).await, Message::AudioPacket(_)));
         assert!(matches!(recv(&mut v).await, Message::VideoFrame(_)));
     }
 
@@ -1946,6 +2098,7 @@ mod tests {
         let lanes = Lanes {
             input: Some(Box::new(ir) as BoxRead),
             cursor: Some(Box::new(kr) as BoxRead),
+            audio: None,
             video: Some(Box::new(vr) as BoxRead),
         };
         let mut rx = MuxReceiver::new_lanes(Box::new(cr), lanes);
@@ -1988,7 +2141,7 @@ mod tests {
 
     #[tokio::test]
     async fn lanes_write_error_on_any_lane_closes_the_mux() {
-        for failing in ["input", "cursor", "video"] {
+        for failing in ["input", "cursor", "audio", "video"] {
             let (cw, _cr) = tokio::io::duplex(4096);
             let (ow, _or) = tokio::io::duplex(4096);
             let bad = || Some(Box::new(FailWriter) as BoxWrite);
@@ -1996,17 +2149,20 @@ mod tests {
             let mut lanes = Lanes {
                 input: ok(),
                 cursor: None,
+                audio: None,
                 video: None,
             };
             match failing {
                 "input" => lanes.input = bad(),
                 "cursor" => lanes.cursor = bad(),
+                "audio" => lanes.audio = bad(),
                 _ => lanes.video = bad(),
             }
             let (tx, task) = spawn_mux_lanes(Box::new(cw), lanes, onwrite(1024));
             match failing {
                 "input" => tx.send(&pen(1, PenSample::IN_RANGE)).unwrap(),
                 "cursor" => tx.send_cursor_state(cs(1)).unwrap(),
+                "audio" => tx.send(&ap(1, 8)).unwrap(),
                 _ => tx.send_video(vf(1, 100)).unwrap(),
             }
             let err = timeout(Duration::from_secs(5), task.join())

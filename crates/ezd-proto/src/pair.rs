@@ -21,7 +21,7 @@ pub const INPUT_STREAM_TAG: u8 = b'I';
 pub const CURSOR_STREAM_TAG: u8 = b'C';
 /// First byte of the host's video stream.
 pub const VIDEO_STREAM_TAG: u8 = b'V';
-/// First byte reserved for the audio stream (not used yet).
+/// First byte of the audio stream (QUIC backend, protocol 0.7).
 pub const AUDIO_STREAM_TAG: u8 = b'A';
 /// Largest preamble message payload.
 pub const MAX_PREAMBLE_LEN: usize = 1024;

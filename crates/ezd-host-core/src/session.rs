@@ -6,9 +6,11 @@
 //!   |<------------------- Hello --|
 //!   |-- ClientCaps -------------->|
 //!   |-- ClientHdr (minor >= 5) --->|     the host waits for it when the client speaks minor >= 5
+//!   |-- ClientAudio (minor >= 7) ->|     likewise; the host waits for it
 //!   |-- ClientPrefs (minor >= 8) ->|     codec and quality the client asks for
 //!   |<--------------- HostCaps ---|
 //!   |<------------ StreamColor ---|     minor >= 5 only
+//!   |<------------ AudioConfig ---|     minor >= 7 only; `stream: None` = no audio
 //!   |<------------- StreamConfig -|     negotiate_hdr(ClientCaps, HostCaps, Prefs, ..)
 //!   |-- ConfigAck (decoder ready)>|
 //!   |<== CODEC_CONFIG, keyframe ==|     source.start() runs after the ack
@@ -17,19 +19,24 @@
 //! ```
 //! A rejected handshake is answered with `Reject` and returned as an error. When the host shuts
 //! down ([`SessionOptions::shutdown`]) it sends `Bye` and stops the source before returning.
+//! Audio runs on its own thread once the client acked the configuration; if it fails the session
+//! carries on without sound.
 
 use crate::input::{
     InputBackend, InputCmd, InputContext, InputStats, LiveLatency, PenMode, SharedOffset,
     input_thread,
 };
-use crate::source::{CursorSink, SourceError, SourceHdr, VideoSource};
+use crate::source::{
+    AudioBackend, AudioEncoder, AudioSource, CursorSink, SourceError, SourceHdr, VideoSource,
+};
 use crate::time::now_us;
 use ezd_link::{Link, MuxClosed, MuxError, MuxOptions, MuxReceiver, MuxSender, VideoCredit};
 use ezd_proto::{
-    Bye, ClientCaps, ClientHdr, ClientOptions, ClientPrefs, ClientStats, ClockSync, Codec,
-    DEFAULT_CHUNK_LEN, DynamicRange, Hello, HostCaps, InputStatus, Message, Ping, Pong, Prefs,
-    ProtoError, QualityLevel, RateMode, Reject, Role, StreamColor, StreamConfig, StreamReport,
-    VideoFrame, negotiate_hdr,
+    AudioCodec, AudioConfig, AudioPacket, AudioStream, AudioVolume, Bye, ClientAudio, ClientCaps,
+    ClientHdr, ClientOptions, ClientPrefs, ClientStats, ClockSync, Codec, DEFAULT_CHUNK_LEN,
+    DynamicRange, Hello, HostAudio, HostCaps, InputStatus, Message, Ping, Pong, Prefs, ProtoError,
+    QualityLevel, RateMode, Reject, Role, SampleFormat, StreamColor, StreamConfig, StreamReport,
+    VideoFrame, negotiate_audio, negotiate_hdr,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -66,6 +73,9 @@ pub struct SessionOptions {
     pub telemetry: bool,
     /// Receives live [`SessionEvent`]s (default: none). Send errors are ignored.
     pub events: Option<tokio::sync::mpsc::UnboundedSender<SessionEvent>>,
+    /// Creates the audio source and Opus encoder of each session; `None` means no audio (the
+    /// client is told when it speaks protocol 0.7).
+    pub audio: Option<Arc<dyn AudioBackend>>,
 }
 
 /// How often [`SessionEvent::Stats`] is emitted.
@@ -84,6 +94,8 @@ pub enum SessionEvent {
         color: StreamColor,
         /// Dynamic range decision (HDR10, tone-mapped SDR with the reason, or SDR).
         dynamic_range: DynamicRange,
+        /// The audio stream, or `None` when the session has no audio.
+        audio: Option<AudioStream>,
     },
     /// Measurements of the last window, once per second.
     Stats(LiveStats),
@@ -131,6 +143,7 @@ impl Default for SessionOptions {
             pen_mode: PenMode::default(),
             telemetry: false,
             events: None,
+            audio: None,
         }
     }
 }
@@ -150,6 +163,9 @@ pub enum EndReason {
     SourceStopped,
     /// [`SessionOptions::shutdown`] was set; the client was sent `Bye`.
     HostShutdown,
+    /// The client sent a new `Hello`: its app was restarted and opened the link again. An
+    /// accessory link never reports the app closing it, so this is how its end shows.
+    ClientRestarted,
 }
 
 /// Result of a finished session.
@@ -163,6 +179,8 @@ pub struct SessionSummary {
     pub color: StreamColor,
     /// Dynamic range decision of the session.
     pub dynamic_range: DynamicRange,
+    /// The audio stream negotiated for the session, if any.
+    pub audio: Option<AudioStream>,
     /// Why the session ended.
     pub end: EndReason,
     /// Wall time from handshake start to the end.
@@ -186,6 +204,12 @@ pub struct SessionSummary {
     pub transfer_us_p95: Option<u32>,
     /// Video frames whose ack timed out.
     pub ack_timeouts: u64,
+    /// Audio packets handed to the mux.
+    pub audio_packets: u64,
+    /// Total audio payload bytes handed to the mux.
+    pub audio_bytes: u64,
+    /// Audio packets the mux dropped because the link fell behind.
+    pub audio_dropped: u64,
     /// Estimated `client_clock - host_clock` in microseconds.
     pub clock_offset_us: Option<i64>,
     /// Best RTT in microseconds.
@@ -237,10 +261,13 @@ struct VideoShared {
     keyframes: AtomicU64,
     configs: AtomicU64,
     bytes: AtomicU64,
+    audio_packets: AtomicU64,
+    audio_bytes: AtomicU64,
     /// `(frame_id, capture_us, encoded_us)` of sent frames awaiting their ack (bounded).
     sent: std::sync::Mutex<std::collections::VecDeque<(u64, u64, u64)>>,
 }
 
+/// `stop` ends the audio thread as well as the video one.
 struct StopOnDrop(Arc<VideoShared>);
 impl Drop for StopOnDrop {
     fn drop(&mut self) {
@@ -285,7 +312,12 @@ pub async fn run_host_session_with(
         source_hdr: source.source_hdr(),
         main10: source.main10_codecs(),
     };
-    let setup = handshake(&tx, &mut rx, &host_caps, &prefs, &opts, &hdr_in).await;
+    let audio_source = opts.audio.as_ref().and_then(|b| b.create_source());
+    let audio_in = AudioInputs {
+        backend: opts.audio.clone(),
+        has_source: audio_source.is_some(),
+    };
+    let setup = handshake(&tx, &mut rx, &host_caps, &prefs, &opts, &hdr_in, &audio_in).await;
     let Negotiated {
         hello: client_hello,
         caps: client_caps,
@@ -298,6 +330,7 @@ pub async fn run_host_session_with(
                 applied: applied_quality,
                 wanted_codec,
             },
+        audio,
     } = match setup {
         Ok(v) => v,
         Err(e) => {
@@ -307,6 +340,7 @@ pub async fn run_host_session_with(
         }
     };
     tracing::info!(?cfg, ?dynamic_range, client = %client_hello.device_name, "stream configured");
+    tracing::info!(audio = ?audio.as_ref().map(|a| &a.stream), "audio configured");
     emit(
         &opts.events,
         SessionEvent::Configured {
@@ -314,6 +348,7 @@ pub async fn run_host_session_with(
             stream: cfg.clone(),
             color,
             dynamic_range,
+            audio: audio.as_ref().map(|a| a.stream.clone()),
         },
     );
 
@@ -398,6 +433,28 @@ pub async fn run_host_session_with(
                 drop(source);
                 let _ = done_tx.send(r);
             })?;
+    }
+
+    // Audio thread: its failure ends the audio only.
+    let mut audio_join: Option<std::thread::JoinHandle<()>> = None;
+    let audio_stream = audio.as_ref().map(|a| a.stream.clone());
+    // Volumes of the client, forwarded to the audio thread (which owns the source).
+    let mut volume_tx: Option<std::sync::mpsc::Sender<AudioVolume>> = None;
+    if let (Some(a), Some(src)) = (audio, audio_source) {
+        let (shared, tx) = (shared.clone(), tx.clone());
+        let (vtx, vrx) = std::sync::mpsc::channel();
+        volume_tx = Some(vtx);
+        let poll = opts.poll_interval;
+        audio_join = Some(std::thread::Builder::new().name("ezd-audio".into()).spawn(
+            move || {
+                let mut src = src;
+                match audio_loop(src.as_mut(), a.encoder, &a.stream, &tx, &shared, poll, &vrx) {
+                    Ok(()) => {}
+                    Err(e) => tracing::warn!("audio stopped, video goes on: {e}"),
+                }
+                src.stop();
+            },
+        )?);
     }
 
     // Control loop.
@@ -516,8 +573,15 @@ pub async fn run_host_session_with(
                         let _ = t.send(InputCmd::Keyboard(k.attached));
                     }
                 }
+                Ok(Some(Message::AudioVolume(v))) => {
+                    tracing::debug!(volume = v.volume, muted = v.muted, "client volume");
+                    if let Some(t) = &volume_tx {
+                        let _ = t.send(v);
+                    }
+                }
                 Ok(Some(Message::Bye(b))) => break EndReason::ClientBye(b.reason),
                 Ok(Some(Message::Reject(r))) => break EndReason::ClientBye(r.reason),
+                Ok(Some(Message::Hello(_))) => break EndReason::ClientRestarted,
                 Ok(Some(other)) => tracing::debug!(?other, "ignoring message"),
                 Ok(None) => break EndReason::ClientEof,
                 Err(e) => break EndReason::LinkError(e.to_string()),
@@ -597,6 +661,16 @@ pub async fn run_host_session_with(
     if !video_done && timeout(Duration::from_secs(5), &mut done_rx).await.is_err() {
         tracing::warn!("video source did not stop in time");
     }
+    if let Some(j) = audio_join
+        && timeout(
+            Duration::from_secs(2),
+            tokio::task::spawn_blocking(|| j.join()),
+        )
+        .await
+        .is_err()
+    {
+        tracing::warn!("audio thread did not stop in time");
+    }
     // The input thread releases everything that is down before we return.
     let input_stats = match input_join {
         Some(j) => match timeout(
@@ -617,7 +691,8 @@ pub async fn run_host_session_with(
         },
         None => InputStats::default(),
     };
-    let ack_timeouts = tx.stats().ack_timeouts;
+    let mux_stats = tx.stats();
+    let ack_timeouts = mux_stats.ack_timeouts;
     drop(tx);
     if timeout(Duration::from_secs(2), task.join()).await.is_err() {
         tracing::warn!("mux writer did not drain in time");
@@ -628,6 +703,7 @@ pub async fn run_host_session_with(
         stream: cfg,
         color,
         dynamic_range,
+        audio: audio_stream,
         end,
         duration: started.elapsed(),
         frames_sent: shared.frames.load(Ordering::Relaxed),
@@ -639,6 +715,9 @@ pub async fn run_host_session_with(
         transfer_us_p50: (!transfer_all.is_empty()).then(|| percentile(&transfer_all, 50)),
         transfer_us_p95: (!transfer_all.is_empty()).then(|| percentile(&transfer_all, 95)),
         ack_timeouts,
+        audio_packets: shared.audio_packets.load(Ordering::Relaxed),
+        audio_bytes: shared.audio_bytes.load(Ordering::Relaxed),
+        audio_dropped: mux_stats.audio_dropped,
         clock_offset_us: clock.offset_us(),
         rtt_us: clock.rtt_us(),
         input_events: input_stats.events,
@@ -730,6 +809,20 @@ struct HostHdrInputs {
     main10: Vec<Codec>,
 }
 
+/// What the host offers for audio, queried before the handshake.
+struct AudioInputs {
+    backend: Option<Arc<dyn AudioBackend>>,
+    /// The backend produced a capture source for this session.
+    has_source: bool,
+}
+
+/// The negotiated audio of a session.
+struct NegotiatedAudio {
+    stream: AudioStream,
+    /// The Opus encoder, for [`AudioCodec::Opus`] streams.
+    encoder: Option<Box<dyn AudioEncoder>>,
+}
+
 /// Outcome of a successful handshake.
 struct Negotiated {
     hello: Hello,
@@ -738,6 +831,7 @@ struct Negotiated {
     color: StreamColor,
     range: DynamicRange,
     quality: QualityPlan,
+    audio: Option<NegotiatedAudio>,
 }
 
 /// What the client asked for and what the host applies.
@@ -758,6 +852,7 @@ async fn handshake(
     prefs: &Prefs,
     opts: &SessionOptions,
     hdr_in: &HostHdrInputs,
+    audio_in: &AudioInputs,
 ) -> Result<Negotiated, SessionError> {
     let wait = opts.handshake_timeout;
     tx.send_control(Message::Hello(Hello::new(
@@ -785,6 +880,18 @@ async fn handshake(
         Some(
             expect(rx, tx, "ClientHdr", wait, |m| match m {
                 Message::ClientHdr(h) => Ok(h),
+                o => Err(o),
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
+    // Likewise a client with minor >= 7 sends `ClientAudio` (possibly `none()`).
+    let client_audio: Option<ClientAudio> = if hello.supports_audio() {
+        Some(
+            expect(rx, tx, "ClientAudio", wait, |m| match m {
+                Message::ClientAudio(a) => Ok(a),
                 o => Err(o),
             })
             .await?,
@@ -827,6 +934,19 @@ async fn handshake(
     if hello.supports_hdr() {
         tx.send_control(Message::StreamColor(color))?;
     }
+    let audio = match &client_audio {
+        Some(ca) => {
+            let ceiling = prefs
+                .max_bitrate_kbps
+                .unwrap_or_else(|| prefs.link.default_max_bitrate_kbps());
+            let audio = pick_audio(ca, audio_in, prefs, ceiling);
+            tx.send_control(Message::AudioConfig(AudioConfig {
+                stream: audio.as_ref().map(|a| a.stream.clone()),
+            }))?;
+            audio
+        }
+        None => None,
+    };
     tx.send_control(Message::StreamConfig(cfg.clone()))?;
     expect(rx, tx, "ConfigAck", wait, |m| match m {
         Message::ConfigAck => Ok(()),
@@ -845,7 +965,48 @@ async fn handshake(
             applied,
             wanted_codec: client_prefs.and_then(|p| p.codec()),
         },
+        audio,
     })
+}
+
+/// Negotiates the audio stream and builds its Opus encoder; an encoder that cannot be built
+/// falls back to PCM (or to no audio).
+fn pick_audio(
+    client: &ClientAudio,
+    audio_in: &AudioInputs,
+    prefs: &Prefs,
+    ceiling_kbps: u32,
+) -> Option<NegotiatedAudio> {
+    let mut host = HostAudio {
+        available: audio_in.has_source,
+        opus: audio_in
+            .backend
+            .as_ref()
+            .is_some_and(|b| b.opus_available()),
+    };
+    loop {
+        let mut stream = negotiate_audio(prefs.audio, client, &host, prefs.link, ceiling_kbps)?;
+        if stream.codec != AudioCodec::Opus {
+            return Some(NegotiatedAudio {
+                stream,
+                encoder: None,
+            });
+        }
+        let backend = audio_in.backend.as_ref()?;
+        match backend.create_opus_encoder(stream.channels) {
+            Ok(enc) => {
+                stream.codec_config = enc.codec_config();
+                return Some(NegotiatedAudio {
+                    stream,
+                    encoder: Some(enc),
+                });
+            }
+            Err(e) => {
+                tracing::warn!("cannot create the Opus encoder: {e}");
+                host.opus = false;
+            }
+        }
+    }
 }
 
 fn reject(tx: &MuxSender, reason: String) {
@@ -992,11 +1153,92 @@ fn video_loop(
     }
 }
 
+/// Pumps captured audio to the client until stopped; returns the failure of the source or the
+/// encoder. Samples are re-chunked into frames of `frame_samples` per channel, stamped with the
+/// capture time of their first sample (continuing from the previous frame unless the source
+/// had a gap).
+fn audio_loop(
+    source: &mut dyn AudioSource,
+    mut encoder: Option<Box<dyn AudioEncoder>>,
+    stream: &AudioStream,
+    tx: &MuxSender,
+    sh: &VideoShared,
+    poll: Duration,
+    volumes: &std::sync::mpsc::Receiver<AudioVolume>,
+) -> Result<(), SourceError> {
+    source.start(stream.channels)?;
+    // The last volume applied from or sent to the client: a change equal to it is an echo.
+    let mut last_volume: Option<AudioVolume> = None;
+    let frame_len = stream.frame_samples as usize * stream.channels as usize;
+    let frame_us = stream.frame_samples as u64 * 1_000_000 / stream.sample_rate.max(1) as u64;
+    let mut pending: Vec<f32> = Vec::with_capacity(frame_len * 2);
+    let mut next_pts = 0u64;
+    while !sh.stop.load(Ordering::Acquire) {
+        while let Ok(v) = volumes.try_recv() {
+            last_volume = Some(v);
+            source.set_volume(v);
+        }
+        if let Some(v) = source.take_volume_change()
+            && !last_volume.is_some_and(|l| l.is_same(&v))
+        {
+            last_volume = Some(v);
+            if tx.send_control(Message::AudioVolume(v)).is_err() {
+                return Ok(());
+            }
+        }
+        let Some(block) = source.next_samples(poll)? else {
+            continue;
+        };
+        if pending.is_empty() {
+            next_pts = block.pts_us;
+        }
+        pending.extend_from_slice(&block.samples);
+        let mut used = 0;
+        while pending.len() - used >= frame_len {
+            let pcm = &pending[used..used + frame_len];
+            used += frame_len;
+            let data = match (stream.codec, encoder.as_mut()) {
+                (AudioCodec::Opus, Some(enc)) => enc.encode(pcm)?,
+                (AudioCodec::Opus, None) => return Err(SourceError::msg("no Opus encoder")),
+                (AudioCodec::Pcm, _) => pcm_bytes(pcm, stream.format),
+            };
+            let pts_us = next_pts;
+            next_pts += frame_us;
+            let len = data.len() as u64;
+            if tx
+                .send(&Message::AudioPacket(AudioPacket { pts_us, data }))
+                .is_err()
+            {
+                return Ok(());
+            }
+            sh.audio_packets.fetch_add(1, Ordering::Relaxed);
+            sh.audio_bytes.fetch_add(len, Ordering::Relaxed);
+        }
+        pending.drain(..used);
+    }
+    Ok(())
+}
+
+/// Little-endian interleaved bytes of `pcm` in `format` (S16 clamps and rounds).
+fn pcm_bytes(pcm: &[f32], format: SampleFormat) -> Vec<u8> {
+    let mut out = Vec::with_capacity(pcm.len() * format.bytes());
+    for &v in pcm {
+        match format {
+            SampleFormat::F32 => out.extend_from_slice(&v.to_le_bytes()),
+            SampleFormat::S16 => {
+                let s = (v.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+                out.extend_from_slice(&s.to_le_bytes());
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::source::EncodedFrame;
-    use crate::testing::ScriptedSource;
+    use crate::testing::{ScriptedAudioBackend, ScriptedSource};
     use ezd_proto::{Codec, DecoderCaps, DisplayInfo};
 
     fn caps() -> ClientCaps {
@@ -1053,6 +1295,8 @@ mod tests {
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
+        tx.send_control(Message::ClientAudio(ClientAudio::none()))
+            .unwrap();
         tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
             .unwrap();
         assert!(matches!(recv(&mut rx).await, Message::Hello(h) if h.role == Role::Host));
@@ -1060,6 +1304,10 @@ mod tests {
         assert_eq!(
             recv(&mut rx).await,
             Message::StreamColor(StreamColor::sdr_bt709())
+        );
+        assert_eq!(
+            recv(&mut rx).await,
+            Message::AudioConfig(AudioConfig { stream: None })
         );
         let cfg = match recv(&mut rx).await {
             Message::StreamConfig(c) => c,
@@ -1183,6 +1431,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_hello_ends_the_session_as_a_restart() {
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let src = ScriptedSource::new(Duration::from_millis(5), 3000);
+        let mut host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(src),
+            Prefs::default(),
+            fast_opts(),
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(DEFAULT_CHUNK_LEN);
+        tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "c")))
+            .unwrap();
+        tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        tx.send_control(Message::ClientAudio(ClientAudio::none()))
+            .unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+            .unwrap();
+        while !matches!(recv(&mut rx).await, Message::StreamConfig(_)) {}
+        tx.send_control(Message::ConfigAck).unwrap();
+        // The app restarts and opens the same link again.
+        tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "c")))
+            .unwrap();
+        let s = timeout(Duration::from_secs(5), async {
+            let mut open = true;
+            loop {
+                tokio::select! {
+                    r = &mut host => break r.unwrap().unwrap(),
+                    // Keep reading so the host is never blocked on a full link.
+                    m = rx.recv(), if open => open = matches!(m, Ok(Some(_))),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(s.end, EndReason::ClientRestarted);
+    }
+
+    #[tokio::test]
     async fn no_common_codec_is_rejected() {
         let (host_link, client_link) = Link::duplex_pair(1 << 16);
         let src = ScriptedSource::new(Duration::from_millis(5), 10);
@@ -1199,6 +1487,8 @@ mod tests {
             .unwrap();
         tx.send_control(Message::ClientCaps(c)).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        tx.send_control(Message::ClientAudio(ClientAudio::none()))
             .unwrap();
         tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
             .unwrap();
@@ -1289,10 +1579,14 @@ mod tests {
         tx.send_control(Message::ClientCaps(c)).unwrap();
         if let Some(h) = client_hdr {
             tx.send_control(Message::ClientHdr(h)).unwrap();
-            if minor >= ezd_proto::MINOR_STREAM_PREFS {
-                tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
-                    .unwrap();
-            }
+        }
+        if minor >= ezd_proto::MINOR_AUDIO {
+            tx.send_control(Message::ClientAudio(ClientAudio::none()))
+                .unwrap();
+        }
+        if minor >= ezd_proto::MINOR_STREAM_PREFS {
+            tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+                .unwrap();
         }
         let mut seen = Vec::new();
         loop {
@@ -1399,6 +1693,10 @@ mod tests {
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
+        if minor >= ezd_proto::MINOR_AUDIO {
+            tx.send_control(Message::ClientAudio(ClientAudio::none()))
+                .unwrap();
+        }
         if minor >= ezd_proto::MINOR_STREAM_PREFS {
             tx.send_control(Message::ClientPrefs(client_prefs)).unwrap();
         }
@@ -1523,7 +1821,8 @@ mod tests {
         let want = StreamColor::hdr10(None, 1000, 400);
         assert!(matches!(seen[1], Message::HostCaps(_)));
         assert_eq!(seen[2], Message::StreamColor(want));
-        assert!(matches!(&seen[3], Message::StreamConfig(c) if c.codec == Codec::Hevc));
+        assert!(matches!(seen[3], Message::AudioConfig(_)));
+        assert!(matches!(&seen[4], Message::StreamConfig(c) if c.codec == Codec::Hevc));
         assert_eq!(
             told,
             Some((DynamicRange::Hdr10 { codec: Codec::Hevc }, want))
@@ -1534,7 +1833,7 @@ mod tests {
     async fn sdr_display_gets_sdr_color_and_the_reason() {
         let (seen, told) = hdr_handshake(ezd_proto::PROTOCOL_MINOR, Some(ClientHdr::none())).await;
         assert_eq!(seen[2], Message::StreamColor(StreamColor::sdr_bt709()));
-        assert!(matches!(&seen[3], Message::StreamConfig(c) if c.codec == Codec::H264));
+        assert!(matches!(&seen[4], Message::StreamConfig(c) if c.codec == Codec::H264));
         assert_eq!(
             told,
             Some((
@@ -1614,9 +1913,11 @@ mod tests {
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
+        tx.send_control(Message::ClientAudio(ClientAudio::none()))
+            .unwrap();
         tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
             .unwrap();
-        for _ in 0..3 {
+        for _ in 0..4 {
             recv(&mut rx).await;
         }
         tx.send_control(Message::ConfigAck).unwrap();
@@ -1660,9 +1961,11 @@ mod tests {
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
+        tx.send_control(Message::ClientAudio(ClientAudio::none()))
+            .unwrap();
         tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
             .unwrap();
-        for _ in 0..3 {
+        for _ in 0..4 {
             recv(&mut rx).await;
         }
         tx.send_control(Message::ConfigAck).unwrap();
@@ -1705,9 +2008,11 @@ mod tests {
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
+        tx.send_control(Message::ClientAudio(ClientAudio::none()))
+            .unwrap();
         tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
             .unwrap();
-        for _ in 0..3 {
+        for _ in 0..4 {
             recv(&mut rx).await;
         }
         tx.send_control(Message::ConfigAck).unwrap();
@@ -1745,7 +2050,9 @@ mod tests {
                 stream,
                 color,
                 dynamic_range,
+                audio,
             } => {
+                assert_eq!(audio, None);
                 assert_eq!(color, StreamColor::sdr_bt709());
                 assert_eq!(dynamic_range, DynamicRange::Sdr);
                 assert_eq!(client_hello.device_name, "tablet");
@@ -1776,5 +2083,414 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(s.end, EndReason::ClientBye("test over".into()));
+    }
+
+    /// What a client saw of a session with audio.
+    struct AudioRun {
+        /// Handshake messages up to and including `StreamConfig`.
+        seen: Vec<Message>,
+        packets: Vec<AudioPacket>,
+        frames: u32,
+        other_audio_messages: usize,
+        summary: SessionSummary,
+    }
+
+    fn pcm_client() -> ClientAudio {
+        ClientAudio {
+            enabled: true,
+            sample_rates: vec![48000],
+            max_channels: 2,
+            formats: vec![SampleFormat::S16, SampleFormat::F32],
+            codecs: vec![AudioCodec::Pcm],
+        }
+    }
+
+    /// Runs a session with `backend`, a client of `minor` that sends `client_audio` (if any),
+    /// and collects at least `want_packets` audio packets and a few video frames.
+    async fn audio_session(
+        minor: u16,
+        client_audio: Option<ClientAudio>,
+        prefs: Prefs,
+        backend: ScriptedAudioBackend,
+        want_packets: usize,
+    ) -> AudioRun {
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(ScriptedSource::new(Duration::from_millis(5), 3000)),
+            prefs,
+            SessionOptions {
+                audio: Some(Arc::new(backend)),
+                ..fast_opts()
+            },
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(DEFAULT_CHUNK_LEN);
+        let mut hello = Hello::new(Role::Client, "t", "client");
+        hello.proto_minor = minor;
+        tx.send_control(Message::Hello(hello)).unwrap();
+        tx.send_control(Message::ClientCaps(caps())).unwrap();
+        if minor >= ezd_proto::MINOR_HDR {
+            tx.send_control(Message::ClientHdr(ClientHdr::none()))
+                .unwrap();
+        }
+        if let Some(a) = client_audio {
+            tx.send_control(Message::ClientAudio(a)).unwrap();
+        }
+        if minor >= ezd_proto::MINOR_STREAM_PREFS {
+            tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+                .unwrap();
+        }
+        let mut seen = Vec::new();
+        loop {
+            let m = recv(&mut rx).await;
+            let done = matches!(m, Message::StreamConfig(_));
+            seen.push(m);
+            if done {
+                break;
+            }
+        }
+        tx.send_control(Message::ConfigAck).unwrap();
+        let (mut packets, mut frames, mut other_audio_messages) = (Vec::new(), 0u32, 0usize);
+        let start = Instant::now();
+        while !(frames >= 5
+            && packets.len() >= want_packets
+            && start.elapsed() >= Duration::from_millis(if want_packets == 0 { 400 } else { 0 }))
+        {
+            match recv(&mut rx).await {
+                Message::VideoFrame(v) => {
+                    tx.send_control(Message::FrameAck(ezd_proto::FrameAck {
+                        frame_id: v.frame_id,
+                        received_us: now_us(),
+                    }))
+                    .unwrap();
+                    frames += 1;
+                }
+                Message::AudioPacket(p) => packets.push(p),
+                Message::AudioConfig(_) | Message::ClientAudio(_) => other_audio_messages += 1,
+                _ => {}
+            }
+        }
+        tx.send_control(Message::Bye(Bye { reason: "t".into() }))
+            .unwrap();
+        let summary = timeout(Duration::from_secs(5), host)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        AudioRun {
+            seen,
+            packets,
+            frames,
+            other_audio_messages,
+            summary,
+        }
+    }
+
+    fn audio_config(seen: &[Message]) -> Option<AudioConfig> {
+        seen.iter().find_map(|m| match m {
+            Message::AudioConfig(c) => Some(c.clone()),
+            _ => None,
+        })
+    }
+
+    #[tokio::test]
+    async fn volume_is_synced_both_ways_without_echoes() {
+        let backend = ScriptedAudioBackend::new();
+        let volume = backend.volume.clone();
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(ScriptedSource::new(Duration::from_millis(5), 3000)),
+            Prefs::default(),
+            SessionOptions {
+                audio: Some(Arc::new(backend)),
+                ..fast_opts()
+            },
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(DEFAULT_CHUNK_LEN);
+        tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "client")))
+            .unwrap();
+        tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        tx.send_control(Message::ClientAudio(pcm_client())).unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+            .unwrap();
+        loop {
+            if matches!(recv(&mut rx).await, Message::StreamConfig(_)) {
+                break;
+            }
+        }
+        tx.send_control(Message::ConfigAck).unwrap();
+
+        // Client to host: applied once to the source, not sent back.
+        let from_client = AudioVolume {
+            volume: 0.4,
+            muted: false,
+        };
+        tx.send_control(Message::AudioVolume(from_client)).unwrap();
+        // Host to client: a change at the host's control.
+        let from_host = AudioVolume {
+            volume: 0.8,
+            muted: true,
+        };
+        let mut received = Vec::new();
+        let start = Instant::now();
+        let mut set_local = false;
+        while start.elapsed() < Duration::from_secs(5) {
+            if volume.applied().len() == 1 && !set_local {
+                set_local = true;
+                volume.set_local(from_host);
+            }
+            match recv(&mut rx).await {
+                Message::AudioVolume(v) => received.push(v),
+                Message::VideoFrame(v) => {
+                    tx.send_control(Message::FrameAck(ezd_proto::FrameAck {
+                        frame_id: v.frame_id,
+                        received_us: now_us(),
+                    }))
+                    .unwrap();
+                }
+                _ => {}
+            }
+            if !received.is_empty() && start.elapsed() > Duration::from_millis(300) {
+                break;
+            }
+        }
+        assert_eq!(volume.applied(), vec![from_client]);
+        // Only the host's own change comes back; the client's value was not echoed.
+        assert_eq!(received, vec![from_host]);
+        // The client's echo of the host value is applied but nothing more is sent.
+        tx.send_control(Message::AudioVolume(from_host)).unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(volume.applied(), vec![from_client, from_host]);
+        tx.send_control(Message::Bye(Bye { reason: "t".into() }))
+            .unwrap();
+        timeout(Duration::from_secs(5), host)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pcm_audio_is_configured_before_the_stream_and_packets_have_whole_frames() {
+        // USB link, client plays F32: 480 samples * 2 channels * 4 bytes.
+        let r = audio_session(
+            ezd_proto::PROTOCOL_MINOR,
+            Some(pcm_client()),
+            Prefs::default(),
+            ScriptedAudioBackend::new(),
+            12,
+        )
+        .await;
+        let n = r.seen.len();
+        assert!(matches!(r.seen[n - 1], Message::StreamConfig(_)));
+        let Message::AudioConfig(AudioConfig { stream: Some(a) }) = &r.seen[n - 2] else {
+            panic!("AudioConfig must precede StreamConfig: {:?}", r.seen);
+        };
+        assert_eq!(
+            (
+                a.codec,
+                a.format,
+                a.channels,
+                a.sample_rate,
+                a.frame_samples
+            ),
+            (AudioCodec::Pcm, SampleFormat::F32, 2, 48000, 480)
+        );
+        assert!(a.codec_config.is_empty());
+        assert!(r.packets.len() >= 12);
+        for p in &r.packets {
+            assert_eq!(p.data.len(), 480 * 2 * 4);
+        }
+        // Re-chunked from 700-sample blocks without losing or reordering samples: the ramp
+        // continues across packets and the time stamps advance by 10 ms.
+        let mut expect = 0u64;
+        for p in &r.packets {
+            for frame in p.data.chunks(8) {
+                let l = f32::from_le_bytes(frame[..4].try_into().unwrap());
+                let rr = f32::from_le_bytes(frame[4..].try_into().unwrap());
+                assert_eq!(l, (expect % 1000) as f32 / 1000.0);
+                assert_eq!(l, rr);
+                expect += 1;
+            }
+        }
+        for w in r.packets.windows(2) {
+            assert_eq!(w[1].pts_us - w[0].pts_us, 10_000);
+        }
+        assert_eq!(r.summary.audio.as_ref(), Some(a));
+        assert!(r.summary.audio_packets >= 12);
+        assert_eq!(
+            r.summary.audio_bytes,
+            r.summary.audio_packets * (480 * 2 * 4)
+        );
+    }
+
+    #[tokio::test]
+    async fn network_link_gets_s16_pcm() {
+        let prefs = Prefs {
+            link: ezd_proto::LinkKind::Network,
+            ..Prefs::default()
+        };
+        let r = audio_session(
+            ezd_proto::PROTOCOL_MINOR,
+            Some(pcm_client()),
+            prefs,
+            ScriptedAudioBackend::new(),
+            3,
+        )
+        .await;
+        let a = audio_config(&r.seen).unwrap().stream.unwrap();
+        assert_eq!((a.codec, a.format), (AudioCodec::Pcm, SampleFormat::S16));
+        for p in &r.packets {
+            assert_eq!(p.data.len(), 480 * 2 * 2);
+        }
+        // The ramp sample 1 / 1000 as S16.
+        let s = i16::from_le_bytes(r.packets[0].data[4..6].try_into().unwrap());
+        assert_eq!(s, (0.001f32 * 32767.0).round() as i16);
+    }
+
+    #[tokio::test]
+    async fn opus_audio_carries_the_encoder_config() {
+        let mut client = pcm_client();
+        client.codecs = vec![AudioCodec::Opus];
+        let r = audio_session(
+            ezd_proto::PROTOCOL_MINOR,
+            Some(client),
+            Prefs::default(),
+            ScriptedAudioBackend::new(),
+            5,
+        )
+        .await;
+        let a = audio_config(&r.seen).unwrap().stream.unwrap();
+        assert_eq!(a.codec, AudioCodec::Opus);
+        assert_eq!(a.codec_config, ScriptedAudioBackend::OPUS_HEAD);
+        for p in &r.packets {
+            assert_eq!(p.data.len(), ScriptedAudioBackend::OPUS_PACKET_LEN);
+        }
+    }
+
+    #[tokio::test]
+    async fn failing_opus_encoder_falls_back_to_pcm() {
+        let mut client = pcm_client();
+        client.codecs = vec![AudioCodec::Pcm, AudioCodec::Opus];
+        let prefs = Prefs {
+            audio: ezd_proto::AudioMode::Opus,
+            ..Prefs::default()
+        };
+        let backend = ScriptedAudioBackend {
+            fail_opus: true,
+            ..ScriptedAudioBackend::new()
+        };
+        let r = audio_session(ezd_proto::PROTOCOL_MINOR, Some(client), prefs, backend, 3).await;
+        let a = audio_config(&r.seen).unwrap().stream.unwrap();
+        assert_eq!(a.codec, AudioCodec::Pcm);
+    }
+
+    #[tokio::test]
+    async fn disabled_client_gets_no_audio() {
+        let r = audio_session(
+            ezd_proto::PROTOCOL_MINOR,
+            Some(ClientAudio::none()),
+            Prefs::default(),
+            ScriptedAudioBackend::new(),
+            0,
+        )
+        .await;
+        assert_eq!(audio_config(&r.seen), Some(AudioConfig { stream: None }));
+        assert!(r.packets.is_empty());
+        assert!(r.frames >= 5);
+        assert_eq!(r.summary.audio, None);
+    }
+
+    #[tokio::test]
+    async fn host_without_audio_says_so() {
+        let backend = ScriptedAudioBackend {
+            has_source: false,
+            ..ScriptedAudioBackend::new()
+        };
+        let r = audio_session(
+            ezd_proto::PROTOCOL_MINOR,
+            Some(pcm_client()),
+            Prefs::default(),
+            backend,
+            0,
+        )
+        .await;
+        assert_eq!(audio_config(&r.seen), Some(AudioConfig { stream: None }));
+        assert!(r.packets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn audio_mode_off_gets_no_audio() {
+        let prefs = Prefs {
+            audio: ezd_proto::AudioMode::Off,
+            ..Prefs::default()
+        };
+        let r = audio_session(
+            ezd_proto::PROTOCOL_MINOR,
+            Some(pcm_client()),
+            prefs,
+            ScriptedAudioBackend::new(),
+            0,
+        )
+        .await;
+        assert_eq!(audio_config(&r.seen), Some(AudioConfig { stream: None }));
+        assert!(r.packets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn audio_source_failure_keeps_the_video_running() {
+        let backend = ScriptedAudioBackend {
+            fail_start: true,
+            ..ScriptedAudioBackend::new()
+        };
+        let r = audio_session(
+            ezd_proto::PROTOCOL_MINOR,
+            Some(pcm_client()),
+            Prefs::default(),
+            backend,
+            0,
+        )
+        .await;
+        // Audio was promised in the handshake, but never arrives; the session is unharmed.
+        assert!(audio_config(&r.seen).unwrap().stream.is_some());
+        assert!(r.packets.is_empty());
+        assert!(r.frames >= 5);
+        assert_eq!(r.summary.end, EndReason::ClientBye("t".into()));
+        assert_eq!(r.summary.audio_packets, 0);
+    }
+
+    #[tokio::test]
+    async fn old_client_gets_no_audio_messages() {
+        let r = audio_session(
+            ezd_proto::MINOR_AUDIO - 1,
+            None,
+            Prefs::default(),
+            ScriptedAudioBackend::new(),
+            0,
+        )
+        .await;
+        assert_eq!(audio_config(&r.seen), None);
+        assert!(r.packets.is_empty());
+        assert_eq!(r.other_audio_messages, 0);
+        assert!(r.frames >= 5);
+        assert_eq!(r.summary.audio, None);
+    }
+
+    #[test]
+    fn s16_conversion_clamps_and_rounds() {
+        let b = pcm_bytes(
+            &[0.0, 1.0, -1.0, 2.0, -3.0, 0.5, f32::NAN],
+            SampleFormat::S16,
+        );
+        let v: Vec<i16> = b
+            .chunks(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(v, vec![0, 32767, -32767, 32767, -32767, 16384, 0]);
+        let f = pcm_bytes(&[0.25], SampleFormat::F32);
+        assert_eq!(f, 0.25f32.to_le_bytes());
     }
 }

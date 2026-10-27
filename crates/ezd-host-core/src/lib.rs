@@ -1,14 +1,16 @@
 //! Platform-independent host core.
 //!
 //! Platform crates (Linux KDE, Windows) implement [`VideoSource`] (capture +
-//! encode of a virtual display) and [`VirtualDisplay`]; this crate provides the
+//! encode of a virtual display), [`VirtualDisplay`] and [`AudioSource`] (PC audio capture); this crate provides the
 //! session state machine ([`run_host_session`]) that drives them over a
 //! [`ezd_link::Link`].
 //!
 //! Threading model: the session is async, but the source is owned by one
 //! dedicated OS thread that loops `wait for mux video slot -> next_frame -> send`.
 //! `next_frame` therefore always runs *after* the link has signalled it can
-//! take a frame and must return the newest content (coalescing).
+//! take a frame and must return the newest content (coalescing). Audio has its own thread
+//! (`AudioSource::next_samples` -> re-chunk -> PCM or Opus -> mux audio lane); its failure never
+//! ends the video session.
 
 pub mod input;
 pub mod platform;
@@ -25,8 +27,8 @@ pub use session::{
     run_host_session, run_host_session_with,
 };
 pub use source::{
-    CursorSink, DisplayMode, EncodedFrame, EncoderSetup, OutputInfo, SourceError, SourceHdr,
-    VideoSource, VirtualDisplay,
+    AudioBackend, AudioBlock, AudioEncoder, AudioSource, CursorSink, DisplayMode, EncodedFrame,
+    EncoderSetup, OutputInfo, SourceError, SourceHdr, VideoSource, VirtualDisplay,
 };
 pub use synthetic::{PixelFormat, SyntheticFrames, read_frame_number};
 pub use time::now_us;

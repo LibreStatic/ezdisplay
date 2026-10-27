@@ -979,11 +979,16 @@ impl Converter {
             }
             Kind::Nvenc => {
                 if dma {
-                    // Buffers are mapped into Vulkan by the shared import (see VkImport), then
-                    // scale_vulkan converts them and hwupload copies them to CUDA.
+                    // Buffers are mapped into Vulkan by the shared import (see VkImport), scaled
+                    // there and copied to CUDA by hwupload. They stay RGB and NVENC converts them,
+                    // as on the shared-memory path: since FFmpeg 9, scale_vulkan goes through
+                    // swscale, which cannot convert RGB to YUV on Vulkan. HDR needs that conversion
+                    // (to P010), so it takes shared memory.
+                    if hdr {
+                        return Err("NVENC HDR takes shared-memory frames".into());
+                    }
                     let import = VkImport::get(&node, in_fmt, frame.width, frame.height)?;
-                    let cu =
-                        derive_device(&import.vk, ff::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA, None)?;
+                    let cu = import.cu.try_clone()?;
                     let input = GraphInput {
                         pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_VULKAN,
                         width: frame.width,
@@ -991,11 +996,7 @@ impl Converter {
                         fps_mhz: self.fps_mhz,
                         hw_frames: Some(import.vk_frames.0),
                     };
-                    let desc = if hdr {
-                        format!("scale_vulkan=w={w}:h={h}:format=p010:out_range=tv,hwupload")
-                    } else {
-                        format!("scale_vulkan=w={w}:h={h}:format=nv12:out_range=tv,hwupload")
-                    };
+                    let desc = format!("scale_vulkan=w={w}:h={h},hwupload");
                     let graph = Graph::build(&input, &desc, &[Some(import.vk.0), Some(cu.0)])?;
                     let (gw, gh) = graph.sink_size();
                     if (gw, gh) != (w, h) {
@@ -1011,8 +1012,8 @@ impl Converter {
                         pix_fmt: ff::AVPixelFormat::AV_PIX_FMT_CUDA,
                         width: w,
                         height: h,
-                        path: "nvenc-dmabuf",
-                        tag_colorspace: true,
+                        path: "nvenc-dmabuf-rgb",
+                        tag_colorspace: false,
                     });
                 }
                 if hdr {
@@ -1436,6 +1437,25 @@ fn derive_device(
     }
 }
 
+/// The default CUDA device.
+fn cuda_device() -> Result<BufRef, String> {
+    // SAFETY: standard hwdevice construction; the ref is wrapped in BufRef immediately.
+    unsafe {
+        let mut dev = ptr::null_mut();
+        let r = ff::av_hwdevice_ctx_create(
+            &mut dev,
+            ff::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+            ptr::null(),
+            ptr::null_mut(),
+            0,
+        );
+        if r < 0 {
+            return Err(averr("create CUDA device", r));
+        }
+        Ok(BufRef(dev))
+    }
+}
+
 /// DRM device and a `DRM_PRIME` frames context for imported buffers.
 fn drm_context(
     node: &str,
@@ -1504,7 +1524,9 @@ fn drm_frames(dev: &BufRef, pix_fmt: ff::AVPixelFormat, w: u32, h: u32) -> Resul
 /// bounds that to the formats a process sees. Until their command buffers are reused, the last few
 /// mapped buffers stay referenced.
 struct VkImport {
-    /// Vulkan device derived from the node's DRM device, with single-plane images.
+    /// CUDA device that NVENC encodes on.
+    cu: BufRef,
+    /// Vulkan device derived from `cu`, with single-plane images.
     vk: BufRef,
     /// Functions of `vk` for the dedicated imports.
     dma: Arc<VkDma>,
@@ -1534,8 +1556,9 @@ impl VkImport {
     ) -> Result<Arc<VkImport>, String> {
         type Key = (String, i32, u32, u32);
         struct Cache {
-            /// Node, its DRM device, the Vulkan device derived from it and its functions.
-            devices: Vec<(String, BufRef, BufRef, Arc<VkDma>)>,
+            /// Node, its DRM device, the CUDA device, the Vulkan device derived from CUDA and its
+            /// functions.
+            devices: Vec<(String, BufRef, BufRef, BufRef, Arc<VkDma>)>,
             imports: Vec<(Key, Arc<VkImport>)>,
         }
         static CACHE: Mutex<Cache> = Mutex::new(Cache {
@@ -1549,34 +1572,43 @@ impl VkImport {
         }
         if !cache.devices.iter().any(|(n, ..)| n == node) {
             let dev = drm_device(node)?;
+            // Vulkan is derived from CUDA, not the other way round: since FFmpeg 9 a CUDA device
+            // derived from Vulkan cannot push its context, and the copy to CUDA fails.
+            let cu = cuda_device()?;
             let vk = derive_device(
-                &dev,
+                &cu,
                 ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN,
                 Some(c"disable_multiplane"),
             )?;
             // SAFETY: a Vulkan device context, kept alive by the cache for the whole process.
             let dma = Arc::new(unsafe { VkDma::new(vk.0) }?);
-            cache.devices.push((node.to_string(), dev, vk, dma));
+            cache.devices.push((node.to_string(), dev, cu, vk, dma));
         }
-        let (_, dev, vk, dma) = cache
+        let (_, dev, cu, vk, dma) = cache
             .devices
             .iter()
             .find(|(n, ..)| n == node)
             .expect("added above");
         let drm = drm_frames(dev, pix_fmt, w, h)?;
-        let mut vk_frames = ptr::null_mut();
-        // SAFETY: valid device and frames refs; the result is wrapped in BufRef.
+        // A plain context, not one derived from `drm`: filters cannot allocate their output from a
+        // derived one since FFmpeg 9 (ENOMEM). Mapping into it works the same.
+        // SAFETY: valid device ref; the context is filled before init and wrapped in BufRef.
+        let vk_frames = unsafe { ff::av_hwframe_ctx_alloc(vk.0) };
+        if vk_frames.is_null() {
+            return Err("av_hwframe_ctx_alloc failed".into());
+        }
+        let vk_frames = BufRef(vk_frames);
+        // SAFETY: `vk_frames` is a fresh, uninitialized frames context.
         let r = unsafe {
-            ff::av_hwframe_ctx_create_derived(
-                &mut vk_frames,
-                ff::AVPixelFormat::AV_PIX_FMT_VULKAN,
-                vk.0,
-                drm.0,
-                ff::AV_HWFRAME_MAP_READ as i32 | ff::AV_HWFRAME_MAP_WRITE as i32,
-            )
+            let fc = &mut *((*vk_frames.0).data as *mut ff::AVHWFramesContext);
+            fc.format = ff::AVPixelFormat::AV_PIX_FMT_VULKAN;
+            fc.sw_format = pix_fmt;
+            fc.width = w as i32;
+            fc.height = h as i32;
+            ff::av_hwframe_ctx_init(vk_frames.0)
         };
         if r < 0 {
-            return Err(averr("derive Vulkan frames", r));
+            return Err(averr("create Vulkan frames", r));
         }
         // SAFETY: lookup in a static table; null for formats Vulkan cannot hold.
         let vk_format = unsafe { ff::av_vkfmt_from_pixfmt(pix_fmt) };
@@ -1584,12 +1616,13 @@ impl VkImport {
             return Err(format!("no Vulkan format for {pix_fmt:?}"));
         }
         let import = Arc::new(VkImport {
+            cu: cu.try_clone()?,
             vk: vk.try_clone()?,
             dma: dma.clone(),
             // SAFETY: non-null pointer into FFmpeg's static table.
             vk_format: ash::vk::Format::from_raw(unsafe { *vk_format } as i32),
             drm_frames: drm,
-            vk_frames: BufRef(vk_frames),
+            vk_frames,
             map_lock: Mutex::new(()),
         });
         cache.imports.push((key, import.clone()));
@@ -2680,7 +2713,7 @@ mod tests {
             .encode(frame, false)
             .expect("dma-buf import + encode")
             .expect("packet");
-        assert_eq!(p.path(), Some("nvenc-dmabuf"));
+        assert_eq!(p.path(), Some("nvenc-dmabuf-rgb"));
         assert!(out.keyframe && out.codec_config.is_some());
         check_colors(&decode_first(&out));
     }
@@ -2711,7 +2744,7 @@ mod tests {
             .convert(frame, true)
             .expect("dma-buf import + convert")
             .expect("converted frame");
-        assert_eq!(conv.path(), Some("nvenc-dmabuf"));
+        assert_eq!(conv.path(), Some("nvenc-dmabuf-rgb"));
         // CUDA output: the capture buffer stays held until the packet is out.
         assert!(p.release.is_some());
         let out = std::thread::spawn(move || {
@@ -2780,7 +2813,7 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(p.path(), Some("nvenc-dmabuf"));
+            assert_eq!(p.path(), Some("nvenc-dmabuf-rgb"));
             assert!(bad.is_empty(), "{label} frames lost their content: {bad:?}");
         }
     }

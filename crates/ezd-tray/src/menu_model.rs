@@ -126,6 +126,7 @@ mod tests {
                 encoder_name: "h264_nvenc".into(),
             },
             dynamic_range: ezd_proto::DynamicRange::Sdr,
+            audio: None,
             devices: vec![],
             stats: None,
             input: None,

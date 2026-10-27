@@ -2,9 +2,10 @@
 
 use ezd_fake_client::{ClientEnd, FakeClientConfig, run_fake_client};
 use ezd_ffmpeg::{SwVideoSource, encoder_available};
-use ezd_host_core::{EndReason, run_host_session};
+use ezd_host_core::testing::ScriptedAudioBackend;
+use ezd_host_core::{EndReason, SessionOptions, run_host_session, run_host_session_with};
 use ezd_link::Link;
-use ezd_proto::Prefs;
+use ezd_proto::{AudioCodec, Prefs, SampleFormat};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
@@ -122,4 +123,75 @@ async fn host_to_fake_client_over_tcp() {
         summary.last_client_stats.is_some(),
         "client stats reached the host"
     );
+}
+
+/// Runs a short session with the scripted audio backend; `audio` is what the client advertises.
+async fn audio_loopback(
+    audio: bool,
+) -> Option<(ezd_fake_client::ClientReport, ezd_host_core::SessionSummary)> {
+    if !encoder_available("libx264") && !encoder_available("libopenh264") {
+        eprintln!("no software H.264 encoder, skipping");
+        return None;
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let host = tokio::spawn(async move {
+        let (sock, _) = listener.accept().await.unwrap();
+        let link = Link::from_tcp(sock).unwrap();
+        let opts = SessionOptions {
+            audio: Some(std::sync::Arc::new(ScriptedAudioBackend::new())),
+            ..Default::default()
+        };
+        run_host_session_with(link, Box::new(SwVideoSource::new()), Prefs::default(), opts).await
+    });
+    let cfg = FakeClientConfig {
+        width: 640,
+        height: 360,
+        refresh_rates_mhz: vec![60_000],
+        frames: Some(90),
+        audio,
+        ..Default::default()
+    };
+    let link = Link::connect_tcp(addr).await.unwrap();
+    let report = timeout(Duration::from_secs(60), run_fake_client(link, cfg))
+        .await
+        .unwrap()
+        .unwrap();
+    let summary = timeout(Duration::from_secs(10), host)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    println!("{}", report.summary());
+    Some((report, summary))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn audio_packets_reach_the_fake_client() {
+    let Some((report, summary)) = audio_loopback(true).await else {
+        return;
+    };
+    let a = report.audio.as_ref().expect("audio negotiated");
+    // The default link is USB, where a client that plays F32 gets uncompressed F32.
+    assert_eq!(
+        (a.codec, a.format, a.channels, a.sample_rate),
+        (AudioCodec::Pcm, SampleFormat::F32, 2, 48_000)
+    );
+    assert!(report.audio_packets >= 10, "{}", report.audio_packets);
+    assert_eq!(report.audio_bytes, report.audio_packets * 480 * 2 * 4);
+    assert!(summary.audio_packets >= report.audio_packets);
+    assert_eq!(summary.audio, report.audio);
+    assert_eq!(summary.end, EndReason::ClientBye("client done".into()));
+    assert!(report.summary().contains("audio:"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn client_without_audio_gets_none() {
+    let Some((report, summary)) = audio_loopback(false).await else {
+        return;
+    };
+    assert_eq!(report.audio, None);
+    assert_eq!(report.audio_packets, 0);
+    assert_eq!(summary.audio, None);
+    assert_eq!(summary.audio_packets, 0);
 }

@@ -5,7 +5,9 @@ import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
 import com.librestatic.ezdisplay.Capabilities
 import com.librestatic.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.screensaver.ScreensaverMotionMode
 import com.librestatic.ezdisplay.InputPrefs.KeyCombo
+import com.librestatic.ezdisplay.display.PanelType
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -212,6 +214,16 @@ class SettingsStoreTest {
         assertFalse(s.palmRejection)
     }
 
+    @Test fun audioIsOnByDefaultAndPersists() {
+        assertTrue(s.audioEnabled)
+        store.setAudioEnabled(false)
+        assertFalse(prefs.getBoolean(SettingsStore.AUDIO_ENABLED, true))
+        assertFalse(s.audioEnabled)
+        assertFalse(SettingsStore(prefs, AirActions.Off).state.value.audioEnabled)
+        store.setAudioEnabled(true)
+        assertTrue(prefs.getBoolean(SettingsStore.AUDIO_ENABLED, false))
+    }
+
     @Test fun toJsonContract() {
         store.setProfile("custom")
         store.setCustomAction(InputPrefs.CUSTOM_CLICK, "keys")
@@ -308,5 +320,93 @@ class SettingsStoreTest {
         assertFalse(noHevc.state.value.hevcAvailable)
         prefs.edit().putString(SettingsStore.VIDEO_CODEC, "hevc").commit()
         assertEquals("auto", Capabilities.streamPrefs(prefs, hevcAvailable = false).getString("codec"))
+    }
+
+    @Test fun screensaverDefaults() {
+        assertFalse(s.screensaverEnabled)
+        assertEquals(5, s.screensaverIdleMin)
+        assertEquals(8, s.screensaverBrightnessPct)
+        assertEquals(30, s.screensaverBlankMin)
+        assertEquals(PanelType.Unknown, s.panelType)
+    }
+
+    @Test fun screensaverIsOnByDefaultOnlyForOled() {
+        assertTrue(SettingsStore(prefs, AirActions.Off, panelType = PanelType.Oled).state.value.screensaverEnabled)
+        assertFalse(SettingsStore(prefs, AirActions.Off, panelType = PanelType.Lcd).state.value.screensaverEnabled)
+        val oled = SettingsStore(prefs, AirActions.Off, panelType = PanelType.Oled)
+        oled.setScreensaverEnabled(false)
+        assertFalse(SettingsStore(prefs, AirActions.Off, panelType = PanelType.Oled).state.value.screensaverEnabled)
+        assertEquals(PanelType.Oled, oled.state.value.panelType)
+    }
+
+    @Test fun screensaverSettersWriteAndClamp() {
+        store.setScreensaverEnabled(true)
+        store.setScreensaverIdleMin(12)
+        store.setScreensaverBrightnessPct(20)
+        store.setScreensaverBlankMin(45)
+        assertTrue(prefs.getBoolean(InputPrefs.SCREENSAVER_ENABLED, false))
+        assertEquals(12, prefs.getInt(InputPrefs.SCREENSAVER_IDLE_MIN, 0))
+        assertEquals(20, prefs.getInt(InputPrefs.SCREENSAVER_BRIGHTNESS_PCT, 0))
+        assertEquals(45, prefs.getInt(InputPrefs.SCREENSAVER_BLANK_MIN, -1))
+        assertEquals(12, s.screensaverIdleMin)
+        store.setScreensaverIdleMin(0)
+        assertEquals(1, s.screensaverIdleMin)
+        store.setScreensaverIdleMin(99)
+        assertEquals(30, s.screensaverIdleMin)
+        store.setScreensaverBrightnessPct(90)
+        assertEquals(30, s.screensaverBrightnessPct)
+        store.setScreensaverBlankMin(3)
+        assertEquals(5, s.screensaverBlankMin)
+        store.setScreensaverBlankMin(0)
+        assertEquals(0, prefs.getInt(InputPrefs.SCREENSAVER_BLANK_MIN, -1))
+        store.setScreensaverBlankMin(1000)
+        assertEquals(120, s.screensaverBlankMin)
+    }
+
+    @Test fun screensaverSpeedAndMotionDefaultsWriteAndClamp() {
+        assertEquals(4, s.screensaverSpeed)
+        assertEquals(ScreensaverMotionMode.Drift, s.screensaverMotion)
+        store.setScreensaverSpeed(7)
+        assertEquals(7, prefs.getInt(InputPrefs.SCREENSAVER_SPEED, 0))
+        assertEquals(7, s.screensaverSpeed)
+        store.setScreensaverSpeed(0)
+        assertEquals(1, s.screensaverSpeed)
+        store.setScreensaverSpeed(99)
+        assertEquals(10, s.screensaverSpeed)
+        store.setScreensaverMotion(ScreensaverMotionMode.Bounce)
+        assertEquals("bounce", prefs.getString(InputPrefs.SCREENSAVER_MOTION, null))
+        assertEquals(ScreensaverMotionMode.Bounce, SettingsStore(prefs, AirActions.Off).state.value.screensaverMotion)
+        prefs.edit().putString(InputPrefs.SCREENSAVER_MOTION, "spiral").putInt(InputPrefs.SCREENSAVER_SPEED, 50).commit()
+        val reloaded = SettingsStore(prefs, AirActions.Off).state.value
+        assertEquals(ScreensaverMotionMode.Drift, reloaded.screensaverMotion)
+        assertEquals(10, reloaded.screensaverSpeed)
+        assertEquals(1, roundSpeed(-2f))
+        assertEquals(6, roundSpeed(5.6f))
+    }
+
+    @Test fun sliderRounding() {
+        assertEquals(1, roundIdleMin(0.4f))
+        assertEquals(8, roundIdleMin(7.6f))
+        assertEquals(30, roundIdleMin(80f))
+        assertEquals(1, roundBrightnessPct(-3f))
+        assertEquals(17, roundBrightnessPct(16.5f))
+    }
+
+    @Test fun screensaverCallbacksAreInvoked() {
+        var preview = 0
+        var replay = 0
+        val st = SettingsStore(prefs, AirActions.Off, onPreviewScreensaver = { preview++ }, onReplayOnboarding = { replay++ })
+        st.previewScreensaver()
+        st.replayOnboarding()
+        st.replayOnboarding()
+        assertEquals(1, preview)
+        assertEquals(2, replay)
+    }
+
+    @Test fun screensaverPrefsStayOutOfTheEngineJson() {
+        store.setScreensaverEnabled(true)
+        store.setScreensaverIdleMin(9)
+        val json = JSONObject(InputPrefs.toJson(context))
+        assertFalse(json.keys().asSequence().any { it.startsWith("screensaver") })
     }
 }

@@ -16,6 +16,7 @@ arg-connect-timeout = Continua tentando a conexão TCP por este número de segun
 arg-max-seconds = Aborta após este número de segundos.
 arg-input-script = Reproduz uma vez uma sequência de entrada predefinida, a partir do primeiro quadro de vídeo: tap, drag, circle, touch2, scroll ou keys (Ctrl+Espaço mantido durante um traço da caneta; requer um host com KEYS).
 arg-exit-after-script = Sai logo após o término do roteiro de entrada.
+arg-audio = Anuncia a reprodução do áudio do PC: o host envia o áudio e os pacotes são contados (não reproduzidos).
 arg-codec = Codec solicitado ao host: auto, h264, hevc ou av1. O host só o usa se os dois lados o suportarem.
 arg-quality = Qualidade solicitada ao host: normal, high ou lossless. O host só respeita high e lossless em um link USB; lossless requer HEVC.
 
@@ -30,6 +31,8 @@ summary-clock = relógio: deslocamento { $offset } us, rtt { $rtt } us
 summary-decode = decodificação: p50 { $p50 } us, p95 { $p95 } us
 summary-e2e = ponta a ponta (captura do host -> decodificado): p50 { $p50 } us, p95 { $p95 } us
 summary-input = entrada: estado { $status }, opções { $options }, enviados { $sent }
+summary-audio = áudio: { $stream }, { $packets } pacotes recebidos ({ $bytes } bytes)
+summary-audio-off = desativado
 
 arg-wifi = Conecta ao host por Wi-Fi (QUIC) em ADDR em vez de TCP. Um host já pareado não precisa de mais nada; na primeira vez, adicione `--pin` (ou use `--uri`).
 arg-pin = Pareia primeiro com o host usando o PIN de 6 dígitos que ele mostra.

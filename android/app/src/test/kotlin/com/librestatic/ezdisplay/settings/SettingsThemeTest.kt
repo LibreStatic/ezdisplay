@@ -30,6 +30,14 @@ class SettingsThemeTest {
         assertTrue(contrast(ensurePrimaryContrast(scheme, dark = true)) >= 4.5)
     }
 
+    @Test fun whiteTextOnPaleDarkPrimaryIsDarkenedToAA() {
+        val samsung = androidx.compose.material3.darkColorScheme(primary = Color(0xFFD6F4FF), onPrimary = Color(0xFFFFFFFF))
+        assertTrue(contrast(samsung) < 4.5)
+        val fixed = ensurePrimaryContrast(samsung, dark = true)
+        assertTrue("contrast ${contrast(fixed)}", contrast(fixed) >= 4.5)
+        assertEquals(samsung.primary, fixed.primary)
+    }
+
     @Test fun seedSchemesAreUnchanged() {
         val light = ensurePrimaryContrast(SeedLight, dark = false)
         val dark = ensurePrimaryContrast(SeedDark, dark = true)

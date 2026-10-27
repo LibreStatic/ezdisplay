@@ -16,6 +16,7 @@
 // Bindgen constant types (i32 vs u32) differ between platforms; the casts keep one code base portable.
 #![allow(clippy::unnecessary_cast)]
 
+mod audio;
 mod color;
 mod decoder;
 mod encoder;
@@ -28,6 +29,7 @@ mod source;
 #[cfg(target_os = "linux")]
 mod vulkan;
 
+pub use audio::{OpusEncoder, create_opus_encoder, opus_available, opus_head};
 pub use color::{ColorInfo, HdrMeta};
 pub use decoder::{DecodedFrame, Decoder};
 pub use encoder::{EncodedPacket, Encoder, EncoderConfig, RawPixelFormat};

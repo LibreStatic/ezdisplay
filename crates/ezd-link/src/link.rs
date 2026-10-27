@@ -13,13 +13,14 @@ pub type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
 /// The streams of a link besides the control stream, one per channel that gets its own stream.
 ///
 /// A channel without a lane (`None`) travels on the control stream, in the mux's priority order.
-/// Audio will be one more field here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lanes<T> {
     /// Input channel (pen, touch, buttons, scroll, keys).
     pub input: Option<T>,
     /// Cursor channel (shapes and the latest-wins cursor state).
     pub cursor: Option<T>,
+    /// Audio channel (PC audio packets, host to client).
+    pub audio: Option<T>,
     /// Video channel.
     pub video: Option<T>,
 }
@@ -29,6 +30,7 @@ impl<T> Default for Lanes<T> {
         Lanes {
             input: None,
             cursor: None,
+            audio: None,
             video: None,
         }
     }
@@ -37,12 +39,15 @@ impl<T> Default for Lanes<T> {
 impl<T> Lanes<T> {
     /// True when no channel has a lane.
     pub fn is_empty(&self) -> bool {
-        self.input.is_none() && self.cursor.is_none() && self.video.is_none()
+        self.input.is_none()
+            && self.cursor.is_none()
+            && self.audio.is_none()
+            && self.video.is_none()
     }
 
-    /// The present lanes in the fixed order input, cursor, video.
+    /// The present lanes in the fixed order input, cursor, audio, video.
     pub fn into_vec(self) -> Vec<T> {
-        [self.input, self.cursor, self.video]
+        [self.input, self.cursor, self.audio, self.video]
             .into_iter()
             .flatten()
             .collect()
@@ -53,7 +58,7 @@ impl<T> Lanes<T> {
 ///
 /// Transports (TCP and QUIC now; AOA bulk endpoints later) only have to produce a
 /// `Link`; everything above it is transport-agnostic. A link may carry further streams for
-/// input, cursor and video (see [`Link::with_lanes`]), which the mux then uses so a stalled
+/// input, cursor, audio and video (see [`Link::with_lanes`]), which the mux then uses so a stalled
 /// channel cannot delay the others.
 pub struct Link {
     /// Read half.

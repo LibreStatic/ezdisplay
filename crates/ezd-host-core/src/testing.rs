@@ -2,12 +2,13 @@
 
 use crate::input::{InputBackend, InputSink, InputTarget};
 use crate::source::{
-    CursorSink, DisplayMode, EncodedFrame, OutputInfo, SourceError, VideoSource, VirtualDisplay,
+    AudioBackend, AudioBlock, AudioEncoder, AudioSource, CursorSink, DisplayMode, EncodedFrame,
+    OutputInfo, SourceError, VideoSource, VirtualDisplay,
 };
 use crate::time::now_us;
 use ezd_proto::{
-    Codec, CursorShape, CursorState, EncoderCaps, InputStatus, Key, PenSample, PointerButton,
-    Scroll, StreamConfig, TouchFrame,
+    AudioVolume, Codec, CursorShape, CursorState, EncoderCaps, InputStatus, Key, PenSample,
+    PointerButton, Scroll, StreamConfig, TouchFrame,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -156,6 +157,154 @@ impl VideoSource for ScriptedSource {
     }
     fn stop(&mut self) {
         self.stopped = true;
+    }
+}
+
+/// An [`AudioBackend`] whose sources produce a ramp (sample `i` of the stream is
+/// `(i % 1000) / 1000` on every channel) in blocks that are not a multiple of the frame size,
+/// and whose Opus "encoder" returns fixed-size dummy packets.
+#[derive(Debug, Clone)]
+pub struct ScriptedAudioBackend {
+    /// `create_source` returns a source (default true).
+    pub has_source: bool,
+    /// The sources fail in `start`.
+    pub fail_start: bool,
+    /// `opus_available` (default true).
+    pub opus: bool,
+    /// The Opus encoder cannot be created.
+    pub fail_opus: bool,
+    /// Samples per channel in each block (default 700).
+    pub block_samples: usize,
+    /// The volume control shared by every source this backend creates.
+    pub volume: ScriptedVolume,
+}
+
+/// The volume control of the scripted sources, shared with the test.
+///
+/// Like a real mixer it reports a change for every value it is given, including the ones set
+/// through `set_volume` (the session must not send those back).
+#[derive(Debug, Clone, Default)]
+pub struct ScriptedVolume(Arc<Mutex<VolumeState>>);
+
+#[derive(Debug, Default)]
+struct VolumeState {
+    applied: Vec<AudioVolume>,
+    pending: Option<AudioVolume>,
+}
+
+impl ScriptedVolume {
+    /// Pretends the user moved the host's volume control.
+    pub fn set_local(&self, v: AudioVolume) {
+        self.0.lock().unwrap().pending = Some(v);
+    }
+
+    /// Every value the session applied with `set_volume`, in order.
+    pub fn applied(&self) -> Vec<AudioVolume> {
+        self.0.lock().unwrap().applied.clone()
+    }
+}
+
+impl ScriptedAudioBackend {
+    /// A backend with a working source and Opus encoder.
+    pub fn new() -> Self {
+        ScriptedAudioBackend {
+            has_source: true,
+            fail_start: false,
+            opus: true,
+            fail_opus: false,
+            block_samples: 700,
+            volume: ScriptedVolume::default(),
+        }
+    }
+
+    /// Size in bytes of every packet of the dummy Opus encoder.
+    pub const OPUS_PACKET_LEN: usize = 40;
+    /// `codec_config` of the dummy Opus encoder.
+    pub const OPUS_HEAD: &'static [u8] = b"OpusHead-test";
+}
+
+impl Default for ScriptedAudioBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AudioBackend for ScriptedAudioBackend {
+    fn create_source(&self) -> Option<Box<dyn AudioSource>> {
+        self.has_source.then(|| {
+            Box::new(ScriptedAudio {
+                channels: 0,
+                n: 0,
+                block_samples: self.block_samples,
+                fail_start: self.fail_start,
+                volume: self.volume.clone(),
+            }) as Box<dyn AudioSource>
+        })
+    }
+    fn opus_available(&self) -> bool {
+        self.opus
+    }
+    fn create_opus_encoder(&self, channels: u8) -> Result<Box<dyn AudioEncoder>, SourceError> {
+        if self.fail_opus {
+            return Err(SourceError::msg("scripted Opus failure"));
+        }
+        Ok(Box::new(ScriptedOpus {
+            frame_len: 480 * channels as usize,
+        }))
+    }
+}
+
+struct ScriptedAudio {
+    channels: usize,
+    n: u64,
+    block_samples: usize,
+    fail_start: bool,
+    volume: ScriptedVolume,
+}
+
+impl AudioSource for ScriptedAudio {
+    fn start(&mut self, channels: u8) -> Result<(), SourceError> {
+        if self.fail_start {
+            return Err(SourceError::msg("scripted audio failure"));
+        }
+        self.channels = channels as usize;
+        Ok(())
+    }
+    fn next_samples(&mut self, timeout: Duration) -> Result<Option<AudioBlock>, SourceError> {
+        std::thread::sleep(Duration::from_millis(3).min(timeout));
+        let mut samples = Vec::with_capacity(self.block_samples * self.channels);
+        for _ in 0..self.block_samples {
+            let v = (self.n % 1000) as f32 / 1000.0;
+            samples.extend(std::iter::repeat_n(v, self.channels));
+            self.n += 1;
+        }
+        Ok(Some(AudioBlock {
+            pts_us: now_us(),
+            samples,
+        }))
+    }
+    fn stop(&mut self) {}
+    fn take_volume_change(&mut self) -> Option<AudioVolume> {
+        self.volume.0.lock().unwrap().pending.take()
+    }
+    fn set_volume(&mut self, v: AudioVolume) {
+        let mut st = self.volume.0.lock().unwrap();
+        st.applied.push(v);
+        st.pending = Some(v);
+    }
+}
+
+struct ScriptedOpus {
+    frame_len: usize,
+}
+
+impl AudioEncoder for ScriptedOpus {
+    fn codec_config(&self) -> Vec<u8> {
+        ScriptedAudioBackend::OPUS_HEAD.to_vec()
+    }
+    fn encode(&mut self, pcm: &[f32]) -> Result<Vec<u8>, SourceError> {
+        assert_eq!(pcm.len(), self.frame_len, "the session feeds whole frames");
+        Ok(vec![0xFC; ScriptedAudioBackend::OPUS_PACKET_LEN])
     }
 }
 

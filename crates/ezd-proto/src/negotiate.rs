@@ -1,8 +1,8 @@
 //! Capability negotiation: a pure function from caps + preferences to a [`StreamConfig`].
 
 use crate::msg::{
-    ClientCaps, ClientHdr, ClientPrefs, Codec, DecoderCaps, EncoderCaps, HostCaps, QualityLevel,
-    StreamConfig,
+    AudioCodec, AudioStream, ClientAudio, ClientCaps, ClientHdr, ClientPrefs, Codec, DecoderCaps,
+    EncoderCaps, HostCaps, QualityLevel, SampleFormat, StreamConfig,
 };
 use crate::{ProtoError, Result};
 
@@ -33,6 +33,29 @@ pub enum HdrMode {
     Auto,
     /// Never stream HDR10; an HDR source is tone-mapped to SDR.
     Off,
+}
+
+/// User preference for PC audio streaming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AudioMode {
+    /// Uncompressed PCM when the link and the client allow it, else Opus.
+    #[default]
+    Auto,
+    /// Prefer PCM even on a slow link; fall back to Opus when the client cannot play it.
+    Pcm,
+    /// Prefer Opus; fall back to PCM as in [`AudioMode::Auto`].
+    Opus,
+    /// No audio.
+    Off,
+}
+
+/// What the host can do for audio, fed into [`negotiate_audio`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HostAudio {
+    /// An audio capture source exists.
+    pub available: bool,
+    /// An Opus encoder exists.
+    pub opus: bool,
 }
 
 /// Why an HDR source is streamed as tone-mapped SDR.
@@ -91,6 +114,8 @@ pub struct Prefs {
     pub scale_permille: u16,
     /// HDR10 streaming policy, used by [`negotiate_hdr`]. Default [`HdrMode::Auto`].
     pub hdr: HdrMode,
+    /// Audio streaming policy, used by [`negotiate_audio`]. Default [`AudioMode::Auto`].
+    pub audio: AudioMode,
     /// Quality level asked for. A host sets it to override the client; otherwise it is filled from
     /// the client's `ClientPrefs` by [`with_client`](Prefs::with_client). What is applied is
     /// [`applied_quality`](Prefs::applied_quality). Default [`QualityLevel::Normal`].
@@ -149,6 +174,7 @@ impl Default for Prefs {
             encoder: None,
             scale_permille: 1000,
             hdr: HdrMode::Auto,
+            audio: AudioMode::Auto,
             quality: QualityLevel::Normal,
         }
     }
@@ -349,6 +375,73 @@ pub fn bitrate_ceiling_kbps(prefs: &Prefs) -> u32 {
         .max(MIN_BITRATE_KBPS)
 }
 
+/// Audio sample rate of the stream, Hz.
+const AUDIO_RATE: u32 = 48_000;
+/// Samples per channel in one audio packet (10 ms).
+const AUDIO_FRAME_SAMPLES: u32 = 480;
+/// Smallest link ceiling that lets [`AudioMode::Auto`] pick PCM, kbit/s.
+const PCM_MIN_LINK_KBPS: u32 = 8_000;
+
+/// Decides the audio stream, or `None` for no audio.
+///
+/// * `None` when the mode is [`AudioMode::Off`], the client has audio disabled or no output
+///   channels, or the host has no audio source;
+/// * 48 kHz, `min(2, client.max_channels)` channels, 480 samples per packet;
+/// * PCM needs client PCM and 48 kHz support, and (unless forced with [`AudioMode::Pcm`]) a
+///   link ceiling `max_bitrate_kbps` of at least 8 Mbit/s; the format is F32 on USB when the
+///   client plays it, else S16, else F32. Opus needs client Opus and a host encoder;
+/// * [`AudioMode::Auto`]/[`AudioMode::Pcm`] try PCM then Opus, [`AudioMode::Opus`] the reverse.
+///
+/// `codec_config` is left empty: the host fills in the OpusHead from its encoder.
+pub fn negotiate_audio(
+    mode: AudioMode,
+    client: &ClientAudio,
+    host: &HostAudio,
+    link: LinkKind,
+    max_bitrate_kbps: u32,
+) -> Option<AudioStream> {
+    if mode == AudioMode::Off || !client.enabled || !host.available || client.max_channels == 0 {
+        return None;
+    }
+    let channels = client.max_channels.min(2);
+    let stream = |codec, format| AudioStream {
+        codec,
+        sample_rate: AUDIO_RATE,
+        channels,
+        format,
+        frame_samples: AUDIO_FRAME_SAMPLES,
+        codec_config: Vec::new(),
+    };
+    let has_fmt = |f| client.formats.contains(&f);
+    let pcm = || {
+        if !client.codecs.contains(&AudioCodec::Pcm) || !client.sample_rates.contains(&AUDIO_RATE) {
+            return None;
+        }
+        if mode != AudioMode::Pcm && max_bitrate_kbps < PCM_MIN_LINK_KBPS {
+            return None;
+        }
+        let format = if link == LinkKind::Usb && has_fmt(SampleFormat::F32) {
+            SampleFormat::F32
+        } else if has_fmt(SampleFormat::S16) {
+            SampleFormat::S16
+        } else if has_fmt(SampleFormat::F32) {
+            SampleFormat::F32
+        } else {
+            return None;
+        };
+        Some(stream(AudioCodec::Pcm, format))
+    };
+    let opus = || {
+        (client.codecs.contains(&AudioCodec::Opus) && host.opus)
+            // The client picks its own decoder output format; `format` is ignored for Opus.
+            .then(|| stream(AudioCodec::Opus, SampleFormat::S16))
+    };
+    match mode {
+        AudioMode::Opus => opus().or_else(pcm),
+        _ => pcm().or_else(opus),
+    }
+}
+
 /// Computes the stream configuration for a client/host pair.
 ///
 /// * codec: `prefs.codec` if both sides support it, else H.264 (then HEVC, AV1);
@@ -430,6 +523,110 @@ mod tests {
             gpu: "t".into(),
             encoders,
         }
+    }
+
+    fn client_audio(rates: &[u32], formats: &[SampleFormat], codecs: &[AudioCodec]) -> ClientAudio {
+        ClientAudio {
+            enabled: true,
+            sample_rates: rates.to_vec(),
+            max_channels: 2,
+            formats: formats.to_vec(),
+            codecs: codecs.to_vec(),
+        }
+    }
+
+    #[test]
+    fn audio_negotiation_matrix() {
+        use AudioCodec::{Opus, Pcm};
+        use SampleFormat::{F32, S16};
+        let full = client_audio(&[44100, 48000], &[S16, F32], &[Pcm, Opus]);
+        let both = HostAudio {
+            available: true,
+            opus: true,
+        };
+        let pcm_only = HostAudio {
+            available: true,
+            opus: false,
+        };
+        let got = |mode, c: &ClientAudio, h: &HostAudio, link, kbps| {
+            negotiate_audio(mode, c, h, link, kbps).map(|s| (s.codec, s.format, s.channels))
+        };
+        let (auto, pcm_mode, opus_mode, off) = (
+            AudioMode::Auto,
+            AudioMode::Pcm,
+            AudioMode::Opus,
+            AudioMode::Off,
+        );
+        use LinkKind::*;
+        // Auto: PCM F32 on USB, S16 on the network, Opus on a slow link.
+        assert_eq!(got(auto, &full, &both, Usb, 80_000), Some((Pcm, F32, 2)));
+        assert_eq!(
+            got(auto, &full, &both, Network, 30_000),
+            Some((Pcm, S16, 2))
+        );
+        assert_eq!(
+            got(auto, &full, &both, Network, 4_000),
+            Some((Opus, S16, 2))
+        );
+        assert_eq!(got(auto, &full, &pcm_only, Network, 4_000), None);
+        // Forced PCM ignores the bitrate rule but still needs client support.
+        assert_eq!(
+            got(pcm_mode, &full, &both, Network, 4_000),
+            Some((Pcm, S16, 2))
+        );
+        let opus_only = client_audio(&[], &[], &[Opus]);
+        assert_eq!(
+            got(pcm_mode, &opus_only, &both, Usb, 80_000),
+            Some((Opus, S16, 2))
+        );
+        assert_eq!(got(pcm_mode, &opus_only, &pcm_only, Usb, 80_000), None);
+        // Forced Opus, with PCM as the fallback.
+        assert_eq!(
+            got(opus_mode, &full, &both, Usb, 80_000),
+            Some((Opus, S16, 2))
+        );
+        assert_eq!(
+            got(opus_mode, &full, &pcm_only, Usb, 80_000),
+            Some((Pcm, F32, 2))
+        );
+        assert_eq!(got(opus_mode, &full, &pcm_only, Usb, 1_000), None);
+        // No 48 kHz output: PCM is impossible, Opus still works.
+        let c44 = client_audio(&[44100], &[S16], &[Pcm, Opus]);
+        assert_eq!(got(auto, &c44, &both, Usb, 80_000), Some((Opus, S16, 2)));
+        assert_eq!(got(auto, &c44, &pcm_only, Usb, 80_000), None);
+        // Format choice.
+        let s16 = client_audio(&[48000], &[S16], &[Pcm]);
+        assert_eq!(got(auto, &s16, &both, Usb, 80_000), Some((Pcm, S16, 2)));
+        let f32c = client_audio(&[48000], &[F32], &[Pcm]);
+        assert_eq!(
+            got(auto, &f32c, &both, Network, 30_000),
+            Some((Pcm, F32, 2))
+        );
+        let nofmt = client_audio(&[48000], &[], &[Pcm]);
+        assert_eq!(got(auto, &nofmt, &pcm_only, Usb, 80_000), None);
+        // Off, disabled, no source, no channels.
+        assert_eq!(got(off, &full, &both, Usb, 80_000), None);
+        let mut disabled = full.clone();
+        disabled.enabled = false;
+        assert_eq!(got(auto, &disabled, &both, Usb, 80_000), None);
+        assert_eq!(got(auto, &ClientAudio::none(), &both, Usb, 80_000), None);
+        assert_eq!(got(auto, &full, &HostAudio::default(), Usb, 80_000), None);
+        let mut mute = full.clone();
+        mute.max_channels = 0;
+        assert_eq!(got(auto, &mute, &both, Usb, 80_000), None);
+        // Channels follow the client, capped at stereo.
+        let mut mono = full.clone();
+        mono.max_channels = 1;
+        assert_eq!(got(auto, &mono, &both, Usb, 80_000), Some((Pcm, F32, 1)));
+        let mut surround = full.clone();
+        surround.max_channels = 8;
+        assert_eq!(
+            got(auto, &surround, &both, Usb, 80_000),
+            Some((Pcm, F32, 2))
+        );
+        let s = negotiate_audio(auto, &full, &both, Usb, 80_000).unwrap();
+        assert_eq!((s.sample_rate, s.frame_samples), (48_000, 480));
+        assert!(s.codec_config.is_empty());
     }
 
     #[test]

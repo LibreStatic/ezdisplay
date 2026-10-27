@@ -1,6 +1,8 @@
 package com.librestatic.ezdisplay.settings
 
+import android.content.Context
 import android.content.SharedPreferences
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
@@ -17,6 +19,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.librestatic.ezdisplay.InputPrefs
+import com.librestatic.ezdisplay.display.PanelType
 import com.librestatic.ezdisplay.wifi.WifiBackend
 import org.junit.Before
 import org.junit.Rule
@@ -34,16 +37,22 @@ abstract class SettingsUiTestBase {
     @Before fun clearPrefs() {
         prefs = InputPrefs.prefs(ApplicationProvider.getApplicationContext())
         prefs.edit().clear().commit()
+        // The screensaver preview animates for ever, which would keep Compose from ever going idle.
+        Settings.Global.putFloat(
+            ApplicationProvider.getApplicationContext<Context>().contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE, 0f,
+        )
     }
 
     /** Seeds [seed] into prefs, then shows the screen. */
     protected fun launch(
         airActions: AirActions = AirActions.Off,
         wifi: WifiBackend = WifiBackend.None,
+        panelType: PanelType = PanelType.Unknown,
         seed: SharedPreferences.Editor.() -> Unit = {},
     ) {
         prefs.edit().apply(seed).commit()
-        store = SettingsStore(prefs, airActions, wifi, "test tablet", io = Executor { it.run() })
+        store = SettingsStore(prefs, airActions, wifi, "test tablet", io = Executor { it.run() }, panelType = panelType)
         rule.setContent { SettingsTheme { SettingsScreen(store) } }
         rule.waitForIdle()
     }

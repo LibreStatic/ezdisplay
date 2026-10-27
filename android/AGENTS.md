@@ -19,6 +19,24 @@ Repository-wide rules (languages and localization, naming) are in the root `AGEN
     At 1691x978 dp the Wide page must not scroll (covered by `SettingsWideTest`); for that the Wide page shows Video
     (codec and quality) as one row that opens a dialog, like the Connection hosts.
   - `Sections.kt`: shared components. Colours and type come from `MaterialTheme` only.
+  - `DisplaySection.kt`: the Display section (screensaver switch, idle / brightness / blank-after / shape speed sliders,
+    movement mode (cross the screen or bounce), preview, replay of the getting-started guide). The Wide page must stay
+    free of scrolling, so it has no Display block: a `DisplaySheetButton` on the title row ("Screensaver · 5 minutes"
+    or "Screensaver off") opens the full `DisplayContent` in a `ModalBottomSheet` (`DisplaySheet`).
+- `onboarding/` is the getting-started guide (`OnboardingActivity`, `OnboardingContent(state, actions, onFinish)` with the
+  steps Welcome, HostInstall, Connection, PenProfile, Display, Done). `OnboardingStore` keeps the completed version
+  (`onboarding_version` in the `input` prefs, `ONBOARDING_VERSION`); an install that already has other prefs counts as
+  completed. `OnboardingStore.shouldShow(context)` is what `MainActivity` asks before starting. Settings replays the
+  guide with the `replay` extra. The Connection step reuses `ConnectionContent`; the pen step writes through
+  `SettingsActions`. `OnboardingScreenshotTest` captures every step at phone and tablet widths.
+- `ui/expressive/` is the shared Material 3 Expressive kit: `MorphShape`, `PageTransitions` (shared-axis X, crossfade
+  with reduced motion), `StepShape` (morphing step indicator), `ShapeBackdrop` (drifting shape field of the
+  onboarding guide) and `Motion` (reduced motion = animator duration scale 0).
+- `display/PanelType.kt` detects OLED / LCD (sysfs, system properties, model list, HDR min luminance) and caches it in
+  prefs; `screensaver/` holds `ScreensaverContent` (its own dim monochrome field of themed silhouettes from
+  `ScreensaverGlyphs`: monitor, tablet, stylus, brush, palette, mouse; not `ShapeBackdrop`), `ScreensaverMotion` (pure
+  Kotlin motion model: Drift or Bounce, speed level 1..10 at 10 dp/s each, rare steps with reduced motion) and
+  `ScreensaverPrefs`. The screensaver prefs live in the `input` file but are never part of `InputPrefs.toJson`.
 
 ## Build and test
 - Set `ANDROID_HOME` when `local.properties` is missing.

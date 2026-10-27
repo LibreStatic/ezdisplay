@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the ezdisplay AppImage: a minimal GPL FFmpeg (with x264 and the hardware paths the host
+# Builds the ezdisplay AppImage: a minimal GPL FFmpeg (with x264, libopus and the hardware paths the host
 # uses) built from pinned sources, the two binaries linked against it, the bundled adb, and the
 # AppImage itself.
 #
@@ -80,7 +80,7 @@ fetch() {
 }
 
 log "Downloading pinned sources and tools"
-for n in FFMPEG X264 NVCODEC VULKAN APPIMAGETOOL RUNTIME ADB; do fetch $n; done
+for n in FFMPEG X264 OPUS NVCODEC VULKAN APPIMAGETOOL RUNTIME ADB; do fetch $n; done
 
 # unpack NAME DIR: extracts the archive into an empty DIR (one top-level directory is stripped).
 unpack() {
@@ -113,6 +113,18 @@ unpack X264 "$SRC/x264"
     make install
 )
 
+# --- 3b. libopus (static, PIC; BSD-3-Clause) ----------------------------------------------
+
+log "Building libopus"
+unpack OPUS "$SRC/opus"
+(
+    cd "$SRC/opus"
+    ./configure --prefix="$PREFIX" --enable-static --disable-shared --with-pic \
+        --disable-doc --disable-extra-programs
+    make -j"$JOBS"
+    make install
+)
+
 # --- 4. FFmpeg ----------------------------------------------------------------------------
 
 log "Building FFmpeg $FFMPEG_VERSION"
@@ -121,11 +133,11 @@ export PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig
 FFMPEG_CONFIGURE=(
     --prefix="$PREFIX"
     --enable-shared --disable-static --enable-pic
-    --enable-gpl --enable-libx264
+    --enable-gpl --enable-libx264 --enable-libopus
     --disable-autodetect --disable-everything --disable-programs --disable-doc
     --disable-avdevice --disable-avformat --disable-swresample --disable-network
     --disable-xlib
-    --enable-encoder=h264_vaapi,h264_nvenc,libx264
+    --enable-encoder=h264_vaapi,h264_nvenc,libx264,libopus
     --enable-decoder=h264
     --enable-parser=h264
     --enable-filter=buffer,buffersink,format,null,scale,hwmap,hwupload,scale_vaapi,scale_vulkan
@@ -136,6 +148,8 @@ FFMPEG_CONFIGURE=(
     --enable-libglslang
     --extra-cflags="-I$SRC/vulkan-headers/include"
     --extra-ldflags="-static-libstdc++ -static-libgcc"
+    # The static libopus needs libm, which opus.pc lists only under Libs.private.
+    --extra-libs=-lm
 )
 (
     cd "$SRC/ffmpeg"
@@ -192,6 +206,7 @@ install -m644 "$REPO/LICENSE-MIT" "$REPO/LICENSE-APACHE" "$L/"
 install -m644 "$REPO/packaging/windows/licenses/FluentSystemIcons-LICENSE.txt" "$L/"
 install -m644 "$SRC/ffmpeg/COPYING.GPLv2" "$SRC/ffmpeg/COPYING.GPLv3" "$SRC/ffmpeg/LICENSE.md" "$L/"
 install -m644 "$SRC/x264/COPYING" "$L/x264-COPYING"
+install -m644 "$SRC/opus/COPYING" "$L/opus-COPYING"
 for pkg in glslang-dev glslang-tools spirv-tools; do
     [ -f "/usr/share/doc/$pkg/copyright" ] && install -m644 "/usr/share/doc/$pkg/copyright" "$L/$pkg-copyright"
 done
@@ -208,6 +223,9 @@ FFmpeg $FFMPEG_VERSION (libavcodec, libavfilter, libavutil, libswscale)
 
 x264 $X264_VERSION (statically linked into libavcodec)
   Licence: GNU GPL v2 or later (see x264-COPYING). Source: $X264_URL
+
+libopus $OPUS_VERSION (statically linked into libavcodec, for the Opus audio encoder)
+  Licence: BSD 3-Clause (see opus-COPYING). Source: $OPUS_URL
 
 glslang and SPIRV-Tools (statically linked into libavfilter, for scale_vulkan)
   Licences: see the glslang and spirv-tools copyright files next to this file.
@@ -287,7 +305,7 @@ log "Collecting the corresponding sources"
 SRCOUT=$OUT/ezdisplay-appimage-sources
 rm -rf "$SRCOUT"
 mkdir -p "$SRCOUT"
-for n in FFMPEG X264 NVCODEC VULKAN; do
+for n in FFMPEG X264 OPUS NVCODEC VULKAN; do
     install -m644 "$CACHE/$(eval "echo \${${n}_FILE}")" "$SRCOUT/"
 done
 install -m755 "$HERE/build.sh" "$SRCOUT/"

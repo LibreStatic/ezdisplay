@@ -1,6 +1,6 @@
 //! ezdisplay Android client native library.
 //!
-//! The portable parts ([`caps`], [`input`], [`keys`], [`tracker`], [`status`]) build and test on the host. The JNI
+//! The portable parts ([`caps`], [`input`], [`jitter`], [`keys`], [`tracker`], [`status`]) build and test on the host. The JNI
 //! bridge, session and MediaCodec decoder only exist for `target_os = "android"`.
 //!
 //! Kotlin class: `com.librestatic.ezdisplay.NativeBridge` (see `bridge.rs`).
@@ -11,11 +11,14 @@
 pub mod caps;
 pub mod color;
 pub mod input;
+pub mod jitter;
 pub mod keys;
 pub mod status;
 pub mod tracker;
 pub mod wifi;
 
+#[cfg(target_os = "android")]
+mod audio;
 #[cfg(target_os = "android")]
 mod bridge;
 #[cfg(target_os = "android")]

@@ -29,6 +29,7 @@ pub fn sections() -> Vec<Box<dyn Section>> {
     }
     v.push(Box::new(Platform));
     v.push(Box::new(Encoders));
+    v.push(Box::new(AudioInfo));
     v.push(Box::new(AdbInfo));
     v.push(Box::new(UsbInfo));
     v
@@ -45,6 +46,16 @@ pub fn report() -> Value {
         map.insert(s.name().into(), s.collect());
     }
     Value::Object(map)
+}
+
+struct AudioInfo;
+impl Section for AudioInfo {
+    fn name(&self) -> &'static str {
+        "audio"
+    }
+    fn collect(&self) -> Value {
+        ezd_host_service::audio::diag_section()
+    }
 }
 
 struct HostInfo;

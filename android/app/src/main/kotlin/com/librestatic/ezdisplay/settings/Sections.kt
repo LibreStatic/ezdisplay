@@ -1,6 +1,7 @@
 package com.librestatic.ezdisplay.settings
 
 import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -28,12 +29,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.annotation.StringRes
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenu
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -514,37 +515,23 @@ private fun VideoChoice(
     }
 }
 
-/** Wide page version: one row with the current choices that opens [VideoGroup] in a dialog, so the page does not scroll. */
+/**
+ * Wide page version: a button on the title row with the current choices that opens [VideoGroup] in a dialog, so the
+ * page gains no height (the key editor pane leaves no room for another row).
+ */
 @Composable
 fun VideoSummary(state: SettingsState, actions: SettingsActions, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
     var open by rememberSaveable { mutableStateOf(false) }
-    Surface(
-        onClick = { open = true },
-        shape = RoundedCornerShape(GroupEnd), color = colors.surfaceBright,
-        modifier = modifier.fillMaxWidth().testTag("video_summary"),
-    ) {
-        Row(
-            Modifier.heightIn(min = RowMinHeight).padding(RowPadding),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Symbol(R.drawable.ic_tune, tint = colors.secondary)
-            Column(Modifier.weight(1f)) {
-                Text(
-                    stringResource(R.string.section_video),
-                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    stringResource(
-                        R.string.video_summary,
-                        stringResource(videoCodecLabel(state.videoCodec)), stringResource(videoQualityLabel(state.streamQuality)),
-                    ),
-                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
-                )
-            }
-            Symbol(R.drawable.ic_chevron_right, tint = colors.primary)
-        }
+    FilledTonalButton(onClick = { open = true }, modifier = modifier.testTag("video_summary")) {
+        Symbol(R.drawable.ic_tune, size = 20.dp)
+        Text(
+            stringResource(
+                R.string.video_summary,
+                stringResource(videoCodecLabel(state.videoCodec)), stringResource(videoQualityLabel(state.streamQuality)),
+            ),
+            Modifier.padding(start = 8.dp),
+        )
     }
     if (open) {
         Dialog(onDismissRequest = { open = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -662,6 +649,30 @@ private fun DoubleClickSlider(ms: Int, actions: SettingsActions, shape: Shape) {
 /** Palm rejection toggle. */
 @Composable
 fun PalmRow(on: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    SwitchRow(
+        on, onChange, R.drawable.ic_back_hand, R.string.settings_palm_title, R.string.settings_palm_desc,
+        modifier.testTag("palm_row"),
+    )
+}
+
+/** Audio toggle: play the PC's audio on this device. */
+@Composable
+fun AudioRow(on: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    SwitchRow(
+        on, onChange, R.drawable.ic_volume_up, R.string.settings_audio_title, R.string.settings_audio_desc,
+        modifier.testTag("audio_row"),
+    )
+}
+
+@Composable
+private fun SwitchRow(
+    on: Boolean,
+    onChange: (Boolean) -> Unit,
+    @DrawableRes icon: Int,
+    @StringRes title: Int,
+    @StringRes desc: Int,
+    modifier: Modifier,
+) {
     val colors = MaterialTheme.colorScheme
     // The whole row is the switch, so TalkBack reads one control.
     Surface(
@@ -669,21 +680,21 @@ fun PalmRow(on: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modif
         onCheckedChange = onChange,
         shape = RoundedCornerShape(GroupEnd),
         color = colors.surfaceBright,
-        modifier = modifier.fillMaxWidth().semantics { role = Role.Switch }.testTag("palm_row"),
+        modifier = modifier.fillMaxWidth().semantics { role = Role.Switch },
     ) {
         Row(
             Modifier.heightIn(min = RowMinHeight).padding(RowPadding),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Symbol(R.drawable.ic_back_hand, tint = colors.secondary)
+            Symbol(icon, tint = colors.secondary)
             Column(Modifier.weight(1f)) {
                 Text(
-                    stringResource(R.string.settings_palm_title),
+                    stringResource(title),
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    stringResource(R.string.settings_palm_desc),
+                    stringResource(desc),
                     style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
                 )
             }

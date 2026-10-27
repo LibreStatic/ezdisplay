@@ -7,7 +7,7 @@ use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use ezd_host_core::LiveStats;
-use ezd_host_service::{HdrChoice, LiveSession, Transport};
+use ezd_host_service::{AudioChoice, HdrChoice, LiveSession, Transport};
 use ezd_proto::{ClientStats, Codec, DynamicRange, SdrReason, StreamConfig};
 use std::time::Duration;
 
@@ -23,6 +23,7 @@ fn live(stats: Option<LiveStats>) -> HostStatus {
             encoder_name: "h264_nvenc".into(),
         },
         dynamic_range: DynamicRange::Sdr,
+        audio: None,
         devices: vec![],
         stats,
         input: None,
@@ -268,6 +269,9 @@ fn changing_hdr_changes_the_config() {
     h.get_by_role_and_label(Role::Button, "Display").click();
     h.run();
     assert_eq!(h.state().snap.config.service.hdr, HdrChoice::Auto);
+    h.get_by_role_and_label(Role::ComboBox, "HDR")
+        .scroll_to_me();
+    h.run();
     h.get_by_role_and_label(Role::ComboBox, "HDR").click();
     h.run();
     h.get_by_label("Off").click();
@@ -278,6 +282,51 @@ fn changing_hdr_changes_the_config() {
         panic!("expected one SetConfig, got {actions:?}");
     };
     assert_eq!(c.service.hdr, HdrChoice::Off);
+}
+
+#[test]
+fn changing_audio_changes_the_config() {
+    let mut h = harness(snapshot(HostStatus::Waiting { devices: vec![] }), "en");
+    h.get_by_role_and_label(Role::Button, "Display").click();
+    h.run();
+    assert_eq!(h.state().snap.config.service.audio, AudioChoice::Auto);
+    h.get_by_role_and_label(Role::ComboBox, "Audio").click();
+    h.run();
+    h.get_by_label("Opus (compressed)").click();
+    h.run();
+    assert_eq!(h.state().snap.config.service.audio, AudioChoice::Opus);
+    let actions = h.state_mut().take_actions();
+    let [Action::SetConfig(c)] = actions.as_slice() else {
+        panic!("expected one SetConfig, got {actions:?}");
+    };
+    assert_eq!(c.service.audio, AudioChoice::Opus);
+}
+
+#[test]
+fn the_stream_card_shows_the_negotiated_audio() {
+    let audio = |codec, format| ezd_proto::AudioStream {
+        codec,
+        sample_rate: 48_000,
+        channels: 2,
+        format,
+        frame_samples: 480,
+        codec_config: vec![],
+    };
+    let with = |a| {
+        let HostStatus::Streaming(mut s) = live(None) else {
+            unreachable!()
+        };
+        s.audio = a;
+        HostStatus::Streaming(s)
+    };
+    let h = harness(snapshot(live(None)), "en");
+    h.get_by_label("None");
+    let pcm = audio(ezd_proto::AudioCodec::Pcm, ezd_proto::SampleFormat::S16);
+    let h = harness(snapshot(with(Some(pcm))), "en");
+    h.get_by_label("PCM 16-bit, 48 kHz, stereo");
+    let opus = audio(ezd_proto::AudioCodec::Opus, ezd_proto::SampleFormat::S16);
+    let h = harness(snapshot(with(Some(opus))), "es");
+    h.get_by_label("Opus, 48 kHz, estéreo");
 }
 
 #[cfg(target_os = "linux")]

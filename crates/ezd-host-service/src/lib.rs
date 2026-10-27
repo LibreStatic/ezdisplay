@@ -17,6 +17,7 @@
 pub mod adb;
 #[cfg(feature = "aoa")]
 pub mod aoa;
+pub mod audio;
 pub mod config;
 pub mod error;
 #[cfg(feature = "wifi")]
@@ -31,8 +32,8 @@ mod wifi;
 
 pub use adb::{AdbClient, AdbLocator, is_network_serial};
 pub use config::{
-    AdbMode, AoaMode, CodecChoice, HdrChoice, LinkChoice, PenChoice, QualityChoice, ServiceConfig,
-    SourceKind,
+    AdbMode, AoaMode, AudioChoice, CodecChoice, HdrChoice, LinkChoice, PenChoice, QualityChoice,
+    ServiceConfig, SourceKind,
 };
 #[cfg(feature = "wifi")]
 pub use config::{CongestionChoice, WifiConfig};

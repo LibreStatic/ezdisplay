@@ -1,10 +1,11 @@
 //! Configuration of the service: what the CLI flags and the tray settings both describe.
 
 use ezd_host_core::{
-    InputBackend, PenMode, PlatformOptions, SessionEvent, SessionOptions, UnavailableBackend,
+    AudioBackend, InputBackend, PenMode, PlatformOptions, SessionEvent, SessionOptions,
+    UnavailableBackend,
 };
 use ezd_link::VideoCredit;
-use ezd_proto::{Codec, HdrMode, LinkKind, Prefs, QualityLevel};
+use ezd_proto::{AudioMode, Codec, HdrMode, LinkKind, Prefs, QualityLevel};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -143,6 +144,32 @@ impl From<QualityChoice> for QualityLevel {
     }
 }
 
+/// PC audio streaming policy (serializable mirror of [`AudioMode`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioChoice {
+    /// Uncompressed PCM when the link and the tablet allow it, else Opus.
+    #[default]
+    Auto,
+    /// Prefer PCM even on a slow link.
+    Pcm,
+    /// Prefer Opus.
+    Opus,
+    /// No audio.
+    Off,
+}
+
+impl From<AudioChoice> for AudioMode {
+    fn from(c: AudioChoice) -> Self {
+        match c {
+            AudioChoice::Auto => AudioMode::Auto,
+            AudioChoice::Pcm => AudioMode::Pcm,
+            AudioChoice::Opus => AudioMode::Opus,
+            AudioChoice::Off => AudioMode::Off,
+        }
+    }
+}
+
 /// Congestion controller of the Wi-Fi link.
 #[cfg(feature = "wifi")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -236,6 +263,8 @@ pub struct ServiceConfig {
     pub open_app_on_connect: bool,
     /// HDR10 streaming policy (`hdr = "auto" | "off"`).
     pub hdr: HdrChoice,
+    /// PC audio policy (`audio = "auto" | "pcm" | "opus" | "off"`).
+    pub audio: AudioChoice,
     /// Codec to use, overriding the tablet's preference; `auto` follows the tablet.
     pub codec: CodecChoice,
     /// Quality to use, overriding the tablet's choice unless `normal`. Above `normal` it applies
@@ -271,6 +300,7 @@ impl Default for ServiceConfig {
             pen_mode: PenChoice::default(),
             open_app_on_connect: true,
             hdr: HdrChoice::default(),
+            audio: AudioChoice::default(),
             codec: CodecChoice::default(),
             quality: QualityChoice::default(),
             #[cfg(feature = "wifi")]
@@ -293,6 +323,7 @@ impl ServiceConfig {
             encoder: self.encoder.clone(),
             scale_permille: self.scale_permille,
             hdr: self.hdr.into(),
+            audio: self.audio.into(),
             codec: self.codec.into(),
             quality: self.quality.into(),
             ..Prefs::default()
@@ -330,6 +361,9 @@ impl ServiceConfig {
                 ))
             })
         });
+        // With audio off no source is ever created, whatever the client asks for.
+        let audio: Option<Arc<dyn AudioBackend>> = (self.audio != AudioChoice::Off)
+            .then(|| Arc::new(crate::audio::HostAudioBackend) as Arc<dyn AudioBackend>);
         SessionOptions {
             video_credit: VideoCredit::OnAck {
                 window: self.video_window,
@@ -342,6 +376,7 @@ impl ServiceConfig {
                 PenChoice::Mouse => PenMode::Mouse,
             },
             telemetry: self.telemetry,
+            audio,
             events,
             ..SessionOptions::default()
         }
@@ -486,6 +521,46 @@ mod tests {
         let off: ServiceConfig = serde_json::from_str(r#"{ "hdr": "off" }"#).unwrap();
         assert_eq!(off.hdr, HdrChoice::Off);
         assert_eq!(off.prefs().hdr, HdrMode::Off);
+    }
+
+    #[test]
+    fn audio_defaults_to_auto_and_reads_its_serde_name() {
+        assert_eq!(ServiceConfig::default().audio, AudioChoice::Auto);
+        let empty: ServiceConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.audio, AudioChoice::Auto);
+        assert_eq!(empty.prefs().audio, AudioMode::Auto);
+        for (name, choice, mode) in [
+            ("auto", AudioChoice::Auto, AudioMode::Auto),
+            ("pcm", AudioChoice::Pcm, AudioMode::Pcm),
+            ("opus", AudioChoice::Opus, AudioMode::Opus),
+            ("off", AudioChoice::Off, AudioMode::Off),
+        ] {
+            let c: ServiceConfig =
+                serde_json::from_str(&format!(r#"{{ "audio": "{name}" }}"#)).unwrap();
+            assert_eq!(c.audio, choice);
+            assert_eq!(c.prefs().audio, mode);
+            assert_eq!(c.wifi_prefs().audio, mode);
+            let back: ServiceConfig =
+                serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+            assert_eq!(back, c);
+        }
+        assert!(serde_json::from_str::<ServiceConfig>(r#"{ "audio": "loud" }"#).is_err());
+    }
+
+    #[test]
+    fn audio_off_creates_no_audio_backend() {
+        let (_tx, rx) = watch::channel(false);
+        assert!(
+            ServiceConfig::default()
+                .session_options(rx.clone(), None)
+                .audio
+                .is_some()
+        );
+        let off = ServiceConfig {
+            audio: AudioChoice::Off,
+            ..ServiceConfig::default()
+        };
+        assert!(off.session_options(rx, None).audio.is_none());
     }
 
     #[test]

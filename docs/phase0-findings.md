@@ -364,7 +364,7 @@ took 1.5-2 ms and the encode 1.7-2 ms per frame; on the UHD 630 they take 2-17 m
 
 With `export KWIN_DRM_DEVICES=/dev/dri/card1:/dev/dri/card2` in
 `~/.config/plasma-workspace/env/kwin-nvidia.sh` (card1 is the GTX 1650), KWin composites on the
-NVIDIA GPU and the Intel GPU only drives the panel. The host then encodes with `nvenc-dmabuf`.
+NVIDIA GPU and the Intel GPU only drives the panel. The host then encodes with `nvenc-dmabuf-rgb` (since FFmpeg 9 the frames stay RGB and NVENC converts them).
 Same benchmark, maximize and restore. NVIDIA busy is `utilization.gpu` from `nvidia-smi`, sampled
 every 100 ms over the whole run (mean / max):
 

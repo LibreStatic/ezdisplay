@@ -25,6 +25,7 @@ run-video-window = Video frames that may be sent but not yet acknowledged by the
 run-telemetry = Ask the tablet to show its telemetry overlay.
 run-no-input = Do not inject input from the tablet.
 run-pen-mode = How the pen is injected: "tablet" is a graphics tablet with pressure and tilt, "mouse" is an absolute mouse pointer.
+run-audio = PC audio streamed to the tablet: "auto" uses uncompressed PCM when the link allows it and Opus otherwise, "pcm" prefers PCM, "opus" prefers Opus, "off" streams no audio.
 
 vdd-status = Print the state of the VDD installation as JSON (changes nothing).
 vdd-setup = One-time setup, run as administrator: lets normal users edit the VDD settings, optionally assigns the GPU and pre-adds modes, then reloads the driver.

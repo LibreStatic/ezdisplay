@@ -39,6 +39,8 @@ struct Args {
     input_script: Option<ScriptArg>,
     #[arg(long)]
     exit_after_script: bool,
+    #[arg(long)]
+    audio: bool,
     #[arg(long, value_enum, default_value_t = CodecArg::Auto)]
     codec: CodecArg,
     #[arg(long, value_enum, default_value_t = QualityArg::Normal)]
@@ -106,6 +108,7 @@ fn command(l: &FluentLanguageLoader) -> Command {
         .mut_arg("exit_after_script", |a| {
             a.help(fl!(l, "arg-exit-after-script"))
         })
+        .mut_arg("audio", |a| a.help(fl!(l, "arg-audio")))
         .mut_arg("codec", |a| a.help(fl!(l, "arg-codec")))
         .mut_arg("quality", |a| a.help(fl!(l, "arg-quality")));
     #[cfg(feature = "wifi")]
@@ -158,6 +161,7 @@ async fn main() -> Result<()> {
         }),
         stop_after_script: a.exit_after_script,
         proto_minor: a.proto_minor,
+        audio: a.audio,
         prefs: ClientPrefs::new(
             match a.codec {
                 CodecArg::Auto => None,

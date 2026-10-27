@@ -5,8 +5,8 @@ use anyhow::{Result, anyhow};
 use clap::{Args, Command, ValueEnum};
 use ezd_host_core::SessionSummary;
 use ezd_host_service::{
-    AdbMode, AoaMode, CodecChoice, HostEvent, HostService, HostStatus, LinkChoice, PenChoice,
-    QualityChoice, ServiceConfig, ServiceError, SourceKind,
+    AdbMode, AoaMode, AudioChoice, CodecChoice, HostEvent, HostService, HostStatus, LinkChoice,
+    PenChoice, QualityChoice, ServiceConfig, ServiceError, SourceKind,
 };
 use i18n_embed::fluent::FluentLanguageLoader;
 use std::net::ToSocketAddrs;
@@ -26,6 +26,14 @@ pub enum LinkArg {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum AoaArg {
     Auto,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum AudioArg {
+    Auto,
+    Pcm,
+    Opus,
     Off,
 }
 
@@ -89,6 +97,8 @@ pub struct RunArgs {
     no_input: bool,
     #[arg(long, value_enum, default_value = "tablet")]
     pen_mode: PenModeArg,
+    #[arg(long, value_enum, default_value = "auto")]
+    audio: AudioArg,
     #[cfg(feature = "wifi")]
     #[arg(long, num_args = 0..=1, value_name = "ADDR", default_missing_value = "0.0.0.0:27183")]
     wifi: Option<String>,
@@ -124,7 +134,8 @@ pub fn localize(cmd: Command, l: &FluentLanguageLoader) -> Command {
         .mut_arg("video_window", |a| a.help(fl!(l, "run-video-window")))
         .mut_arg("telemetry", |a| a.help(fl!(l, "run-telemetry")))
         .mut_arg("no_input", |a| a.help(fl!(l, "run-no-input")))
-        .mut_arg("pen_mode", |a| a.help(fl!(l, "run-pen-mode")));
+        .mut_arg("pen_mode", |a| a.help(fl!(l, "run-pen-mode")))
+        .mut_arg("audio", |a| a.help(fl!(l, "run-audio")));
     #[cfg(feature = "wifi")]
     let cmd = cmd
         .mut_arg("wifi", |a| a.help(fl!(l, "run-wifi")))
@@ -205,6 +216,12 @@ fn config(args: &RunArgs) -> Result<ServiceConfig> {
         pen_mode: match args.pen_mode {
             PenModeArg::Tablet => PenChoice::Tablet,
             PenModeArg::Mouse => PenChoice::Mouse,
+        },
+        audio: match args.audio {
+            AudioArg::Auto => AudioChoice::Auto,
+            AudioArg::Pcm => AudioChoice::Pcm,
+            AudioArg::Opus => AudioChoice::Opus,
+            AudioArg::Off => AudioChoice::Off,
         },
         // The command line never starts the app: that is the tray's convenience.
         open_app_on_connect: false,
@@ -361,6 +378,7 @@ fn log_session_end(r: Result<SessionSummary, String>) {
         Ok(s) => tracing::info!(
             end = ?s.end, frames = s.frames_sent, keyframes = s.keyframes_sent,
             input_events = s.input_events,
+            audio = ?s.audio, audio_packets = s.audio_packets, audio_dropped = s.audio_dropped,
             seconds = s.duration.as_secs_f32(), "session finished"
         ),
         Err(e) => tracing::warn!("session failed: {e}"),
@@ -369,7 +387,38 @@ fn log_session_end(r: Result<SessionSummary, String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_scale;
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        run: RunArgs,
+    }
+
+    fn audio_of(extra: &[&str]) -> Result<AudioChoice, clap::Error> {
+        let mut argv = vec!["run", "--source", "synthetic"];
+        argv.extend(extra);
+        Cli::try_parse_from(argv).and_then(|c| {
+            config(&c.run)
+                .map(|c| c.audio)
+                .map_err(|e| clap::Error::raw(clap::error::ErrorKind::Io, e.to_string()))
+        })
+    }
+
+    #[test]
+    fn audio_flag_overrides_the_default() {
+        assert_eq!(audio_of(&[]).unwrap(), AudioChoice::Auto);
+        for (arg, want) in [
+            ("auto", AudioChoice::Auto),
+            ("pcm", AudioChoice::Pcm),
+            ("opus", AudioChoice::Opus),
+            ("off", AudioChoice::Off),
+        ] {
+            assert_eq!(audio_of(&["--audio", arg]).unwrap(), want, "{arg}");
+        }
+        assert!(audio_of(&["--audio", "loud"]).is_err());
+    }
 
     #[test]
     fn scale_parsing() {
