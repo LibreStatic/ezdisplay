@@ -2,6 +2,7 @@ use crate::color::{ColorInfo, HdrMeta, tag_frame};
 use crate::error::{EAGAIN, FfmpegError, averror_eof, init_logging};
 use crate::hw::HwDevice;
 use crate::options::option_sets_for;
+use ezd_proto::QualityLevel;
 use ffmpeg_sys_next as ffi;
 use std::ffi::{CStr, CString};
 use std::ptr;
@@ -67,6 +68,8 @@ pub struct EncoderConfig {
     pub hdr: Option<HdrMeta>,
     /// Extra AVOptions applied on top of the preset (override it).
     pub extra_options: Vec<(String, String)>,
+    /// Quality level selecting the option sets (default [`QualityLevel::Normal`]).
+    pub quality: QualityLevel,
 }
 
 impl EncoderConfig {
@@ -89,6 +92,7 @@ impl EncoderConfig {
             color: ColorInfo::default(),
             hdr: None,
             extra_options: Vec::new(),
+            quality: QualityLevel::Normal,
         }
     }
 }
@@ -157,7 +161,7 @@ impl Encoder {
             )));
         }
         let mut last = FfmpegError::msg("no option set");
-        for set in option_sets_for(&cfg.name, cfg.pix_fmt == RawPixelFormat::P010) {
+        for set in option_sets_for(&cfg.name, cfg.pix_fmt == RawPixelFormat::P010, cfg.quality) {
             match Self::try_open(codec, cfg.clone(), &set) {
                 Ok(e) => return Ok(e),
                 Err(e) => {
@@ -200,8 +204,6 @@ impl Encoder {
             sw_fmt,
         };
         let cfg = &enc.cfg;
-        let bitrate = cfg.bitrate_kbps as i64 * 1000;
-        let fps = cfg.refresh_mhz as f64 / 1000.0;
         // SAFETY: ctx is a freshly allocated, exclusively owned AVCodecContext; we only write plain fields.
         unsafe {
             let c = &mut *ctx;
@@ -219,10 +221,10 @@ impl Encoder {
                 Some(h) => h.kind.pix_fmt(),
                 None => cfg.pix_fmt.av(),
             };
-            c.bit_rate = bitrate;
-            c.rc_max_rate = bitrate;
-            // Two frames worth of VBV buffer: tight enough for low latency, loose enough for keyframes.
-            c.rc_buffer_size = ((bitrate as f64 * 2.0 / fps) as i32).max(1000);
+            let rate = crate::rate::rate_settings(cfg.bitrate_kbps, cfg.refresh_mhz);
+            c.bit_rate = rate.bit_rate;
+            c.rc_max_rate = rate.max_rate;
+            c.rc_buffer_size = rate.buffer_size;
             c.gop_size = i32::MAX;
             c.max_b_frames = 0;
             // Hardware encoders gain nothing from threads. libx264 needs them: one thread manages

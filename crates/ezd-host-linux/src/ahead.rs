@@ -281,6 +281,7 @@ mod tests {
             name: "libx264",
             kind: Kind::X264,
             node: None,
+            ten_bit: false,
         }
     }
 

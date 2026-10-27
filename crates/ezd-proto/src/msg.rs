@@ -102,6 +102,18 @@ impl Hello {
         self.proto_minor >= crate::MINOR_KEYBOARD
     }
 
+    /// True if the peer speaks at least protocol minor
+    /// [`MINOR_STREAM_PREFS`](crate::MINOR_STREAM_PREFS) (`StreamReport`).
+    pub fn supports_report(&self) -> bool {
+        self.proto_minor >= crate::MINOR_STREAM_PREFS
+    }
+
+    /// True if the peer speaks at least protocol minor
+    /// [`MINOR_STREAM_PREFS`](crate::MINOR_STREAM_PREFS) (`ClientPrefs`).
+    pub fn supports_stream_prefs(&self) -> bool {
+        self.proto_minor >= crate::MINOR_STREAM_PREFS
+    }
+
     /// Fails with [`ProtoError::VersionMismatch`] if the peer's major differs from ours.
     pub fn check_compatible(&self) -> Result<()> {
         if self.proto_major != crate::PROTOCOL_MAJOR {
@@ -557,6 +569,202 @@ pub const H273_TRANSFER_PQ: u8 = 16;
 /// H.273 matrix coefficients code of BT.2020 non-constant luminance.
 pub const H273_MATRIX_BT2020_NCL: u8 = 9;
 
+/// How the encoder rate control is set up (see [`RateControl::mode`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateMode {
+    /// Not known (an encoder default, or a code from a newer host).
+    Unknown,
+    /// Constant bitrate.
+    Cbr,
+    /// Variable bitrate, optionally with a constant-quality target.
+    Vbr,
+    /// Constant quantiser.
+    Cqp,
+    /// Constant rate factor (x264).
+    Crf,
+    /// Lossless encoding.
+    Lossless,
+}
+
+impl RateMode {
+    /// Wire code of this mode.
+    pub fn code(self) -> u8 {
+        match self {
+            RateMode::Unknown => 0,
+            RateMode::Cbr => 1,
+            RateMode::Vbr => 2,
+            RateMode::Cqp => 3,
+            RateMode::Crf => 4,
+            RateMode::Lossless => 5,
+        }
+    }
+
+    /// Mode for a wire code; unknown codes map to [`RateMode::Unknown`].
+    pub fn from_code(code: u8) -> RateMode {
+        match code {
+            1 => RateMode::Cbr,
+            2 => RateMode::Vbr,
+            3 => RateMode::Cqp,
+            4 => RateMode::Crf,
+            5 => RateMode::Lossless,
+            _ => RateMode::Unknown,
+        }
+    }
+
+    /// Short lowercase name (`"cbr"`, `"vbr"`, `"cqp"`, `"crf"`, `"lossless"`, `"unknown"`).
+    pub fn name(self) -> &'static str {
+        match self {
+            RateMode::Unknown => "unknown",
+            RateMode::Cbr => "cbr",
+            RateMode::Vbr => "vbr",
+            RateMode::Cqp => "cqp",
+            RateMode::Crf => "crf",
+            RateMode::Lossless => "lossless",
+        }
+    }
+}
+
+/// Rate control of the running encoder, part of [`StreamReport`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateControl {
+    /// [`RateMode`] code.
+    pub mode: u8,
+    /// Quality value of the mode (cq, qp or crf); 0 when the mode has none.
+    pub quality: u16,
+    /// Target bitrate in kbit/s.
+    pub target_kbps: u32,
+    /// Peak bitrate in kbit/s the encoder may burst to.
+    pub max_kbps: u32,
+}
+
+impl RateControl {
+    /// The mode as an enum.
+    pub fn rate_mode(&self) -> RateMode {
+        RateMode::from_code(self.mode)
+    }
+}
+
+/// One encoder and option set the host tried, part of [`StreamReport`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncoderAttempt {
+    /// FFmpeg encoder name.
+    pub encoder: String,
+    /// Compact label of the interesting options (`k=v` joined by spaces), or `probe`.
+    pub options: String,
+    /// True when this attempt opened (or, for `probe`, was usable).
+    pub ok: bool,
+    /// Short error text when `ok` is false (empty otherwise).
+    pub error: String,
+}
+
+/// How the host negotiated and encodes the stream (host to client, protocol 0.8).
+///
+/// Sent after the encoder opens, before the first frame it produced, and again after every reopen,
+/// when the client `Hello` has minor >= [`MINOR_STREAM_PREFS`](crate::MINOR_STREAM_PREFS).
+/// Informational only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamReport {
+    /// Bitrate the negotiation wanted before the link ceiling (kbit/s): derived from size and
+    /// rate, or the user's fixed value.
+    pub wanted_kbps: u32,
+    /// True when the user fixed the bitrate instead of deriving it.
+    pub user_bitrate: bool,
+    /// Link ceiling applied (kbit/s).
+    pub ceiling_kbps: u32,
+    /// Encoders and option sets the host tried, in order.
+    pub attempts: Vec<EncoderAttempt>,
+    /// Rate control of the encoder that is running.
+    pub rate: RateControl,
+    /// [`QualityLevel::code`] the client asked for in `ClientPrefs` (0 when it sent none).
+    pub wanted_quality: u8,
+    /// [`QualityLevel::code`] the host applied after its own rules (USB only, lossless needs HEVC).
+    pub applied_quality: u8,
+    /// [`Codec::code`] the client prefers (0 = auto).
+    pub wanted_codec: u8,
+}
+
+/// Quality level the client asks for (see [`ClientPrefs`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QualityLevel {
+    /// Rate-controlled stream sized to the link (the default).
+    #[default]
+    Normal,
+    /// Near-transparent constant quantiser; only honoured on a USB link.
+    High,
+    /// Lossless HEVC 4:2:0; only honoured on a USB link, falls back to [`High`](Self::High).
+    Lossless,
+}
+
+impl QualityLevel {
+    /// Wire code of this level.
+    pub fn code(self) -> u8 {
+        match self {
+            QualityLevel::Normal => 0,
+            QualityLevel::High => 1,
+            QualityLevel::Lossless => 2,
+        }
+    }
+
+    /// Level for a wire code; unknown codes map to [`QualityLevel::Normal`].
+    pub fn from_code(code: u8) -> QualityLevel {
+        match code {
+            1 => QualityLevel::High,
+            2 => QualityLevel::Lossless,
+            _ => QualityLevel::Normal,
+        }
+    }
+
+    /// Short lowercase name (`"normal"`, `"high"`, `"lossless"`).
+    pub fn name(self) -> &'static str {
+        match self {
+            QualityLevel::Normal => "normal",
+            QualityLevel::High => "high",
+            QualityLevel::Lossless => "lossless",
+        }
+    }
+}
+
+/// What the client prefers for the stream (client to host, protocol 0.8).
+///
+/// Sent right after `ClientHdr` when the host `Hello` has minor >=
+/// [`MINOR_STREAM_PREFS`](crate::MINOR_STREAM_PREFS). The host treats it as a preference and
+/// reports what it applied in [`StreamReport`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientPrefs {
+    /// [`Codec::code`] the client prefers; 0 = auto. Read it with [`codec`](Self::codec).
+    pub codec: u8,
+    /// [`QualityLevel::code`] the client asks for. Read it with [`quality`](Self::quality).
+    pub quality: u8,
+}
+
+impl ClientPrefs {
+    /// No preference: automatic codec, normal quality.
+    pub fn auto() -> Self {
+        ClientPrefs {
+            codec: 0,
+            quality: QualityLevel::Normal.code(),
+        }
+    }
+
+    /// Builds the message; `None` codec means automatic.
+    pub fn new(codec: Option<Codec>, quality: QualityLevel) -> Self {
+        ClientPrefs {
+            codec: codec.map_or(0, Codec::code),
+            quality: quality.code(),
+        }
+    }
+
+    /// The preferred codec; `None` for auto or a code unknown to this version.
+    pub fn codec(&self) -> Option<Codec> {
+        Codec::from_code(self.codec)
+    }
+
+    /// The requested quality level.
+    pub fn quality(&self) -> QualityLevel {
+        QualityLevel::from_code(self.quality)
+    }
+}
+
 /// Whether a hardware keyboard is attached to the client (client to host, protocol 0.6).
 ///
 /// Sent when the state changes and right after the handshake, when the host `Hello` has minor >=
@@ -837,7 +1045,7 @@ impl Default for StreamColor {
 
 /// Any message of protocol 0.x (0.2 added `FrameAck`, 0.3 the input messages,
 /// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`, 0.6 `ClientKeyboard`,
-/// 0.7 audio and `AudioVolume`).
+/// 0.7 audio and `AudioVolume`, 0.8 `StreamReport` and `ClientPrefs`).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
@@ -881,6 +1089,10 @@ pub enum Message {
     AudioConfig(AudioConfig),
     /// Control/20 (0.7), both directions.
     AudioVolume(AudioVolume),
+    /// Control/21 (0.8), host to client.
+    StreamReport(StreamReport),
+    /// Control/22 (0.8), client to host.
+    ClientPrefs(ClientPrefs),
     /// Input/1 (0.3), client to host.
     Pen(PenSample),
     /// Input/2 (0.3), client to host.
@@ -940,6 +1152,8 @@ impl Message {
             Message::ClientAudio(_) => 18,
             Message::AudioConfig(_) => 19,
             Message::AudioVolume(_) => 20,
+            Message::StreamReport(_) => 21,
+            Message::ClientPrefs(_) => 22,
             Message::Pen(_) => 1,
             Message::Touch(_) => 2,
             Message::PointerButton(_) => 3,
@@ -980,6 +1194,8 @@ pub fn encode_message(msg: &Message) -> Result<(Channel, u8, Vec<u8>)> {
         Message::ClientAudio(m) => enc(m)?,
         Message::AudioConfig(m) => enc(m)?,
         Message::AudioVolume(m) => enc(m)?,
+        Message::StreamReport(m) => enc(m)?,
+        Message::ClientPrefs(m) => enc(m)?,
         Message::Pen(m) => enc(m)?,
         Message::Touch(m) => enc(m)?,
         Message::PointerButton(m) => enc(m)?,
@@ -1030,6 +1246,8 @@ pub fn decode_message(channel: u8, kind: u8, payload: &[u8]) -> Result<Option<Me
         (Channel::Control, 18) => Message::ClientAudio(dec(c, k, payload)?),
         (Channel::Control, 19) => Message::AudioConfig(dec(c, k, payload)?),
         (Channel::Control, 20) => Message::AudioVolume(dec(c, k, payload)?),
+        (Channel::Control, 21) => Message::StreamReport(dec(c, k, payload)?),
+        (Channel::Control, 22) => Message::ClientPrefs(dec(c, k, payload)?),
         (Channel::Input, 1) => Message::Pen(dec(c, k, payload)?),
         (Channel::Input, 2) => Message::Touch(dec(c, k, payload)?),
         (Channel::Input, 3) => Message::PointerButton(dec(c, k, payload)?),
@@ -1170,6 +1388,8 @@ mod tests {
                 volume: 0.65,
                 muted: true,
             }),
+            Message::StreamReport(sample_report()),
+            Message::ClientPrefs(ClientPrefs::new(Some(Codec::Av1), QualityLevel::High)),
             Message::Pen(PenSample {
                 t_us: 1 << 40,
                 x: 65535,
@@ -1379,6 +1599,105 @@ mod tests {
         h.proto_minor = crate::MINOR_KEYBOARD - 1;
         assert!(!h.supports_keyboard());
         assert!(h.supports_hdr());
+    }
+
+    fn sample_report() -> StreamReport {
+        StreamReport {
+            wanted_kbps: 45_949,
+            user_bitrate: false,
+            ceiling_kbps: 200_000,
+            attempts: vec![
+                EncoderAttempt {
+                    encoder: "h264_vaapi".into(),
+                    options: "rc_mode=VBR low_power=1".into(),
+                    ok: false,
+                    error: "Invalid argument".into(),
+                },
+                EncoderAttempt {
+                    encoder: "h264_vaapi".into(),
+                    options: "rc_mode=CQP qp=20 low_power=1 level=5.2".into(),
+                    ok: true,
+                    error: String::new(),
+                },
+            ],
+            rate: RateControl {
+                mode: RateMode::Cqp.code(),
+                quality: 20,
+                target_kbps: 45_949,
+                max_kbps: 91_898,
+            },
+            wanted_quality: QualityLevel::Lossless.code(),
+            applied_quality: QualityLevel::High.code(),
+            wanted_codec: Codec::Hevc.code(),
+        }
+    }
+
+    #[test]
+    fn client_prefs_round_trip_and_tolerate_unknown_codes() {
+        let p = ClientPrefs::new(Some(Codec::Hevc), QualityLevel::Lossless);
+        let (ch, kind, payload) = encode_message(&Message::ClientPrefs(p)).unwrap();
+        assert_eq!((ch, kind), (Channel::Control, 22));
+        let Some(Message::ClientPrefs(back)) = decode_message(ch as u8, kind, &payload).unwrap()
+        else {
+            panic!("not a ClientPrefs");
+        };
+        assert_eq!(back, p);
+        assert_eq!(back.codec(), Some(Codec::Hevc));
+        assert_eq!(back.quality(), QualityLevel::Lossless);
+        let odd = ClientPrefs {
+            codec: 99,
+            quality: 99,
+        };
+        assert_eq!(odd.codec(), None);
+        assert_eq!(odd.quality(), QualityLevel::Normal);
+        assert_eq!(ClientPrefs::auto().codec(), None);
+        for q in [
+            QualityLevel::Normal,
+            QualityLevel::High,
+            QualityLevel::Lossless,
+        ] {
+            assert_eq!(QualityLevel::from_code(q.code()), q);
+        }
+    }
+
+    #[test]
+    fn stream_prefs_support_by_minor() {
+        let mut h = Hello::new(Role::Client, "x", "y");
+        assert!(h.supports_stream_prefs());
+        h.proto_minor = crate::MINOR_STREAM_PREFS - 1;
+        assert!(!h.supports_stream_prefs());
+    }
+
+    #[test]
+    fn report_support_by_minor() {
+        let mut h = Hello::new(Role::Client, "x", "y");
+        assert!(h.supports_report());
+        h.proto_minor = crate::MINOR_STREAM_PREFS - 1;
+        assert!(!h.supports_report());
+        assert!(h.supports_keyboard());
+    }
+
+    #[test]
+    fn stream_report_round_trips_and_tolerates_unknown_mode() {
+        let mut r = sample_report();
+        r.rate.mode = 200;
+        let (ch, kind, p) = encode_message(&Message::StreamReport(r.clone())).unwrap();
+        assert_eq!((ch, kind), (Channel::Control, 21));
+        let Some(Message::StreamReport(back)) = decode_message(ch as u8, kind, &p).unwrap() else {
+            panic!("not a StreamReport");
+        };
+        assert_eq!(back, r);
+        assert_eq!(back.rate.rate_mode(), RateMode::Unknown);
+        for m in [
+            RateMode::Unknown,
+            RateMode::Cbr,
+            RateMode::Vbr,
+            RateMode::Cqp,
+            RateMode::Crf,
+            RateMode::Lossless,
+        ] {
+            assert_eq!(RateMode::from_code(m.code()), m);
+        }
     }
 
     #[test]

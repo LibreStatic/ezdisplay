@@ -5,7 +5,7 @@ use crate::adapter::{self, RenderNode};
 use crate::ahead::{ConvertAhead, Item, Start};
 use crate::encode::{
     Converter, Encoder, Kind, Pipeline, Plan, StreamTags, plan_encoders, plan_hdr_encoders,
-    probe_plan,
+    probe_plan, short_error,
 };
 use crate::frame::{Frame, NegotiatedFormat};
 use crate::portal::SourceKind;
@@ -14,9 +14,12 @@ use crate::pw::{Frames, PwCapture, PwParams, default_intel_modifiers, default_nv
 use crate::wl_capture::WlCapture;
 use crate::x11_capture::X11Capture;
 use ezd_host_core::{
-    CursorSink, EncodedFrame, OutputInfo, PlatformOptions, SourceError, SourceHdr, VideoSource,
+    CursorSink, EncodedFrame, EncoderSetup, OutputInfo, PlatformOptions, SourceError, SourceHdr,
+    VideoSource,
 };
-use ezd_proto::{Codec, DynamicRange, EncoderCaps, StreamColor, StreamConfig};
+use ezd_proto::{
+    Codec, DynamicRange, EncoderAttempt, EncoderCaps, QualityLevel, StreamColor, StreamConfig,
+};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -30,7 +33,11 @@ fn cache() -> &'static ProbeCache {
 
 /// Probes `plan` once per process (the result is cached, including failures).
 pub fn plan_works(plan: &Plan) -> Result<(), String> {
-    let key = (plan.name.to_string(), plan.node.clone().unwrap_or_default());
+    // The 8-bit and the Main10 plan of an HEVC encoder are probed separately.
+    let key = (
+        format!("{}{}", plan.name, if plan.ten_bit { "/10" } else { "" }),
+        plan.node.clone().unwrap_or_default(),
+    );
     if let Some(r) = cache().lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return r.clone();
     }
@@ -86,10 +93,14 @@ pub struct LinuxSource {
     /// Dynamic range negotiated for the session and the matching stream colour.
     range: DynamicRange,
     color: StreamColor,
+    /// Quality level the host applies (see `set_quality`).
+    quality: QualityLevel,
     running: Option<Running>,
     force_key: bool,
     /// The output the stream shows (virtual output or the captured monitor), after `start`.
     output: Option<OutputInfo>,
+    /// Encoders the probes found unusable, reported with the encoder setup.
+    probe_failures: Vec<EncoderAttempt>,
 }
 
 /// Converts and encodes capture frames.
@@ -170,6 +181,21 @@ struct Running {
     dmabuf_ok: bool,
     /// When the shared-memory fallback started.
     dmabuf_off_at: Option<Instant>,
+    /// The last frame encoded: when, and its capture time and counter (a refine reuses them).
+    last_encoded: Instant,
+    last_ids: (u64, u64),
+}
+
+/// How long the image must stay unchanged before the lossless level re-encodes the last frame
+/// losslessly. Moving content is encoded with the much smaller high set, so the stream keeps its
+/// frame rate; the lossless frame is large and slow to encode, send and decode, so it is only
+/// worth it once nothing else is waiting. Short enough to look immediate once the motion stops.
+const REFINE_DELAY: Duration = Duration::from_millis(150);
+
+/// How long `next_frame` may wait for a frame while a refine is pending: until the image has been
+/// still for [`REFINE_DELAY`] (`since_last` after the last encoded frame), but never past `timeout`.
+fn refine_wait(timeout: Duration, since_last: Duration) -> Duration {
+    timeout.min(REFINE_DELAY.saturating_sub(since_last))
 }
 
 /// After the shared-memory fallback starts, DMA-BUF frames that were already captured or
@@ -202,14 +228,29 @@ impl LinuxSource {
             tracing::warn!("no DRM render node found; software encoding only");
         }
         let node = node.map(|s| s.node);
-        let plans = plan_encoders(node.as_ref(), &|p| plan_works(p).is_ok());
+        // Encoders that were probed unusable, in plan order, for the stream report.
+        let probe_failures = std::cell::RefCell::new(Vec::new());
+        let works = |p: &Plan| match plan_works(p) {
+            Ok(()) => true,
+            Err(e) => {
+                probe_failures.borrow_mut().push(EncoderAttempt {
+                    encoder: p.name.to_string(),
+                    options: "probe".into(),
+                    ok: false,
+                    error: short_error(&e),
+                });
+                false
+            }
+        };
+        let plans = plan_encoders(node.as_ref(), &works);
         let hdr_source = observed_hdr();
         // Probing opens a Main10 encoder: only worth it when the compositor offers HDR10.
         let hdr_plans = if hdr_source.is_some() {
-            plan_hdr_encoders(node.as_ref(), &|p| plan_works(p).is_ok())
+            plan_hdr_encoders(node.as_ref(), &works)
         } else {
             Vec::new()
         };
+        let probe_failures = probe_failures.into_inner();
         LinuxSource {
             provider,
             kind: if opts.output_name.is_some() {
@@ -224,9 +265,11 @@ impl LinuxSource {
             hdr_source,
             range: DynamicRange::Sdr,
             color: StreamColor::sdr_bt709(),
+            quality: QualityLevel::Normal,
             running: None,
             force_key: false,
             output: None,
+            probe_failures,
         }
     }
 
@@ -248,18 +291,18 @@ impl LinuxSource {
 
 impl VideoSource for LinuxSource {
     fn encoders(&self) -> Vec<EncoderCaps> {
-        let codec = |p: &Plan| {
-            if p.hdr10() { Codec::Hevc } else { Codec::H264 }
-        };
-        self.plans
-            .iter()
-            .chain(&self.hdr_plans)
-            .map(|p| EncoderCaps {
-                codec: codec(p),
-                name: p.name.to_string(),
-                hardware: p.hardware(),
-            })
-            .collect()
+        // The SDR and the Main10 plan of an HEVC encoder share a name: offer it once.
+        let mut caps: Vec<EncoderCaps> = Vec::new();
+        for p in self.plans.iter().chain(&self.hdr_plans) {
+            if !caps.iter().any(|c| c.name == p.name) {
+                caps.push(EncoderCaps {
+                    codec: p.codec(),
+                    name: p.name.to_string(),
+                    hardware: p.hardware(),
+                });
+            }
+        }
+        caps
     }
 
     fn source_hdr(&self) -> Option<SourceHdr> {
@@ -279,6 +322,10 @@ impl VideoSource for LinuxSource {
         self.color = *color;
     }
 
+    fn set_quality(&mut self, quality: QualityLevel) {
+        self.quality = quality;
+    }
+
     fn gpu_description(&self) -> String {
         self.node
             .as_ref()
@@ -287,20 +334,13 @@ impl VideoSource for LinuxSource {
     }
 
     fn start(&mut self, cfg: &StreamConfig, cursor: CursorSink) -> Result<(), SourceError> {
-        // H.264 is the SDR codec; HEVC only exists here as HDR10 (Main10).
+        // H.264 and HEVC stream as SDR 8-bit; HEVC is also the HDR10 codec (Main10).
         let hdr10 = matches!(self.range, DynamicRange::Hdr10 { codec } if codec == cfg.codec);
-        match (cfg.codec, hdr10) {
-            (Codec::H264, false) | (Codec::Hevc, true) => {}
-            (Codec::Hevc, false) => {
-                return Err(SourceError::msg(
-                    "the Linux host only produces HEVC for HDR10 streams",
-                ));
-            }
-            (codec, _) => {
-                return Err(SourceError::msg(format!(
-                    "the Linux host cannot encode {codec:?}"
-                )));
-            }
+        if !matches!(cfg.codec, Codec::H264 | Codec::Hevc) {
+            return Err(SourceError::msg(format!(
+                "the Linux host cannot encode {:?}",
+                cfg.codec
+            )));
         }
         let plan = self
             .plans
@@ -374,7 +414,10 @@ impl VideoSource for LinuxSource {
         tracing::info!(convert_ahead = ?ahead, "encode pipeline ready");
         let input = match ahead {
             Some(start) => Input::Ahead {
-                enc: Encoder::new(plan.name, cfg.refresh_mhz, cfg.bitrate_kbps).with_tags(tags),
+                enc: Encoder::new(plan.name, cfg.refresh_mhz, cfg.bitrate_kbps)
+                    .with_ten_bit(plan.ten_bit)
+                    .with_quality(self.quality)
+                    .with_tags(tags),
                 conv: ConvertAhead::start(
                     Converter::new(plan, cfg.refresh_mhz).with_tags(tags),
                     capture.frames(),
@@ -383,7 +426,9 @@ impl VideoSource for LinuxSource {
                 .map_err(SourceError::msg)?,
             },
             None => Input::Serial(
-                Pipeline::new(plan, cfg.refresh_mhz, cfg.bitrate_kbps).with_tags(tags),
+                Pipeline::new(plan, cfg.refresh_mhz, cfg.bitrate_kbps)
+                    .with_quality(self.quality)
+                    .with_tags(tags),
             ),
         };
         self.running = Some(Running {
@@ -392,6 +437,8 @@ impl VideoSource for LinuxSource {
             _output: opened.guard,
             dmabuf_ok: fmt.modifier.is_some(),
             dmabuf_off_at: None,
+            last_encoded: Instant::now(),
+            last_ids: (0, 0),
         });
         self.force_key = true;
         Ok(())
@@ -403,44 +450,76 @@ impl VideoSource for LinuxSource {
             return Err(SourceError::msg("source not started"));
         };
         // `start_us`: when this frame's conversion (serial) or encoding (ahead) began.
+        let mut refined = false;
         let (result, start_us, capture_us, seq, was_dma) = match &mut r.input {
             Input::Serial(pipeline) => {
-                let frame = match r.capture.next(timeout) {
-                    Ok(Some(f)) => f,
-                    Ok(None) => {
+                let pending = pipeline.refine_pending();
+                let wait = if pending {
+                    refine_wait(timeout, r.last_encoded.elapsed())
+                } else {
+                    timeout
+                };
+                let frame = match r.capture.next(wait) {
+                    Ok(f) => f,
+                    Err(e) => return Err(SourceError::msg(e)),
+                };
+                match frame {
+                    Some(frame) => {
+                        // Benchmark aid (tools/kwin-anim-bench): drop every frame to measure KWin
+                        // alone.
+                        if std::env::var_os("EZD_DIAG_SKIP_ENCODE").is_some() {
+                            drop(frame);
+                            return Ok(None);
+                        }
+                        let (capture_us, seq, dma) = (frame.capture_us, frame.seq, frame.is_dma());
+                        let start_us = ezd_host_core::now_us();
+                        let result = pipeline.encode(frame, force);
+                        r.last_encoded = Instant::now();
+                        r.last_ids = (capture_us, seq);
+                        (result, start_us, capture_us, seq, dma)
+                    }
+                    None if pending && r.last_encoded.elapsed() >= REFINE_DELAY => {
+                        refined = true;
+                        let start_us = ezd_host_core::now_us();
+                        let (capture_us, seq) = r.last_ids;
+                        (pipeline.refine(), start_us, capture_us, seq, false)
+                    }
+                    None => {
                         self.force_key |= force;
                         return Ok(None);
                     }
-                    Err(e) => return Err(SourceError::msg(e)),
-                };
-                // Benchmark aid (tools/kwin-anim-bench): drop every frame to measure KWin alone.
-                if std::env::var_os("EZD_DIAG_SKIP_ENCODE").is_some() {
-                    drop(frame);
-                    return Ok(None);
                 }
-                let (capture_us, seq, dma) = (frame.capture_us, frame.seq, frame.is_dma());
-                let start_us = ezd_host_core::now_us();
-                (
-                    pipeline.encode(frame, force),
-                    start_us,
-                    capture_us,
-                    seq,
-                    dma,
-                )
             }
-            Input::Ahead { conv, enc } => match conv.take(timeout) {
-                None => {
-                    self.force_key |= force;
-                    return Ok(None);
+            Input::Ahead { conv, enc } => {
+                let pending = enc.refine_pending();
+                let wait = if pending {
+                    refine_wait(timeout, r.last_encoded.elapsed())
+                } else {
+                    timeout
+                };
+                match conv.take(wait) {
+                    None if pending && r.last_encoded.elapsed() >= REFINE_DELAY => {
+                        refined = true;
+                        let start_us = ezd_host_core::now_us();
+                        let (capture_us, seq) = r.last_ids;
+                        (enc.refine(), start_us, capture_us, seq, false)
+                    }
+                    None => {
+                        self.force_key |= force;
+                        return Ok(None);
+                    }
+                    Some(Item::Frame(p)) => {
+                        let (capture_us, seq, dma) = (p.capture_us, p.seq, p.dma);
+                        let start_us = ezd_host_core::now_us();
+                        let result = enc.encode(p, force);
+                        r.last_encoded = Instant::now();
+                        r.last_ids = (capture_us, seq);
+                        (result, start_us, capture_us, seq, dma)
+                    }
+                    Some(Item::Failed { dma, error }) => (Err(error), 0, 0, 0, dma),
+                    Some(Item::Closed(e)) => return Err(SourceError::msg(e)),
                 }
-                Some(Item::Frame(p)) => {
-                    let (capture_us, seq, dma) = (p.capture_us, p.seq, p.dma);
-                    let start_us = ezd_host_core::now_us();
-                    (enc.encode(p, force), start_us, capture_us, seq, dma)
-                }
-                Some(Item::Failed { dma, error }) => (Err(error), 0, 0, 0, dma),
-                Some(Item::Closed(e)) => return Err(SourceError::msg(e)),
-            },
+            }
         };
         match result {
             Ok(Some(o)) => {
@@ -448,6 +527,7 @@ impl VideoSource for LinuxSource {
                     path = o.path,
                     bytes = o.data.len(),
                     key = o.keyframe,
+                    refine = refined,
                     age_us = start_us.saturating_sub(capture_us),
                     encode_us = o.encoded_us.saturating_sub(start_us),
                     "encoded"
@@ -486,6 +566,19 @@ impl VideoSource for LinuxSource {
         self.output.clone()
     }
 
+    fn take_encoder_setup(&mut self) -> Option<EncoderSetup> {
+        let r = self.running.as_mut()?;
+        let mut setup = match &mut r.input {
+            Input::Serial(pipeline) => pipeline.take_setup(),
+            Input::Ahead { enc, .. } => enc.take_setup(),
+        }?;
+        // Probe failures happened before any open: they come first.
+        let mut attempts = self.probe_failures.clone();
+        attempts.append(&mut setup.attempts);
+        setup.attempts = attempts;
+        Some(setup)
+    }
+
     fn request_keyframe(&mut self) {
         self.force_key = true;
     }
@@ -504,6 +597,19 @@ impl VideoSource for LinuxSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refine_wait_runs_to_the_still_deadline_but_not_past_the_timeout() {
+        let ms = Duration::from_millis;
+        // Just encoded: wait the whole delay, if the caller allows it.
+        assert_eq!(refine_wait(ms(500), ms(0)), REFINE_DELAY);
+        assert_eq!(refine_wait(ms(100), ms(0)), ms(100));
+        // Part of the delay has passed.
+        assert_eq!(refine_wait(ms(500), ms(100)), ms(50));
+        // Overdue: do not wait.
+        assert_eq!(refine_wait(ms(500), ms(150)), ms(0));
+        assert_eq!(refine_wait(ms(500), ms(900)), ms(0));
+    }
 
     #[test]
     fn hdr_state_changes_end_the_session_for_a_new_negotiation() {

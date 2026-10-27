@@ -56,7 +56,7 @@ import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.R
 
 /** Settings sections; AirActions only exists while its card is shown (and is always last). */
-enum class SettingsSection { Pen, Zoom, Touch, Audio, Connection, Display, AirActions }
+enum class SettingsSection { Pen, Zoom, Touch, Audio, Video, Connection, Display, AirActions }
 
 private fun airCardShown(state: SettingsState) =
     state.airActions == AirActions.On || state.airActions == AirActions.Unknown
@@ -181,6 +181,8 @@ private fun PhoneMain(state: SettingsState, actions: SettingsActions, onOpenEdit
             AirActionsCard(state.airActions, Modifier.padding(top = profileGap(2)))
             SectionTitle(stringResource(R.string.section_audio))
             AudioRow(state.audioEnabled, actions::setAudioEnabled)
+            SectionTitle(stringResource(R.string.section_video))
+            VideoGroup(state, actions)
             SectionTitle(stringResource(R.string.section_connection))
             ConnectionContent(state, actions)
             SectionTitle(stringResource(R.string.section_display))
@@ -233,7 +235,8 @@ private fun ListDetailLayout(
 ) {
     val colors = MaterialTheme.colorScheme
     val sections = buildList {
-        add(SettingsSection.Pen); add(SettingsSection.Zoom); add(SettingsSection.Touch); add(SettingsSection.Audio); add(SettingsSection.Connection); add(SettingsSection.Display)
+        add(SettingsSection.Pen); add(SettingsSection.Zoom); add(SettingsSection.Touch); add(SettingsSection.Audio)
+        add(SettingsSection.Video); add(SettingsSection.Connection); add(SettingsSection.Display)
         if (airCardShown(state)) add(SettingsSection.AirActions)
     }
     val current = selected.takeIf { it in sections } ?: SettingsSection.Pen
@@ -293,6 +296,7 @@ private fun ListDetailLayout(
                     SettingsSection.Zoom -> ZoomGroup(state, actions)
                     SettingsSection.Touch -> PalmRow(state.palmRejection, actions::setPalmRejection)
                     SettingsSection.Audio -> AudioRow(state.audioEnabled, actions::setAudioEnabled)
+                    SettingsSection.Video -> VideoGroup(state, actions)
                     SettingsSection.Connection -> ConnectionContent(state, actions)
                     SettingsSection.Display -> DisplayContent(state, actions)
                     SettingsSection.AirActions -> AirActionsCard(state.airActions)
@@ -307,6 +311,7 @@ private fun sectionTitle(s: SettingsSection) = when (s) {
     SettingsSection.Zoom -> R.string.section_zoom
     SettingsSection.Touch -> R.string.settings_palm_title
     SettingsSection.Audio -> R.string.section_audio
+    SettingsSection.Video -> R.string.section_video
     SettingsSection.Connection -> R.string.section_connection
     SettingsSection.Display -> R.string.section_display
     SettingsSection.AirActions -> R.string.section_air_actions
@@ -317,6 +322,7 @@ private fun sectionIcon(s: SettingsSection) = when (s) {
     SettingsSection.Zoom -> R.drawable.ic_zoom_in
     SettingsSection.Touch -> R.drawable.ic_back_hand
     SettingsSection.Audio -> R.drawable.ic_volume_up
+    SettingsSection.Video -> R.drawable.ic_tune
     SettingsSection.Connection -> R.drawable.ic_wifi
     SettingsSection.Display -> R.drawable.ic_bedtime
     SettingsSection.AirActions -> R.drawable.ic_info
@@ -328,6 +334,9 @@ private fun sectionValue(s: SettingsSection, state: SettingsState): String = whe
     SettingsSection.Zoom -> stringResource(R.string.settings_zoom_summary, formatZoom(state.zoomFactor), state.doubleClickMs)
     SettingsSection.Touch -> stringResource(if (state.palmRejection) R.string.settings_on else R.string.settings_off)
     SettingsSection.Audio -> stringResource(if (state.audioEnabled) R.string.settings_on else R.string.settings_off)
+    SettingsSection.Video -> stringResource(
+        R.string.video_summary, stringResource(videoCodecLabel(state.videoCodec)), stringResource(videoQualityLabel(state.streamQuality)),
+    )
     SettingsSection.Connection -> connectionSummary(state)
     SettingsSection.Display -> displaySummary(state)
     SettingsSection.AirActions -> stringResource(R.string.section_air_actions_value)
@@ -418,6 +427,7 @@ private fun WideLayout(
                     Modifier.weight(1f),
                     style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.ExtraBold,
                 )
+                VideoSummary(state, actions, Modifier.padding(end = 12.dp))
                 DisplaySheetButton(state, { displaySheet = true })
             }
             if (displaySheet) DisplaySheet(state, actions) { displaySheet = false }

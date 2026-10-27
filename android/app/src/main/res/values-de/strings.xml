@@ -155,6 +155,39 @@
         <item quantity="one">%1$d gekoppelter Host</item>
         <item quantity="other">%1$d gekoppelte Hosts</item>
     </plurals>
+    <string name="osd_negotiated">Ausgehandelt: %1$s</string>
+    <string name="osd_auto_for">automatisch für %1$s bei %2$s Hz</string>
+    <string name="osd_set_in_settings">in den Einstellungen festgelegt</string>
+    <string name="osd_clamped">gewünscht %1$s, begrenzt auf %2$s</string>
+    <string name="osd_link_limit">Verbindungslimit %1$s</string>
+    <string name="osd_mbit">%1$s Mbit/s</string>
+    <string name="osd_rate_peak">%1$s Mbit/s (Spitze %2$s)</string>
+    <string name="osd_rate_cbr">konstante Bitrate</string>
+    <string name="osd_rate_vbr">variable Bitrate, Qualität %1$d</string>
+    <string name="osd_rate_cqp">konstante Qualität %1$d</string>
+    <string name="osd_rate_crf">konstanter Ratenfaktor %1$d</string>
+    <plurals name="osd_more_attempts">
+        <item quantity="one">+%1$d weiteres</item>
+        <item quantity="other">+%1$d weitere</item>
+    </plurals>
+
+    <string name="section_video">Video</string>
+    <string name="video_codec_title">Video-Codec</string>
+    <string name="video_codec_auto">Automatisch</string>
+    <string name="video_codec_desc">Automatisch wählt den besten Codec, den dieses Tablet und der PC unterstützen. Änderungen gelten ab der nächsten Verbindung.</string>
+    <string name="video_quality_title">Qualität über USB</string>
+    <string name="video_quality_normal">Normal</string>
+    <string name="video_quality_high">Hoch</string>
+    <string name="video_quality_lossless">Verlustfrei</string>
+    <string name="video_quality_desc">Hoch ist eine feste, nahezu verlustfreie Qualität und braucht mehr Daten. Verlustfrei nutzt nahezu verlustfreie Qualität, solange sich das Bild bewegt, und zeigt das exakte (verlustfreie, 4:2:0) Bild einen Moment nach dem Stillstand: die meisten Daten. Beides gilt nur über USB; WLAN nutzt immer Normal.</string>
+    <string name="osd_quality_normal">normal</string>
+    <string name="osd_quality_high">hoch</string>
+    <string name="osd_quality_lossless">verlustfrei</string>
+    <string name="osd_quality">Qualität: %1$s</string>
+    <string name="osd_quality_applied">Qualität: %1$s angefordert · %2$s angewendet</string>
+    <string name="osd_codec_wanted">Codec: %1$s angefordert</string>
+    <string name="osd_rate_lossless">verlustfrei</string>
+    <string name="video_summary">%1$s · %2$s</string>
     <!-- Display and screensaver -->
     <string name="section_display">Anzeige</string>
     <string name="screensaver_off">Bildschirmschoner aus</string>

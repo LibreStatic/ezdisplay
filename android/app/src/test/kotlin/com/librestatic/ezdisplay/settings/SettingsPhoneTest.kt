@@ -3,6 +3,7 @@ package com.librestatic.ezdisplay.settings
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasClickAction
@@ -46,6 +47,15 @@ class SettingsPhoneTest : SettingsUiTestBase() {
         rule.onNodeWithText(str(R.string.profile_desktop)).performClick()
         assertEquals("desktop", prefs.getString(InputPrefs.PROFILE, null))
         assertEquals("desktop", store.state.value.profile)
+    }
+
+    @Test fun videoChoicesSaveCodecAndQuality() {
+        launch()
+        tag("video_codec_hevc").performScrollTo().performClick()
+        tag("stream_quality_lossless").performScrollTo().performClick()
+        assertEquals("hevc", prefs.getString(SettingsStore.VIDEO_CODEC, null))
+        assertEquals("lossless", prefs.getString(SettingsStore.STREAM_QUALITY, null))
+        tag("stream_quality_lossless").assertIsOn()
     }
 
     @Test fun selectedProfileShowsDescriptionAndMarker() {

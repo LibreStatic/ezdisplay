@@ -18,14 +18,23 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenu
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -57,6 +66,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -424,6 +434,123 @@ private fun TriggerRow(t: Trigger, state: SettingsState, actions: SettingsAction
                         null
                     },
                 )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Video
+
+/** Pref value to the label of a video codec choice. */
+internal fun videoCodecLabel(v: String): Int = CodecLabels[v] ?: R.string.video_codec_auto
+
+internal fun videoQualityLabel(v: String): Int = QualityLabels[v] ?: R.string.video_quality_normal
+
+private val CodecLabels = mapOf(
+    "auto" to R.string.video_codec_auto, "h264" to R.string.video_codec_h264, "hevc" to R.string.video_codec_hevc,
+)
+
+private val QualityLabels = mapOf(
+    "normal" to R.string.video_quality_normal, "high" to R.string.video_quality_high,
+    "lossless" to R.string.video_quality_lossless,
+)
+
+/** Video codec and quality choices as one segmented group; they apply on the next connection. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun VideoGroup(state: SettingsState, actions: SettingsActions, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    Column(modifier.fillMaxWidth().testTag("video_group"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        VideoChoice(
+            tag = "video_codec", title = R.string.video_codec_title, desc = R.string.video_codec_desc,
+            values = VideoCodecs, labels = CodecLabels, selected = state.videoCodec,
+            enabled = { it != "hevc" || state.hevcAvailable }, onSelect = actions::setVideoCodec,
+            shape = segmentShape(0, 2), colors = colors,
+        )
+        VideoChoice(
+            tag = "stream_quality", title = R.string.video_quality_title, desc = R.string.video_quality_desc,
+            values = StreamQualities, labels = QualityLabels, selected = state.streamQuality,
+            enabled = { true }, onSelect = actions::setStreamQuality,
+            shape = segmentShape(1, 2), colors = colors,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun VideoChoice(
+    tag: String,
+    @StringRes title: Int,
+    @StringRes desc: Int,
+    values: List<String>,
+    labels: Map<String, Int>,
+    selected: String,
+    enabled: (String) -> Boolean,
+    onSelect: (String) -> Unit,
+    shape: Shape,
+    colors: ColorScheme,
+) {
+    Surface(shape = shape, color = colors.surfaceBright, modifier = Modifier.fillMaxWidth().testTag(tag)) {
+        Column(Modifier.padding(RowPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(title), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
+                values.forEachIndexed { i, v ->
+                    ToggleButton(
+                        checked = selected == v,
+                        onCheckedChange = { onSelect(v) },
+                        enabled = enabled(v),
+                        shapes = when (i) {
+                            0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                            values.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                            else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                        },
+                        modifier = Modifier.weight(1f).semantics { role = Role.RadioButton }.testTag("${tag}_$v"),
+                    ) {
+                        Text(stringResource(labels.getValue(v)), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+            Text(stringResource(desc), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        }
+    }
+}
+
+/**
+ * Wide page version: a button on the title row with the current choices that opens [VideoGroup] in a dialog, so the
+ * page gains no height (the key editor pane leaves no room for another row).
+ */
+@Composable
+fun VideoSummary(state: SettingsState, actions: SettingsActions, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    var open by rememberSaveable { mutableStateOf(false) }
+    FilledTonalButton(onClick = { open = true }, modifier = modifier.testTag("video_summary")) {
+        Symbol(R.drawable.ic_tune, size = 20.dp)
+        Text(
+            stringResource(
+                R.string.video_summary,
+                stringResource(videoCodecLabel(state.videoCodec)), stringResource(videoQualityLabel(state.streamQuality)),
+            ),
+            Modifier.padding(start = 8.dp),
+        )
+    }
+    if (open) {
+        Dialog(onDismissRequest = { open = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(
+                shape = RoundedCornerShape(28.dp), color = colors.surfaceContainer,
+                modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(0.9f).testTag("video_dialog"),
+            ) {
+                Column(Modifier.verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            stringResource(R.string.section_video), Modifier.weight(1f),
+                            style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
+                        )
+                        TextButton(onClick = { open = false }, modifier = Modifier.testTag("video_dialog_close")) {
+                            Text(stringResource(R.string.wifi_manage_close))
+                        }
+                    }
+                    VideoGroup(state, actions)
+                }
             }
         }
     }

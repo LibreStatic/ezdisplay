@@ -1,8 +1,8 @@
 //! Capability negotiation: a pure function from caps + preferences to a [`StreamConfig`].
 
 use crate::msg::{
-    AudioCodec, AudioStream, ClientAudio, ClientCaps, ClientHdr, Codec, DecoderCaps, EncoderCaps,
-    HostCaps, SampleFormat, StreamConfig,
+    AudioCodec, AudioStream, ClientAudio, ClientCaps, ClientHdr, ClientPrefs, Codec, DecoderCaps,
+    EncoderCaps, HostCaps, QualityLevel, SampleFormat, StreamConfig,
 };
 use crate::{ProtoError, Result};
 
@@ -116,6 +116,51 @@ pub struct Prefs {
     pub hdr: HdrMode,
     /// Audio streaming policy, used by [`negotiate_audio`]. Default [`AudioMode::Auto`].
     pub audio: AudioMode,
+    /// Quality level asked for. A host sets it to override the client; otherwise it is filled from
+    /// the client's `ClientPrefs` by [`with_client`](Prefs::with_client). What is applied is
+    /// [`applied_quality`](Prefs::applied_quality). Default [`QualityLevel::Normal`].
+    pub quality: QualityLevel,
+}
+
+impl Prefs {
+    /// These preferences merged with the client's `ClientPrefs` (`None` for a client older than
+    /// protocol 0.8). The client's codec fills [`codec`](Self::codec) only when neither a codec
+    /// nor an encoder is set here; the quality of the client is used unless the host set one
+    /// other than [`QualityLevel::Normal`].
+    pub fn with_client(&self, client: Option<&ClientPrefs>) -> Prefs {
+        let mut merged = self.clone();
+        let Some(client) = client else {
+            return merged;
+        };
+        if merged.codec.is_none() && merged.encoder.is_none() {
+            merged.codec = client.codec();
+        }
+        if merged.quality == QualityLevel::Normal {
+            merged.quality = client.quality();
+        }
+        merged
+    }
+
+    /// The quality level that can be applied for a stream encoded with `codec`: anything above
+    /// normal needs a USB link, and lossless needs HEVC (it falls back to high).
+    pub fn applied_quality(&self, codec: Codec) -> QualityLevel {
+        match self.quality {
+            QualityLevel::Normal => QualityLevel::Normal,
+            _ if self.link != LinkKind::Usb => QualityLevel::Normal,
+            QualityLevel::Lossless if codec != Codec::Hevc => QualityLevel::High,
+            q => q,
+        }
+    }
+
+    /// The codec to try first: the explicit one, or HEVC for a lossless request on USB.
+    fn preferred_codec(&self) -> Option<Codec> {
+        self.codec.or_else(|| {
+            (self.quality == QualityLevel::Lossless
+                && self.link == LinkKind::Usb
+                && self.encoder.is_none())
+            .then_some(Codec::Hevc)
+        })
+    }
 }
 
 impl Default for Prefs {
@@ -130,6 +175,7 @@ impl Default for Prefs {
             scale_permille: 1000,
             hdr: HdrMode::Auto,
             audio: AudioMode::Auto,
+            quality: QualityLevel::Normal,
         }
     }
 }
@@ -154,7 +200,7 @@ fn pick_codec(client: &ClientCaps, host: &HostCaps, prefs: &Prefs) -> Result<Cod
     };
     // Preference first (if satisfiable), then H.264, then whatever else both sides share.
     [
-        prefs.codec,
+        prefs.preferred_codec(),
         Some(Codec::H264),
         Some(Codec::Hevc),
         Some(Codec::Av1),
@@ -315,6 +361,20 @@ pub fn negotiate_hdr(
     Ok((negotiate(client, host, prefs)?, range))
 }
 
+/// Bitrate in kbit/s derived from the stream size, rate and codec (before the link ceiling).
+pub fn auto_bitrate_kbps(width: u32, height: u32, refresh_mhz: u32, codec: Codec) -> u32 {
+    let fps = refresh_mhz as f64 / 1000.0;
+    (width as f64 * height as f64 * fps * bits_per_pixel(codec) / 1000.0).round() as u32
+}
+
+/// Bitrate ceiling in kbit/s that `prefs` impose on the negotiated bitrate.
+pub fn bitrate_ceiling_kbps(prefs: &Prefs) -> u32 {
+    prefs
+        .max_bitrate_kbps
+        .unwrap_or_else(|| prefs.link.default_max_bitrate_kbps())
+        .max(MIN_BITRATE_KBPS)
+}
+
 /// Audio sample rate of the stream, Hz.
 const AUDIO_RATE: u32 = 48_000;
 /// Samples per channel in one audio packet (10 ms).
@@ -406,14 +466,10 @@ pub fn negotiate(client: &ClientCaps, host: &HostCaps, prefs: &Prefs) -> Result<
         prefs,
     );
     let refresh_mhz = pick_refresh(client, dec, prefs);
-    let fps = refresh_mhz as f64 / 1000.0;
-    let ceiling = prefs
-        .max_bitrate_kbps
-        .unwrap_or_else(|| prefs.link.default_max_bitrate_kbps())
-        .max(MIN_BITRATE_KBPS);
-    let wanted = prefs.bitrate_kbps.unwrap_or_else(|| {
-        (width as f64 * height as f64 * fps * bits_per_pixel(codec) / 1000.0).round() as u32
-    });
+    let ceiling = bitrate_ceiling_kbps(prefs);
+    let wanted = prefs
+        .bitrate_kbps
+        .unwrap_or_else(|| auto_bitrate_kbps(width, height, refresh_mhz, codec));
     Ok(StreamConfig {
         width,
         height,
@@ -1055,5 +1111,123 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn both_codecs() -> (ClientCaps, HostCaps) {
+        let c = client(
+            1920,
+            1080,
+            &[60000],
+            vec![
+                dec(Codec::H264, "d", true, true),
+                dec(Codec::Hevc, "dh", true, true),
+            ],
+        );
+        let h = host(vec![
+            enc(Codec::H264, "h264_x", true),
+            enc(Codec::Hevc, "hevc_x", true),
+        ]);
+        (c, h)
+    }
+
+    #[test]
+    fn client_prefs_fill_codec_and_quality() {
+        let cp = ClientPrefs::new(Some(Codec::Hevc), QualityLevel::High);
+        let merged = Prefs::default().with_client(Some(&cp));
+        assert_eq!(merged.codec, Some(Codec::Hevc));
+        assert_eq!(merged.quality, QualityLevel::High);
+        // A pre-0.8 client leaves everything alone.
+        assert_eq!(Prefs::default().with_client(None), Prefs::default());
+    }
+
+    #[test]
+    fn host_codec_encoder_and_quality_win_over_the_client() {
+        let cp = ClientPrefs::new(Some(Codec::Hevc), QualityLevel::Lossless);
+        let by_codec = Prefs {
+            codec: Some(Codec::H264),
+            quality: QualityLevel::High,
+            ..Prefs::default()
+        };
+        let m = by_codec.with_client(Some(&cp));
+        assert_eq!(
+            (m.codec, m.quality),
+            (Some(Codec::H264), QualityLevel::High)
+        );
+        let by_encoder = Prefs {
+            encoder: Some("h264_x".into()),
+            ..Prefs::default()
+        };
+        assert_eq!(by_encoder.with_client(Some(&cp)).codec, None);
+        // An auto client codec leaves the host's choice open.
+        let auto = ClientPrefs::auto();
+        assert_eq!(Prefs::default().with_client(Some(&auto)), Prefs::default());
+    }
+
+    #[test]
+    fn quality_above_normal_needs_usb() {
+        let usb = Prefs {
+            quality: QualityLevel::High,
+            ..Prefs::default()
+        };
+        assert_eq!(usb.applied_quality(Codec::H264), QualityLevel::High);
+        let net = Prefs {
+            link: LinkKind::Network,
+            quality: QualityLevel::Lossless,
+            ..Prefs::default()
+        };
+        assert_eq!(net.applied_quality(Codec::Hevc), QualityLevel::Normal);
+        assert_eq!(
+            Prefs::default().applied_quality(Codec::Hevc),
+            QualityLevel::Normal
+        );
+    }
+
+    #[test]
+    fn lossless_needs_hevc_else_high() {
+        let p = Prefs {
+            quality: QualityLevel::Lossless,
+            ..Prefs::default()
+        };
+        assert_eq!(p.applied_quality(Codec::Hevc), QualityLevel::Lossless);
+        assert_eq!(p.applied_quality(Codec::H264), QualityLevel::High);
+        assert_eq!(p.applied_quality(Codec::Av1), QualityLevel::High);
+    }
+
+    #[test]
+    fn lossless_with_auto_codec_prefers_hevc() {
+        let (c, h) = both_codecs();
+        let lossless = Prefs {
+            quality: QualityLevel::Lossless,
+            ..Prefs::default()
+        };
+        assert_eq!(negotiate(&c, &h, &lossless).unwrap().codec, Codec::Hevc);
+        // Not on a network link, with an explicit codec, or without HEVC on one side.
+        let net = Prefs {
+            link: LinkKind::Network,
+            ..lossless.clone()
+        };
+        assert_eq!(negotiate(&c, &h, &net).unwrap().codec, Codec::H264);
+        let h264 = Prefs {
+            codec: Some(Codec::H264),
+            ..lossless.clone()
+        };
+        assert_eq!(negotiate(&c, &h, &h264).unwrap().codec, Codec::H264);
+        let only_h264 = host(vec![enc(Codec::H264, "h264_x", true)]);
+        assert_eq!(
+            negotiate(&c, &only_h264, &lossless).unwrap().codec,
+            Codec::H264
+        );
+        assert_eq!(
+            negotiate(&c, &h, &Prefs::default()).unwrap().codec,
+            Codec::H264
+        );
+    }
+
+    #[test]
+    fn client_codec_preference_reaches_the_stream() {
+        let (c, h) = both_codecs();
+        let cp = ClientPrefs::new(Some(Codec::Hevc), QualityLevel::Normal);
+        let prefs = Prefs::default().with_client(Some(&cp));
+        assert_eq!(negotiate(&c, &h, &prefs).unwrap().codec, Codec::Hevc);
     }
 }

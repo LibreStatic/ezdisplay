@@ -653,8 +653,8 @@ pub(crate) mod tests {
     use ezd_link::adb::DeviceState as AdbState;
     use ezd_link::{MuxReceiver, MuxSender};
     use ezd_proto::{
-        Bye, ClientAudio, ClientCaps, ClientHdr, Codec, DEFAULT_CHUNK_LEN, DecoderCaps,
-        DisplayInfo, Hello, Message, Role,
+        Bye, ClientAudio, ClientCaps, ClientHdr, ClientPrefs, Codec, DEFAULT_CHUNK_LEN,
+        DecoderCaps, DisplayInfo, Hello, Message, Role,
     };
     use tokio::time::timeout;
 
@@ -745,6 +745,8 @@ pub(crate) mod tests {
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
         tx.send_control(Message::ClientAudio(audio)).unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+            .unwrap();
         let mut seen = 0;
         let mut audio_stream = None;
         while seen < 5 {

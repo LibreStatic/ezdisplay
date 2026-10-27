@@ -1,7 +1,7 @@
 //! Session phase and the JSON returned by `pollStats()`.
 
 use ezd_client_core::ClientSnapshot;
-use ezd_proto::{Codec, StreamConfig};
+use ezd_proto::{Codec, QualityLevel, StreamConfig, StreamReport};
 use serde::Serialize;
 use std::sync::Mutex;
 
@@ -33,6 +33,10 @@ struct State {
     decoder: Option<String>,
     /// Size of the decoder's output buffers, which can exceed the stream (coded vs cropped size).
     buffer: Option<(i32, i32)>,
+    /// How the host negotiated and encodes the current stream, once it sent the report.
+    report: Option<StreamReport>,
+    /// Reports stored so far in this process (0 = none yet).
+    report_seq: u64,
 }
 
 /// State shared between the client task, the decoder thread and the JNI poll calls.
@@ -47,6 +51,8 @@ impl Default for Shared {
             stream: None,
             decoder: None,
             buffer: None,
+            report: None,
+            report_seq: 0,
         }))
     }
 }
@@ -82,7 +88,19 @@ impl Shared {
 
     /// Records the negotiated stream.
     pub fn set_stream(&self, stream: StreamConfig) {
-        self.with(|s| s.stream = Some(stream));
+        self.with(|s| {
+            s.stream = Some(stream);
+            // The report of the previous stream no longer applies.
+            s.report = None;
+        });
+    }
+
+    /// Records the host's report on the encoder setup.
+    pub fn set_report(&self, report: StreamReport) {
+        self.with(|s| {
+            s.report = Some(report);
+            s.report_seq += 1;
+        });
     }
 
     /// Records the decoder in use.
@@ -128,6 +146,30 @@ impl Shared {
             Codec::Av1 => "av1",
         });
         let color = &snap.stream_color;
+        let report = s.report.as_ref().map(|r| {
+            serde_json::json!({
+                "wanted_kbps": r.wanted_kbps,
+                "user_bitrate": r.user_bitrate,
+                "ceiling_kbps": r.ceiling_kbps,
+                "attempts": r.attempts.iter().map(|a| serde_json::json!({
+                    "encoder": a.encoder,
+                    "options": a.options,
+                    "ok": a.ok,
+                    "error": a.error,
+                })).collect::<Vec<_>>(),
+                "rate_mode": r.rate.rate_mode().name(),
+                "quality": r.rate.quality,
+                "target_kbps": r.rate.target_kbps,
+                "max_kbps": r.rate.max_kbps,
+                "wanted_quality": QualityLevel::from_code(r.wanted_quality).name(),
+                "applied_quality": QualityLevel::from_code(r.applied_quality).name(),
+                "wanted_codec": Codec::from_code(r.wanted_codec).map_or("auto", |c| match c {
+                    Codec::H264 => "h264",
+                    Codec::Hevc => "hevc",
+                    Codec::Av1 => "av1",
+                }),
+            })
+        });
         let v = serde_json::json!({
             "phase": s.phase,
             "detail": s.detail,
@@ -160,6 +202,8 @@ impl Shared {
             "input_note": snap.input_status.as_ref().map(|i| i.note.clone()),
             "client_flags": snap.client_options.map(|o| o.flags),
             "inputs_sent": snap.inputs_sent,
+            "report_seq": s.report_seq,
+            "report": report,
         });
         v.to_string()
     }
@@ -192,6 +236,67 @@ mod tests {
         assert_eq!(j["inputs_sent"], 0);
         assert_eq!(j["dynamic_range"], "sdr");
         assert_eq!(j["bit_depth"], 8);
+    }
+
+    #[test]
+    fn json_has_the_stream_report_and_drops_it_with_the_stream() {
+        use ezd_proto::{EncoderAttempt, RateControl, RateMode};
+        let sh = Shared::default();
+        let j = |sh: &Shared| -> serde_json::Value {
+            serde_json::from_str(&sh.to_json(&Default::default())).unwrap()
+        };
+        assert_eq!(j(&sh)["report_seq"], 0);
+        assert!(j(&sh)["report"].is_null());
+        sh.set_report(StreamReport {
+            wanted_kbps: 45_949,
+            user_bitrate: false,
+            ceiling_kbps: 200_000,
+            attempts: vec![EncoderAttempt {
+                encoder: "h264_nvenc".into(),
+                options: "rc=vbr cq=19".into(),
+                ok: true,
+                error: String::new(),
+            }],
+            rate: RateControl {
+                mode: RateMode::Vbr.code(),
+                quality: 19,
+                target_kbps: 45_949,
+                max_kbps: 91_898,
+            },
+            wanted_quality: QualityLevel::Lossless.code(),
+            applied_quality: QualityLevel::High.code(),
+            wanted_codec: Codec::Hevc.code(),
+        });
+        let v = j(&sh);
+        assert_eq!(v["report_seq"], 1);
+        let r = &v["report"];
+        assert_eq!(r["wanted_kbps"], 45_949);
+        assert_eq!(r["user_bitrate"], false);
+        assert_eq!(r["ceiling_kbps"], 200_000);
+        assert_eq!(r["attempts"][0]["encoder"], "h264_nvenc");
+        assert_eq!(r["attempts"][0]["options"], "rc=vbr cq=19");
+        assert_eq!(r["attempts"][0]["ok"], true);
+        assert_eq!(r["attempts"][0]["error"], "");
+        assert_eq!(r["rate_mode"], "vbr");
+        assert_eq!(r["quality"], 19);
+        assert_eq!(r["wanted_quality"], "lossless");
+        assert_eq!(r["applied_quality"], "high");
+        assert_eq!(r["wanted_codec"], "hevc");
+        assert_eq!(
+            (r["target_kbps"].as_u64(), r["max_kbps"].as_u64()),
+            (Some(45_949), Some(91_898))
+        );
+        sh.set_stream(StreamConfig {
+            width: 1,
+            height: 1,
+            refresh_mhz: 60_000,
+            codec: Codec::H264,
+            bitrate_kbps: 1,
+            encoder_name: "x".into(),
+        });
+        let v = j(&sh);
+        assert!(v["report"].is_null());
+        assert_eq!(v["report_seq"], 1);
     }
 
     #[test]

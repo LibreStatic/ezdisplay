@@ -9,6 +9,7 @@ import android.provider.Settings
 import androidx.core.content.edit
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
+import com.librestatic.ezdisplay.Capabilities
 import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.InputPrefs.KeyCombo
 import com.librestatic.ezdisplay.R
@@ -124,6 +125,12 @@ val KeyPresets = listOf(
     KeyPreset(R.string.keys_preset_ctrl_shift_z, KeyCombo(InputPrefs.MOD_CTRL or InputPrefs.MOD_SHIFT, 0x1D)),
 )
 
+/** Video codec choices (`stream_prefs.codec`) in display order. */
+val VideoCodecs = listOf("auto", "h264", "hevc")
+
+/** Quality choices (`stream_prefs.quality`) in display order. */
+val StreamQualities = listOf("normal", "high", "lossless")
+
 /** Everything the settings screen shows. Defaults match what [InputPrefs.toJson] uses for unset prefs. */
 data class SettingsState(
     val profile: String = "raw",
@@ -152,6 +159,12 @@ data class SettingsState(
     val audioEnabled: Boolean = true,
     /** Connect over Wi-Fi when the USB connection is not there. */
     val wifiEnabled: Boolean = false,
+    /** Preferred video codec: one of [VideoCodecs]. */
+    val videoCodec: String = "auto",
+    /** Quality over USB: one of [StreamQualities]. */
+    val streamQuality: String = "normal",
+    /** Whether this device has an HEVC decoder; the HEVC choice is disabled without one. */
+    val hevcAvailable: Boolean = true,
     val wifiHosts: List<WifiHost> = emptyList(),
     /** Hosts seen on the network right now (only while discovery runs). */
     val discovered: List<DiscoveredHost> = emptyList(),
@@ -265,6 +278,8 @@ interface SettingsActions {
     /** Opens the getting-started guide again. */
     fun replayOnboarding() {}
     fun setAudioEnabled(on: Boolean)
+    fun setVideoCodec(codec: String)
+    fun setStreamQuality(quality: String)
 
     /** Opens the PIN dialog for a host that was found or typed. */
     fun startPairing(name: String, shortFp: String, addr: String)
@@ -284,6 +299,7 @@ class SettingsStore(
     airActions: AirActions,
     private val wifi: WifiBackend = WifiBackend.None,
     private val deviceName: String = Build.MODEL,
+    private val hevcAvailable: Boolean = true,
     /** Runs the blocking pairing; replaced by a direct executor in tests. */
     private val io: Executor = Executors.newSingleThreadExecutor(),
     private val panelType: PanelType = PanelType.Unknown,
@@ -320,6 +336,9 @@ class SettingsStore(
         airActions = airActions,
         audioEnabled = prefs.getBoolean(AUDIO_ENABLED, true),
         wifiEnabled = prefs.getBoolean(WIFI_ENABLED, false),
+        videoCodec = prefs.getString(VIDEO_CODEC, null).takeIf { it in VideoCodecs } ?: "auto",
+        streamQuality = prefs.getString(STREAM_QUALITY, null).takeIf { it in StreamQualities } ?: "normal",
+        hevcAvailable = hevcAvailable,
         wifiHosts = wifi.hosts(),
         deviceFingerprint = wifi.identity(),
     )
@@ -426,6 +445,19 @@ class SettingsStore(
         _state.value = _state.value.copy(wifiEnabled = on)
     }
 
+    /** Ignored for an unknown codec, and for HEVC on a device without an HEVC decoder. */
+    override fun setVideoCodec(codec: String) {
+        if (codec !in VideoCodecs || (codec == "hevc" && !hevcAvailable)) return
+        prefs.edit { putString(VIDEO_CODEC, codec) }
+        _state.value = _state.value.copy(videoCodec = codec)
+    }
+
+    override fun setStreamQuality(quality: String) {
+        if (quality !in StreamQualities) return
+        prefs.edit { putString(STREAM_QUALITY, quality) }
+        _state.value = _state.value.copy(streamQuality = quality)
+    }
+
     /** Hosts seen on the network changed. */
     fun setDiscovered(hosts: List<DiscoveredHost>) {
         _state.value = _state.value.copy(discovered = hosts)
@@ -491,6 +523,10 @@ class SettingsStore(
         /** Pref key of the Wi-Fi switch, read by MainActivity. */
         const val WIFI_ENABLED = "wifi_enabled"
 
+        /** Pref keys of the video choices, read by `Capabilities` (applied on the next connection). */
+        const val VIDEO_CODEC = "video_codec"
+        const val STREAM_QUALITY = "stream_quality"
+
         /** Pref key of the audio switch, read by MainActivity when a session starts. */
         const val AUDIO_ENABLED = "audio_enabled"
 
@@ -500,6 +536,7 @@ class SettingsStore(
             onReplayOnboarding: () -> Unit = {},
         ) = SettingsStore(
             InputPrefs.prefs(context), readAirActions(context), NativeWifiBackend(context),
+            hevcAvailable = Capabilities.hasDecoder("hevc"),
             panelType = PanelDetector.cached(context),
             onPreviewScreensaver = onPreviewScreensaver, onReplayOnboarding = onReplayOnboarding,
         )

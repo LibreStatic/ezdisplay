@@ -5,7 +5,7 @@ use ezd_host_core::{
     UnavailableBackend,
 };
 use ezd_link::VideoCredit;
-use ezd_proto::{AudioMode, HdrMode, LinkKind, Prefs};
+use ezd_proto::{AudioMode, Codec, HdrMode, LinkKind, Prefs, QualityLevel};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -91,6 +91,55 @@ impl From<HdrChoice> for HdrMode {
         match c {
             HdrChoice::Auto => HdrMode::Auto,
             HdrChoice::Off => HdrMode::Off,
+        }
+    }
+}
+
+/// Video codec the host asks for (serializable mirror of `Option<Codec>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CodecChoice {
+    /// Use the tablet's preference, else the best codec both sides support.
+    #[default]
+    Auto,
+    /// H.264.
+    H264,
+    /// HEVC.
+    Hevc,
+    /// AV1.
+    Av1,
+}
+
+impl From<CodecChoice> for Option<Codec> {
+    fn from(c: CodecChoice) -> Self {
+        match c {
+            CodecChoice::Auto => None,
+            CodecChoice::H264 => Some(Codec::H264),
+            CodecChoice::Hevc => Some(Codec::Hevc),
+            CodecChoice::Av1 => Some(Codec::Av1),
+        }
+    }
+}
+
+/// Stream quality the host asks for (serializable mirror of [`QualityLevel`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QualityChoice {
+    /// Use the tablet's choice (rate-controlled stream if it makes none).
+    #[default]
+    Normal,
+    /// Near-transparent fixed quantiser (USB only), whatever the tablet asks.
+    High,
+    /// Lossless HEVC (USB only), whatever the tablet asks.
+    Lossless,
+}
+
+impl From<QualityChoice> for QualityLevel {
+    fn from(c: QualityChoice) -> Self {
+        match c {
+            QualityChoice::Normal => QualityLevel::Normal,
+            QualityChoice::High => QualityLevel::High,
+            QualityChoice::Lossless => QualityLevel::Lossless,
         }
     }
 }
@@ -216,6 +265,11 @@ pub struct ServiceConfig {
     pub hdr: HdrChoice,
     /// PC audio policy (`audio = "auto" | "pcm" | "opus" | "off"`).
     pub audio: AudioChoice,
+    /// Codec to use, overriding the tablet's preference; `auto` follows the tablet.
+    pub codec: CodecChoice,
+    /// Quality to use, overriding the tablet's choice unless `normal`. Above `normal` it applies
+    /// to USB sessions only.
+    pub quality: QualityChoice,
     /// Wi-Fi listener; `None` leaves Wi-Fi off. Sessions on it always use the network link kind,
     /// whatever `link` says.
     #[cfg(feature = "wifi")]
@@ -247,6 +301,8 @@ impl Default for ServiceConfig {
             open_app_on_connect: true,
             hdr: HdrChoice::default(),
             audio: AudioChoice::default(),
+            codec: CodecChoice::default(),
+            quality: QualityChoice::default(),
             #[cfg(feature = "wifi")]
             wifi: None,
             detach_grace_ms: ezd_host_core::DEFAULT_DETACH_GRACE.as_millis() as u32,
@@ -268,6 +324,8 @@ impl ServiceConfig {
             scale_permille: self.scale_permille,
             hdr: self.hdr.into(),
             audio: self.audio.into(),
+            codec: self.codec.into(),
+            quality: self.quality.into(),
             ..Prefs::default()
         }
     }
@@ -348,6 +406,8 @@ mod tests {
             encoder: Some("h264_nvenc".into()),
             scale_permille: 750,
             hdr: HdrChoice::Off,
+            codec: CodecChoice::Hevc,
+            quality: QualityChoice::High,
             ..ServiceConfig::default()
         };
         assert_eq!(
@@ -359,6 +419,8 @@ mod tests {
                 encoder: Some("h264_nvenc".into()),
                 scale_permille: 750,
                 hdr: HdrMode::Off,
+                codec: Some(Codec::Hevc),
+                quality: QualityLevel::High,
                 ..Prefs::default()
             }
         );

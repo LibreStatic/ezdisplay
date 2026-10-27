@@ -14,7 +14,7 @@ use ezd_link::{BlockingOptions, Link};
 use ezd_proto::pair::Fingerprint;
 use ezd_proto::{
     AudioCodec, AudioConfig, AudioPacket, AudioVolume, ClientAudio, CursorShape, SampleFormat,
-    StreamColor, StreamConfig, VideoFrame,
+    StreamColor, StreamConfig, StreamReport, VideoFrame,
 };
 use std::fs::File;
 use std::io::{Read, Write};
@@ -221,6 +221,11 @@ impl ClientHandler for Handler {
             color.full_range
         );
         self.color = *color;
+    }
+
+    fn on_stream_report(&mut self, report: &StreamReport) {
+        tracing::info!(?report, "host stream report");
+        self.shared.set_report(report.clone());
     }
 
     fn on_stream_config(&mut self, cfg: &StreamConfig) -> HandlerResult {
@@ -480,6 +485,7 @@ fn run(
         cfg.app_version = env!("CARGO_PKG_VERSION").into();
         cfg.hdr = caps.hdr;
         cfg.audio = Some(client_audio(caps.audio));
+        cfg.prefs = caps.prefs;
         let mut handler = Handler {
             shared: shared.clone(),
             dec: dec.clone(),

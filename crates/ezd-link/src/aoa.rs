@@ -35,8 +35,12 @@ pub const REENUMERATE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const READ_TIMEOUT: Duration = Duration::from_millis(200);
 /// How long a bulk write may take; a timeout is a hard error.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Bytes asked for in each bulk read and most bytes sent in one bulk transfer.
+/// Bytes asked for in each bulk read.
 pub const TRANSFER_LEN: usize = 16 * 1024;
+/// Most bytes sent in one bulk transfer. Odd, so a full chunk is never a multiple of the
+/// endpoint's `max_packet` and is not split by [`transfer_len`]: with 16 KiB chunks every one
+/// went out as 16383 + 1 bytes, and each 1-byte transfer cost a full round trip to the tablet.
+pub const WRITE_LEN: usize = 64 * 1024 - 1;
 
 const REQ_GET_PROTOCOL: u8 = 51;
 const REQ_SEND_STRING: u8 = 52;
@@ -296,13 +300,13 @@ impl<T: BulkIo> BulkWriter<T> {
 }
 
 impl<T: BulkIo> Write for BulkWriter<T> {
-    /// One bulk transfer of at most [`TRANSFER_LEN`] bytes, see [`transfer_len`]. A timeout is an
+    /// One bulk transfer of at most [`WRITE_LEN`] bytes, see [`transfer_len`]. A timeout is an
     /// error: the transfer may have been partial, so the stream cannot be trusted any more.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
-        let n = transfer_len(buf.len(), TRANSFER_LEN, self.max_packet);
+        let n = transfer_len(buf.len(), WRITE_LEN, self.max_packet);
         self.io
             .write_bulk(&buf[..n], WRITE_TIMEOUT)
             .map_err(io_error)
@@ -494,7 +498,7 @@ impl Aoa {
             peer,
             BlockingOptions {
                 read_buf: TRANSFER_LEN,
-                write_buf: TRANSFER_LEN,
+                write_buf: WRITE_LEN,
                 thread_name: "ezd-aoa".into(),
                 ..BlockingOptions::default()
             },
@@ -844,15 +848,32 @@ mod tests {
         let sent = io.writes.lock().unwrap().clone();
         assert_eq!(sent.iter().sum::<usize>(), 40_000);
         assert!(
-            sent.iter().all(|n| *n <= TRANSFER_LEN && n % 512 != 0),
+            sent.iter().all(|n| *n <= WRITE_LEN && n % 512 != 0),
             "{sent:?}"
         );
-        assert_eq!(sent[0], 16383);
+        assert_eq!(sent, [40_000]);
 
         io.writes.lock().unwrap().clear();
         assert_eq!(w.write(&[1u8; 512]).unwrap(), 511);
         assert_eq!(w.write(&[]).unwrap(), 0);
         assert_eq!(*io.writes.lock().unwrap(), [511]);
+    }
+
+    #[test]
+    fn full_write_chunks_are_never_split() {
+        for max_packet in [64, 512, 1024] {
+            assert_eq!(transfer_len(WRITE_LEN, WRITE_LEN, max_packet), WRITE_LEN);
+            assert_eq!(transfer_len(1 << 20, WRITE_LEN, max_packet), WRITE_LEN);
+        }
+        // A large frame handed over in full chunks, as the link's writer thread does.
+        let io = FakeIo::new(vec![]);
+        let mut w = BulkWriter::new(io.clone(), 1024);
+        for _ in 0..3 {
+            w.write_all(&vec![7u8; WRITE_LEN]).unwrap();
+        }
+        w.write_all(&[7u8; 4096]).unwrap();
+        let sent = io.writes.lock().unwrap().clone();
+        assert_eq!(sent, [WRITE_LEN, WRITE_LEN, WRITE_LEN, 4095, 1]);
     }
 
     #[test]

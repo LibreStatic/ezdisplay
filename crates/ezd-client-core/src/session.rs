@@ -3,8 +3,9 @@
 use crate::{ClientHandle, now_us};
 use ezd_link::{Link, MuxError, MuxReceiver, MuxSender};
 use ezd_proto::{
-    AudioConfig, AudioPacket, AudioVolume, Bye, ClientAudio, ClientCaps, ClientHdr, CursorShape,
-    CursorState, FrameAck, Hello, Message, Ping, Pong, Role, StreamColor, StreamConfig, VideoFrame,
+    AudioConfig, AudioPacket, AudioVolume, Bye, ClientAudio, ClientCaps, ClientHdr, ClientPrefs,
+    CursorShape, CursorState, FrameAck, Hello, Message, Ping, Pong, Role, StreamColor,
+    StreamConfig, StreamReport, VideoFrame,
 };
 use std::time::Duration;
 use tokio::time::{MissedTickBehavior, interval, timeout};
@@ -62,6 +63,10 @@ pub trait ClientHandler: Send {
     /// `received_us` is its [`now_us`] at reassembly.
     fn on_video_frame(&mut self, frame: VideoFrame, received_us: u64) -> HandlerResult;
 
+    /// How the host negotiated and encodes the stream (protocol 0.7). Sent after the encoder
+    /// opens, before the first frame it produced, and again after every reopen.
+    fn on_stream_report(&mut self, _report: &StreamReport) {}
+
     /// A new cursor shape (already cached in the handle).
     fn on_cursor_shape(&mut self, _shape: &CursorShape) {}
 
@@ -86,6 +91,9 @@ pub struct ClientConfig {
     /// right after `ClientHdr`; `None` sends [`ClientAudio::none`] (no audio), so the host
     /// always gets an answer and never waits for it in vain.
     pub audio: Option<ClientAudio>,
+    /// Codec and quality asked for in `ClientPrefs`, sent right after `ClientHdr` whenever the
+    /// host speaks protocol 0.8. The default is [`ClientPrefs::auto`].
+    pub prefs: ClientPrefs,
     /// Interval of `ClientStats` messages.
     pub stats_interval: Duration,
     /// Interval of client-initiated pings (clock sync).
@@ -112,6 +120,7 @@ impl ClientConfig {
             caps,
             hdr: None,
             audio: None,
+            prefs: ClientPrefs::auto(),
             stats_interval: Duration::from_secs(1),
             ping_interval: Duration::from_millis(500),
             max_duration: None,
@@ -245,6 +254,7 @@ pub async fn run_client<H: ClientHandler>(
     let my_minor_supports_hdr = my_hello.supports_hdr();
     let my_minor_supports_audio = my_hello.supports_audio();
     let my_minor_supports_keyboard = my_hello.supports_keyboard();
+    let my_minor_supports_prefs = my_hello.supports_stream_prefs();
     tx.send_control(Message::Hello(my_hello))?;
     tx.send_control(Message::ClientCaps(cfg.caps.clone()))?;
     let hello = wait_for(&mut rx, &tx, "Hello", wait, |m| match m {
@@ -264,6 +274,9 @@ pub async fn run_client<H: ClientHandler>(
         tx.send_control(Message::ClientAudio(
             cfg.audio.clone().unwrap_or_else(ClientAudio::none),
         ))?;
+    }
+    if hello.supports_stream_prefs() && my_minor_supports_prefs {
+        tx.send_control(Message::ClientPrefs(cfg.prefs))?;
     }
     wait_for(&mut rx, &tx, "HostCaps", wait, |m| match m {
         Message::HostCaps(h) => Ok(h),
@@ -460,6 +473,10 @@ fn on_message<H: ClientHandler>(
             }))?;
             handle.count_received(v.data.len());
             flow(handler.on_video_frame(v, received_us))
+        }
+        Message::StreamReport(r) => {
+            handler.on_stream_report(&r);
+            Ok(None)
         }
         Message::AudioPacket(p) => {
             handler.on_audio_packet(p);

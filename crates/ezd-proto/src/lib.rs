@@ -26,14 +26,14 @@ pub use frame::{
 };
 pub use msg::*;
 pub use negotiate::{
-    AudioMode, DynamicRange, HdrMode, HostAudio, LinkKind, Prefs, SdrReason, negotiate,
-    negotiate_audio, negotiate_hdr, pick_dynamic_range,
+    AudioMode, DynamicRange, HdrMode, HostAudio, LinkKind, Prefs, SdrReason, auto_bitrate_kbps,
+    bitrate_ceiling_kbps, negotiate, negotiate_audio, negotiate_hdr, pick_dynamic_range,
 };
 
 /// Wire protocol major version. A mismatch is fatal at handshake.
 pub const PROTOCOL_MAJOR: u16 = 0;
 /// Wire protocol minor version. Newer minors may add new `(channel, kind)` pairs.
-pub const PROTOCOL_MINOR: u16 = 7;
+pub const PROTOCOL_MINOR: u16 = 8;
 /// First protocol minor with the input messages, `InputStatus` and `ClientOptions`.
 pub const MINOR_INPUT: u16 = 3;
 /// First protocol minor with `ClientHdr` and `StreamColor` (HDR10 streaming).
@@ -42,6 +42,9 @@ pub const MINOR_HDR: u16 = 5;
 pub const MINOR_KEYBOARD: u16 = 6;
 /// First protocol minor with `ClientAudio`, `AudioConfig` and the Audio channel (PC audio streaming).
 pub const MINOR_AUDIO: u16 = 7;
+/// First protocol minor with `ClientPrefs` (codec and quality the client asks for) and
+/// `StreamReport` (how the host negotiated and encodes the stream).
+pub const MINOR_STREAM_PREFS: u16 = 8;
 /// Default TCP port used for the host listener and `adb reverse`.
 pub const DEFAULT_PORT: u16 = 27183;
 

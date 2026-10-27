@@ -20,8 +20,8 @@ use ezd_host_core::synthetic::read_frame_number;
 use ezd_link::{Link, MuxError};
 use ezd_proto::{
     AudioCodec, AudioConfig, AudioPacket, AudioStream, ClientAudio, ClientCaps, ClientOptions,
-    Codec, CursorShape, CursorState, DecoderCaps, DisplayInfo, InputStatus, SampleFormat,
-    StreamConfig, VideoFrame,
+    ClientPrefs, Codec, CursorShape, CursorState, DecoderCaps, DisplayInfo, InputStatus,
+    QualityLevel, SampleFormat, StreamConfig, StreamReport, VideoFrame,
 };
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -67,6 +67,8 @@ pub struct FakeClientConfig {
     pub audio: bool,
     /// Hardware keyboard state to report with `ClientKeyboard` (`None` = never set).
     pub keyboard_attached: Option<bool>,
+    /// Codec and quality to ask the host for (`ClientPrefs`).
+    pub prefs: ClientPrefs,
 }
 
 impl Default for FakeClientConfig {
@@ -89,6 +91,7 @@ impl Default for FakeClientConfig {
             proto_minor: None,
             audio: false,
             keyboard_attached: None,
+            prefs: ClientPrefs::auto(),
         }
     }
 }
@@ -378,6 +381,16 @@ impl Handler {
 }
 
 impl ClientHandler for Handler {
+    fn on_stream_report(&mut self, report: &StreamReport) {
+        tracing::info!(
+            ?report,
+            wanted_quality = QualityLevel::from_code(report.wanted_quality).name(),
+            applied_quality = QualityLevel::from_code(report.applied_quality).name(),
+            wanted_codec = report.wanted_codec,
+            "host stream report"
+        );
+    }
+
     fn on_stream_config(&mut self, cfg: &StreamConfig) -> HandlerResult {
         self.report.stream = cfg.clone();
         self.decoder = Some(Decoder::new(cfg.codec).map_err(boxed)?);
@@ -475,6 +488,7 @@ pub async fn run_fake_client(
 
     core_cfg.proto_minor = cfg.proto_minor;
     core_cfg.audio = Some(cfg.client_audio());
+    core_cfg.prefs = cfg.prefs;
 
     let handle = ClientHandle::new();
     if let Some(a) = cfg.keyboard_attached {

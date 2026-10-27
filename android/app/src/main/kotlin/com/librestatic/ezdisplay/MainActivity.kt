@@ -130,6 +130,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
     }
     private var chosenMode: android.view.Display.Mode? = null
     private var capsJson: String? = null
+    private val hevcAvailable by lazy { Capabilities.hasDecoder("hevc") }
 
     private var started = false // between onStart and onStop
     private var surfaceReady = false
@@ -160,6 +161,9 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
     private var floatBuf = FloatArray(512)
     private var timeBuf = LongArray(64)
     private var statusHideAt = 0L
+    private lateinit var osdView: StreamOsdView
+    private var osdHideAt = 0L
+    private var osdSeq = -1
 
     private var cursorSeq = 0L
     private var cursorShapeId = -1
@@ -296,6 +300,13 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         root.addView(telemetryView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
         ))
+        osdView = StreamOsdView(this)
+        root.addView(osdView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START,
+        ).apply {
+            val m = (16 * resources.displayMetrics.density).toInt()
+            setMargins(m, m, m, m)
+        })
         settingsButton = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_preferences)
             setBackgroundColor(0x99000000.toInt())
@@ -582,8 +593,12 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
     private fun connect() {
         if (!started || sessionActive) return
         if (!surfaceReady) return // surfaceCreated reschedules
+        val base = capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it }
+        // Codec, quality and the audio switch may change in the settings while this activity stays alive.
         val caps = Capabilities.withAudio(
-            capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it },
+            JSONObject(base)
+                .put("stream_prefs", Capabilities.streamPrefs(InputPrefs.prefs(this), hevcAvailable))
+                .toString(),
             InputPrefs.prefs(this).getBoolean(SettingsStore.AUDIO_ENABLED, true),
         )
         pushKeyboardState()
@@ -815,6 +830,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         }
         val wifiChoice = activeWifi
         val usb = activeAccessory
+        if (j.optString("phase") != "streaming") hideOsd(false)
         val addr = if (wifiChoice != null) hostLabel(wifiChoice) else "$HOST:$PORT"
         when (j.optString("phase")) {
             "connecting" -> setStatus(
@@ -832,6 +848,16 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
                 },
             )
             "streaming" -> {
+                // Shown at stream start and again whenever the host sends a new report.
+                val info = StreamOsd.parse(j)
+                if (!wasStreaming || info.seq != osdSeq) {
+                    osdSeq = info.seq
+                    osdView.show(StreamOsd.render(resources, info))
+                    osdHideAt = now + StreamOsd.SHOW_MS
+                } else if (osdHideAt != 0L && now >= osdHideAt) {
+                    osdHideAt = 0
+                    osdView.hide(true)
+                }
                 if (!wasStreaming) {
                     wasStreaming = true
                     pairingLost = null
@@ -897,6 +923,12 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             keysHintShown = true
             showTransient(getString(R.string.status_keys_unsupported), NOTE_SHOW_MS)
         }
+    }
+
+    private fun hideOsd(animated: Boolean) {
+        osdHideAt = 0
+        osdSeq = -1
+        osdView.hide(animated)
     }
 
     private fun showTransient(text: String, ms: Long) {

@@ -32,7 +32,8 @@ mod wifi;
 
 pub use adb::{AdbClient, AdbLocator, is_network_serial};
 pub use config::{
-    AdbMode, AoaMode, AudioChoice, HdrChoice, LinkChoice, PenChoice, ServiceConfig, SourceKind,
+    AdbMode, AoaMode, AudioChoice, CodecChoice, HdrChoice, LinkChoice, PenChoice, QualityChoice,
+    ServiceConfig, SourceKind,
 };
 #[cfg(feature = "wifi")]
 pub use config::{CongestionChoice, WifiConfig};

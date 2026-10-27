@@ -2,8 +2,8 @@
 
 use ezd_link::{MuxClosed, MuxSender};
 use ezd_proto::{
-    AudioVolume, Codec, CursorShape, CursorState, DynamicRange, EncoderCaps, Mastering,
-    StreamColor, StreamConfig,
+    AudioVolume, Codec, CursorShape, CursorState, DynamicRange, EncoderAttempt, EncoderCaps,
+    Mastering, QualityLevel, RateControl, StreamColor, StreamConfig,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -139,6 +139,15 @@ impl SourceHdr {
     }
 }
 
+/// What a source's encoder tried and what it runs with, for the `StreamReport` sent to the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncoderSetup {
+    /// Encoders and option sets tried, in order.
+    pub attempts: Vec<EncoderAttempt>,
+    /// Rate control of the encoder that opened.
+    pub rate: RateControl,
+}
+
 /// A capture + encode pipeline for one virtual display.
 ///
 /// Implemented per platform (and by `ezd_ffmpeg::SwVideoSource` for tests).
@@ -172,6 +181,10 @@ pub trait VideoSource: Send {
     /// ignored (SDR BT.709 stream).
     fn set_dynamic_range(&mut self, _range: DynamicRange, _color: &StreamColor) {}
 
+    /// Tells the source the quality level the host applies, right before
+    /// [`start`](Self::start). Default: ignored (the normal, rate-controlled stream).
+    fn set_quality(&mut self, _quality: QualityLevel) {}
+
     /// Starts capture and encoding with the negotiated configuration. The
     /// first produced frame must be a keyframe carrying `codec_config`.
     /// `cursor` stays valid until `stop`.
@@ -189,6 +202,13 @@ pub trait VideoSource: Send {
     /// The output the stream shows, valid after `start` (default: unknown). Input injection
     /// uses it to map normalized coordinates onto the desktop.
     fn output(&self) -> Option<OutputInfo> {
+        None
+    }
+
+    /// The setup of the encoder that opened since the last call, `None` when nothing changed
+    /// (the default for sources that do not report). The session polls it after every frame
+    /// from `next_frame` and sends it to the client before that frame.
+    fn take_encoder_setup(&mut self) -> Option<EncoderSetup> {
         None
     }
 

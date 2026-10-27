@@ -28,7 +28,7 @@ pub use session::{
 };
 pub use source::{
     AudioBackend, AudioBlock, AudioEncoder, AudioSource, CursorSink, DisplayMode, EncodedFrame,
-    OutputInfo, SourceError, SourceHdr, VideoSource, VirtualDisplay,
+    EncoderSetup, OutputInfo, SourceError, SourceHdr, VideoSource, VirtualDisplay,
 };
 pub use synthetic::{PixelFormat, SyntheticFrames, read_frame_number};
 pub use time::now_us;

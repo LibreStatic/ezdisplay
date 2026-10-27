@@ -17,6 +17,8 @@ arg-max-seconds = Aborta tras este número de segundos.
 arg-input-script = Reproduce una vez una secuencia de entrada predefinida, desde el primer fotograma de video: tap, drag, circle, touch2, scroll o keys (Ctrl+Espacio mantenido durante un trazo del lápiz; requiere un host con KEYS).
 arg-exit-after-script = Termina poco después de acabar el guion de entrada.
 arg-audio = Anuncia la reproducción del audio de la PC: el host envía su audio y los paquetes se cuentan (no se reproducen).
+arg-codec = Códec que se le pide al host: auto, h264, hevc o av1. El host lo usa solo si ambos lo soportan.
+arg-quality = Calidad que se le pide al host: normal, high o lossless. El host respeta high y lossless solo en un enlace USB; lossless requiere HEVC.
 
 err-dump-frame = --dump-frame N debe ser un número
 err-connecting = conectando con { $addr }
