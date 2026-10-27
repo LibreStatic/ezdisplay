@@ -148,6 +148,8 @@ FFMPEG_CONFIGURE=(
     --enable-libglslang
     --extra-cflags="-I$SRC/vulkan-headers/include"
     --extra-ldflags="-static-libstdc++ -static-libgcc"
+    # The static libopus needs libm, which opus.pc lists only under Libs.private.
+    --extra-libs=-lm
 )
 (
     cd "$SRC/ffmpeg"
