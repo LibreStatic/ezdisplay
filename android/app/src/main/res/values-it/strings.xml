@@ -182,7 +182,7 @@
     <string name="video_quality_normal">Normale</string>
     <string name="video_quality_high">Alta</string>
     <string name="video_quality_lossless">Senza perdite</string>
-    <string name="video_quality_desc">Alta è una qualità fissa quasi senza perdite e usa più dati. Senza perdite è HEVC senza perdite (4:2:0): il massimo dei dati, con possibile aumento della latenza. Entrambe valgono solo via USB; il Wi-Fi usa sempre Normale.</string>
+    <string name="video_quality_desc">Alta è una qualità fissa quasi senza perdite e usa più dati. Senza perdite usa una qualità quasi senza perdite mentre l\'immagine si muove e mostra l\'immagine esatta (senza perdite, 4:2:0) un istante dopo che si ferma: il massimo dei dati. Entrambe valgono solo via USB; il Wi-Fi usa sempre Normale.</string>
     <string name="osd_quality_normal">normale</string>
     <string name="osd_quality_high">alta</string>
     <string name="osd_quality_lossless">senza perdite</string>

@@ -181,6 +181,21 @@ struct Running {
     dmabuf_ok: bool,
     /// When the shared-memory fallback started.
     dmabuf_off_at: Option<Instant>,
+    /// The last frame encoded: when, and its capture time and counter (a refine reuses them).
+    last_encoded: Instant,
+    last_ids: (u64, u64),
+}
+
+/// How long the image must stay unchanged before the lossless level re-encodes the last frame
+/// losslessly. Moving content is encoded with the much smaller high set, so the stream keeps its
+/// frame rate; the lossless frame is large and slow to encode, send and decode, so it is only
+/// worth it once nothing else is waiting. Short enough to look immediate once the motion stops.
+const REFINE_DELAY: Duration = Duration::from_millis(150);
+
+/// How long `next_frame` may wait for a frame while a refine is pending: until the image has been
+/// still for [`REFINE_DELAY`] (`since_last` after the last encoded frame), but never past `timeout`.
+fn refine_wait(timeout: Duration, since_last: Duration) -> Duration {
+    timeout.min(REFINE_DELAY.saturating_sub(since_last))
 }
 
 /// After the shared-memory fallback starts, DMA-BUF frames that were already captured or
@@ -422,6 +437,8 @@ impl VideoSource for LinuxSource {
             _output: opened.guard,
             dmabuf_ok: fmt.modifier.is_some(),
             dmabuf_off_at: None,
+            last_encoded: Instant::now(),
+            last_ids: (0, 0),
         });
         self.force_key = true;
         Ok(())
@@ -433,44 +450,76 @@ impl VideoSource for LinuxSource {
             return Err(SourceError::msg("source not started"));
         };
         // `start_us`: when this frame's conversion (serial) or encoding (ahead) began.
+        let mut refined = false;
         let (result, start_us, capture_us, seq, was_dma) = match &mut r.input {
             Input::Serial(pipeline) => {
-                let frame = match r.capture.next(timeout) {
-                    Ok(Some(f)) => f,
-                    Ok(None) => {
+                let pending = pipeline.refine_pending();
+                let wait = if pending {
+                    refine_wait(timeout, r.last_encoded.elapsed())
+                } else {
+                    timeout
+                };
+                let frame = match r.capture.next(wait) {
+                    Ok(f) => f,
+                    Err(e) => return Err(SourceError::msg(e)),
+                };
+                match frame {
+                    Some(frame) => {
+                        // Benchmark aid (tools/kwin-anim-bench): drop every frame to measure KWin
+                        // alone.
+                        if std::env::var_os("EZD_DIAG_SKIP_ENCODE").is_some() {
+                            drop(frame);
+                            return Ok(None);
+                        }
+                        let (capture_us, seq, dma) = (frame.capture_us, frame.seq, frame.is_dma());
+                        let start_us = ezd_host_core::now_us();
+                        let result = pipeline.encode(frame, force);
+                        r.last_encoded = Instant::now();
+                        r.last_ids = (capture_us, seq);
+                        (result, start_us, capture_us, seq, dma)
+                    }
+                    None if pending && r.last_encoded.elapsed() >= REFINE_DELAY => {
+                        refined = true;
+                        let start_us = ezd_host_core::now_us();
+                        let (capture_us, seq) = r.last_ids;
+                        (pipeline.refine(), start_us, capture_us, seq, false)
+                    }
+                    None => {
                         self.force_key |= force;
                         return Ok(None);
                     }
-                    Err(e) => return Err(SourceError::msg(e)),
-                };
-                // Benchmark aid (tools/kwin-anim-bench): drop every frame to measure KWin alone.
-                if std::env::var_os("EZD_DIAG_SKIP_ENCODE").is_some() {
-                    drop(frame);
-                    return Ok(None);
                 }
-                let (capture_us, seq, dma) = (frame.capture_us, frame.seq, frame.is_dma());
-                let start_us = ezd_host_core::now_us();
-                (
-                    pipeline.encode(frame, force),
-                    start_us,
-                    capture_us,
-                    seq,
-                    dma,
-                )
             }
-            Input::Ahead { conv, enc } => match conv.take(timeout) {
-                None => {
-                    self.force_key |= force;
-                    return Ok(None);
+            Input::Ahead { conv, enc } => {
+                let pending = enc.refine_pending();
+                let wait = if pending {
+                    refine_wait(timeout, r.last_encoded.elapsed())
+                } else {
+                    timeout
+                };
+                match conv.take(wait) {
+                    None if pending && r.last_encoded.elapsed() >= REFINE_DELAY => {
+                        refined = true;
+                        let start_us = ezd_host_core::now_us();
+                        let (capture_us, seq) = r.last_ids;
+                        (enc.refine(), start_us, capture_us, seq, false)
+                    }
+                    None => {
+                        self.force_key |= force;
+                        return Ok(None);
+                    }
+                    Some(Item::Frame(p)) => {
+                        let (capture_us, seq, dma) = (p.capture_us, p.seq, p.dma);
+                        let start_us = ezd_host_core::now_us();
+                        let result = enc.encode(p, force);
+                        r.last_encoded = Instant::now();
+                        r.last_ids = (capture_us, seq);
+                        (result, start_us, capture_us, seq, dma)
+                    }
+                    Some(Item::Failed { dma, error }) => (Err(error), 0, 0, 0, dma),
+                    Some(Item::Closed(e)) => return Err(SourceError::msg(e)),
                 }
-                Some(Item::Frame(p)) => {
-                    let (capture_us, seq, dma) = (p.capture_us, p.seq, p.dma);
-                    let start_us = ezd_host_core::now_us();
-                    (enc.encode(p, force), start_us, capture_us, seq, dma)
-                }
-                Some(Item::Failed { dma, error }) => (Err(error), 0, 0, 0, dma),
-                Some(Item::Closed(e)) => return Err(SourceError::msg(e)),
-            },
+            }
         };
         match result {
             Ok(Some(o)) => {
@@ -478,6 +527,7 @@ impl VideoSource for LinuxSource {
                     path = o.path,
                     bytes = o.data.len(),
                     key = o.keyframe,
+                    refine = refined,
                     age_us = start_us.saturating_sub(capture_us),
                     encode_us = o.encoded_us.saturating_sub(start_us),
                     "encoded"
@@ -547,6 +597,19 @@ impl VideoSource for LinuxSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refine_wait_runs_to_the_still_deadline_but_not_past_the_timeout() {
+        let ms = Duration::from_millis;
+        // Just encoded: wait the whole delay, if the caller allows it.
+        assert_eq!(refine_wait(ms(500), ms(0)), REFINE_DELAY);
+        assert_eq!(refine_wait(ms(100), ms(0)), ms(100));
+        // Part of the delay has passed.
+        assert_eq!(refine_wait(ms(500), ms(100)), ms(50));
+        // Overdue: do not wait.
+        assert_eq!(refine_wait(ms(500), ms(150)), ms(0));
+        assert_eq!(refine_wait(ms(500), ms(900)), ms(0));
+    }
 
     #[test]
     fn hdr_state_changes_end_the_session_for_a_new_negotiation() {

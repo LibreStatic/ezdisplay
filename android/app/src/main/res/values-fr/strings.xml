@@ -182,7 +182,7 @@
     <string name="video_quality_normal">Normale</string>
     <string name="video_quality_high">Élevée</string>
     <string name="video_quality_lossless">Sans perte</string>
-    <string name="video_quality_desc">Élevée est une qualité fixe quasi sans perte et utilise plus de données. Sans perte est du HEVC sans perte (4:2:0) : le plus de données, avec une latence parfois accrue. Les deux ne s\'appliquent que via USB ; le Wi-Fi utilise toujours Normale.</string>
+    <string name="video_quality_desc">Élevée est une qualité fixe quasi sans perte et utilise plus de données. Sans perte utilise une qualité quasi sans perte tant que l\'image bouge, puis affiche l\'image exacte (sans perte, 4:2:0) un instant après son arrêt : le plus de données. Les deux ne s\'appliquent que via USB ; le Wi-Fi utilise toujours Normale.</string>
     <string name="osd_quality_normal">normale</string>
     <string name="osd_quality_high">élevée</string>
     <string name="osd_quality_lossless">sans perte</string>

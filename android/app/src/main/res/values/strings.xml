@@ -181,7 +181,7 @@
     <string name="video_quality_normal">Normal</string>
     <string name="video_quality_high">High</string>
     <string name="video_quality_lossless">Lossless</string>
-    <string name="video_quality_desc">High is near-lossless fixed quality and uses more data. Lossless is HEVC lossless (4:2:0): the most data, and it may raise latency. Both only apply over USB; Wi-Fi always uses Normal.</string>
+    <string name="video_quality_desc">High is near-lossless fixed quality and uses more data. Lossless uses near-lossless quality while the image moves and shows the exact image (lossless 4:2:0) a moment after it stops: the most data. Both only apply over USB; Wi-Fi always uses Normal.</string>
     <string name="osd_quality_normal">normal</string>
     <string name="osd_quality_high">high</string>
     <string name="osd_quality_lossless">lossless</string>

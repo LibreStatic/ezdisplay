@@ -617,8 +617,13 @@ normal). The host merges them into its own preferences before it negotiates:
   are downgraded to normal. Lossless needs HEVC: with any other final codec it becomes high.
 * Normal is the rate-controlled stream sized to the link. High is a fixed quantiser (QP or CRF
   10) with no rate limit, close to transparent but several times the normal bitrate. Lossless is
-  HEVC lossless 4:2:0 (NVENC `tune=lossless`); an encoder without a lossless mode, or one whose
-  lossless set fails to open, runs the high set. The result is in `StreamReport.applied_quality`.
+  progressive: while the image changes the host encodes with the high set, and once it has been
+  still for 150 ms it re-encodes the last frame as one lossless IDR with codec config (HEVC
+  lossless 4:2:0, NVENC `tune=lossless`), so still content ends pixel-exact. The next frame after
+  a lossless IDR is an IDR too. An encoder without a lossless mode, or one whose lossless set
+  fails to open, runs the high set only. The result is in `StreamReport.applied_quality`
+  (lossless when the lossless set opened); `StreamReport.attempts` lists the lossless and the
+  high set.
 
 The Linux host offers 8-bit SDR HEVC next to H.264 and the HDR10 Main10 variant, so a client can
 ask for HEVC for any stream.

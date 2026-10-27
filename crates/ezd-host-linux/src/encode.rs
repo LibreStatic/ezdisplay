@@ -1209,9 +1209,33 @@ impl Converter {
 
 struct Active {
     generation: u64,
+    /// Encodes every captured frame (the lossless level uses its high set here).
     enc: Enc,
     sent_config: bool,
+    /// Lossless level only: the lossless encoder that re-encodes a still image.
+    refine: Option<Refine>,
 }
+
+/// Progressive refinement: the lossless encoder and the frame waiting for it.
+struct Refine {
+    enc: Enc,
+    /// The last packet sent to the client came from `enc`, so the decoder's references are the
+    /// refined picture and the next motion frame must be an IDR.
+    last_sent: bool,
+    pending: Option<Pending>,
+}
+
+/// The last frame the motion encoder took, kept for a lossless re-encode.
+struct Pending {
+    frame: OwnedFrame,
+    path: &'static str,
+    /// Keeps the capture buffer valid until the refine is done.
+    _release: Option<crate::frame::Release>,
+}
+
+// SAFETY: the frame is exclusively owned (a clone with its own reference counts, which are
+// atomic) and moves between threads as a whole, like `Prepared`.
+unsafe impl Send for Pending {}
 
 /// Encodes [`Prepared`] frames. A new encoder is opened when the converter reopened; its first
 /// packet is an IDR with codec config.
@@ -1277,7 +1301,7 @@ impl Encoder {
             self.active = None;
             // SAFETY: valid frame; the frames context outlives the call.
             let hw = unsafe { (*p.frame.0).hw_frames_ctx };
-            let mut enc = Enc::open(&EncParams {
+            let params = |quality| EncParams {
                 name: self.name,
                 width: p.width,
                 height: p.height,
@@ -1287,17 +1311,46 @@ impl Encoder {
                 hw_frames: (!hw.is_null()).then_some(hw),
                 color: self.tags.color,
                 ten_bit: self.ten_bit,
-                quality: self.quality,
-            })?;
-            self.setup = enc.setup.take();
+                quality,
+            };
+            let mut enc = Enc::open(&params(self.quality))?;
+            let mut setup = enc.setup.take();
+            let mut refine = None;
+            let lossless_ok = self.quality == QualityLevel::Lossless
+                && setup
+                    .as_ref()
+                    .is_some_and(|s| s.rate.rate_mode() == ezd_proto::RateMode::Lossless);
+            let mut motion = enc;
+            if lossless_ok {
+                match Enc::open(&params(QualityLevel::High)) {
+                    Ok(mut high) => {
+                        if let (Some(s), Some(h)) = (setup.as_mut(), high.setup.take()) {
+                            s.attempts.extend(h.attempts);
+                        }
+                        // The high set encodes every frame, the lossless one refines.
+                        refine = Some(Refine {
+                            enc: std::mem::replace(&mut motion, high),
+                            last_sent: false,
+                            pending: None,
+                        });
+                    }
+                    Err(e) => tracing::warn!(
+                        "high set for progressive refinement did not open ({e}); \
+                         encoding lossless only"
+                    ),
+                }
+            }
+            self.setup = setup;
             self.active = Some(Active {
                 generation: p.generation,
-                enc,
+                enc: motion,
                 sent_config: false,
+                refine,
             });
         }
         let a = self.active.as_mut().expect("opened above");
-        let want_key = force_key || !a.sent_config;
+        let want_key =
+            force_key || !a.sent_config || a.refine.as_ref().is_some_and(|r| r.last_sent);
         let Prepared {
             frame,
             path,
@@ -1325,6 +1378,15 @@ impl Encoder {
                 f.flags &= !(ff::AV_FRAME_FLAG_KEY);
             }
         }
+        // Refine mode keeps the frame and the capture buffer for a lossless re-encode.
+        let keep = match a.refine.is_some() {
+            // SAFETY: `frame` is valid; the clone shares its buffers.
+            true => Some(OwnedFrame(unsafe { ff::av_frame_clone(frame.0) })),
+            false => None,
+        };
+        if keep.as_ref().is_some_and(|k| k.0.is_null()) {
+            return Err("av_frame_clone failed".into());
+        }
         let t_send = now_us();
         a.enc.send(frame.0)?;
         drop(frame);
@@ -1340,7 +1402,19 @@ impl Encoder {
             receive_us = encoded_us - t_receive,
             "encode stages"
         );
-        // The GPU/CPU is done with the capture buffer once the packet is out.
+        // The GPU/CPU is done with the capture buffer once the packet is out, unless a refine
+        // still needs it.
+        let release = match (a.refine.as_mut(), keep) {
+            (Some(r), Some(frame)) => {
+                r.pending = Some(Pending {
+                    frame,
+                    path,
+                    _release: release,
+                });
+                None
+            }
+            _ => release,
+        };
         drop(release);
         let Some((data, keyframe)) = packet else {
             return Ok(None);
@@ -1351,6 +1425,9 @@ impl Encoder {
             None
         };
         a.sent_config = true;
+        if let Some(r) = a.refine.as_mut() {
+            r.last_sent = false;
+        }
         Ok(Some(Output {
             data,
             keyframe,
@@ -1358,6 +1435,60 @@ impl Encoder {
             encoded_us,
             path,
         }))
+    }
+
+    /// Whether a frame waits for its lossless re-encode ([`Encoder::refine`]).
+    pub fn refine_pending(&self) -> bool {
+        self.active
+            .as_ref()
+            .and_then(|a| a.refine.as_ref())
+            .is_some_and(|r| r.pending.is_some())
+    }
+
+    /// Re-encodes the last frame with the lossless encoder as one IDR with codec config. A frame
+    /// is refined once; `None` when nothing is pending. A failing refine encoder is dropped and
+    /// the stream goes on with motion frames only.
+    pub fn refine(&mut self) -> Result<Option<Output>, String> {
+        let Some(a) = self.active.as_mut() else {
+            return Ok(None);
+        };
+        let Some(r) = a.refine.as_mut() else {
+            return Ok(None);
+        };
+        let Some(pending) = r.pending.take() else {
+            return Ok(None);
+        };
+        let Pending { frame, path, .. } = pending;
+        // SAFETY: `frame` is a valid frame we own.
+        unsafe {
+            let f = &mut *frame.0;
+            f.pict_type = ff::AVPictureType::AV_PICTURE_TYPE_I;
+            f.flags |= ff::AV_FRAME_FLAG_KEY;
+        }
+        let result = r
+            .enc
+            .send(frame.0)
+            .and_then(|()| r.enc.receive())
+            .map(|p| (p, now_us()));
+        drop(frame);
+        match result {
+            Ok((Some((data, keyframe)), encoded_us)) => {
+                r.last_sent = true;
+                Ok(Some(Output {
+                    data,
+                    keyframe,
+                    codec_config: Some(r.enc.extradata.clone()),
+                    encoded_us,
+                    path,
+                }))
+            }
+            Ok((None, _)) => Ok(None),
+            Err(e) => {
+                tracing::warn!("lossless refinement failed ({e}); disabled for this stream");
+                a.refine = None;
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -1387,6 +1518,16 @@ impl Pipeline {
     /// The setup of the encoder opened since the last call.
     pub fn take_setup(&mut self) -> Option<EncoderSetup> {
         self.enc.take_setup()
+    }
+
+    /// Whether a frame waits for its lossless re-encode.
+    pub fn refine_pending(&self) -> bool {
+        self.enc.refine_pending()
+    }
+
+    /// Re-encodes the last frame losslessly, see [`Encoder::refine`].
+    pub fn refine(&mut self) -> Result<Option<Output>, String> {
+        self.enc.refine()
     }
 
     /// Sets the colour signalling of the stream (default BT.709 limited range).
@@ -2657,6 +2798,62 @@ mod tests {
             }
             assert!(out.keyframe && out.codec_config.is_some());
             check_colors(&decode_hevc_first(&out));
+        }
+    }
+
+    /// The lossless level encodes moving frames with the high set and refines the last one with the
+    /// lossless set; the other levels never have anything to refine.
+    #[test]
+    fn nvenc_hevc_lossless_refines_the_last_frame_if_available() {
+        let Some(node) = crate::adapter::list_render_nodes()
+            .into_iter()
+            .find(|n| n.is_nvidia())
+        else {
+            return eprintln!("skip: no NVIDIA render node");
+        };
+        let plan = || hevc_nvenc_sdr_plan(node.path.clone());
+        let mut p = Pipeline::new(plan(), 60_000, 8_000).with_quality(QualityLevel::Lossless);
+        let first = match p.encode(test_shm_frame(2960, 1848, Q), false) {
+            Ok(Some(o)) => o,
+            Ok(None) => panic!("no packet"),
+            Err(e) => return eprintln!("skip: {e}"),
+        };
+        assert!(first.keyframe && first.codec_config.is_some());
+        let setup = p.take_setup().expect("setup after the open");
+        assert_eq!(setup.rate.rate_mode(), ezd_proto::RateMode::Lossless);
+        let options: Vec<&str> = setup.attempts.iter().map(|a| a.options.as_str()).collect();
+        assert!(
+            options.iter().any(|o| o.contains("tune=lossless")),
+            "{options:?}"
+        );
+        assert!(options.iter().any(|o| o.contains("constqp")), "{options:?}");
+        assert!(p.refine_pending());
+        let refined = p.refine().unwrap().expect("refined frame");
+        assert!(refined.keyframe && refined.codec_config.is_some());
+        assert_ne!(refined.data, first.data);
+        check_colors(&decode_hevc_first(&refined));
+        // A frame is refined once.
+        assert!(!p.refine_pending());
+        assert!(p.refine().unwrap().is_none());
+        // The decoder's references were replaced: the next motion frame is an IDR with config.
+        let second = p
+            .encode(test_shm_frame(2960, 1848, Q), false)
+            .unwrap()
+            .unwrap();
+        assert!(second.keyframe && second.codec_config.is_some());
+        let third = p
+            .encode(test_shm_frame(2960, 1848, Q), false)
+            .unwrap()
+            .unwrap();
+        assert!(!third.keyframe && third.codec_config.is_none());
+        assert!(p.refine_pending());
+        for quality in [QualityLevel::Normal, QualityLevel::High] {
+            let mut p = Pipeline::new(plan(), 60_000, 8_000).with_quality(quality);
+            p.encode(test_shm_frame(2960, 1848, Q), false)
+                .unwrap()
+                .unwrap();
+            assert!(!p.refine_pending(), "{quality:?}");
+            assert!(p.refine().unwrap().is_none(), "{quality:?}");
         }
     }
 

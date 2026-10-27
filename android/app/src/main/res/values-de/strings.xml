@@ -179,7 +179,7 @@
     <string name="video_quality_normal">Normal</string>
     <string name="video_quality_high">Hoch</string>
     <string name="video_quality_lossless">Verlustfrei</string>
-    <string name="video_quality_desc">Hoch ist eine feste, nahezu verlustfreie Qualität und braucht mehr Daten. Verlustfrei ist verlustfreies HEVC (4:2:0): die meisten Daten, möglicherweise mehr Latenz. Beides gilt nur über USB; WLAN nutzt immer Normal.</string>
+    <string name="video_quality_desc">Hoch ist eine feste, nahezu verlustfreie Qualität und braucht mehr Daten. Verlustfrei nutzt nahezu verlustfreie Qualität, solange sich das Bild bewegt, und zeigt das exakte (verlustfreie, 4:2:0) Bild einen Moment nach dem Stillstand: die meisten Daten. Beides gilt nur über USB; WLAN nutzt immer Normal.</string>
     <string name="osd_quality_normal">normal</string>
     <string name="osd_quality_high">hoch</string>
     <string name="osd_quality_lossless">verlustfrei</string>
