@@ -241,6 +241,7 @@ impl HostService {
             TcpListener::from_std(std_listener).map_err(bind_err)?
         };
         let local = listener.local_addr().map_err(bind_err)?;
+        crate::platform::recover_audio_after_crash();
 
         #[cfg(feature = "wifi")]
         let wifi = match &cfg.wifi {

@@ -129,6 +129,6 @@ flowchart TB
 1. Vertical slice on both hosts: video and local cursor over ADB. 1a core → 1b Android, 1c Linux KDE, 1d Windows in parallel.
 2. Input: touch, pen, S Pen button gestures.
 3. Transports: Wi-Fi (QUIC with PIN or QR pairing, mDNS discovery) in progress; AOA (USB without developer mode, libusb) done.
-4. Audio: PC audio on the tablet as PCM or Opus (WASAPI loopback on Windows, a PipeWire output on Linux), with volume sync on Linux; done.
+4. Audio: PC audio on the tablet as PCM or Opus (WASAPI loopback of the muted default output on Windows, a PipeWire output on Linux), with volume sync; done.
 5. GNOME, wlroots and X11 backends.
 6. Packaging: Windows installer (done, with the tray app), Linux packages (Arch, .deb, AppImage; done) and udev rules, Android `full`/`play` builds.
