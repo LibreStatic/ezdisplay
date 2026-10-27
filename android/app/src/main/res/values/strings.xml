@@ -167,4 +167,24 @@
         <item quantity="one">+%1$d more</item>
         <item quantity="other">+%1$d more</item>
     </plurals>
+
+    <string name="section_video">Video</string>
+    <string name="video_codec_title">Video codec</string>
+    <string name="video_codec_auto">Automatic</string>
+    <string name="video_codec_h264" translatable="false">H.264</string>
+    <string name="video_codec_hevc" translatable="false">HEVC</string>
+    <string name="video_codec_desc">Automatic picks the best codec that both this tablet and the PC support. Changes apply on the next connection.</string>
+    <string name="video_quality_title">Quality over USB</string>
+    <string name="video_quality_normal">Normal</string>
+    <string name="video_quality_high">High</string>
+    <string name="video_quality_lossless">Lossless</string>
+    <string name="video_quality_desc">High is near-lossless fixed quality and uses more data. Lossless is HEVC lossless (4:2:0): the most data, and it may raise latency. Both only apply over USB; Wi-Fi always uses Normal.</string>
+    <string name="osd_quality_normal">normal</string>
+    <string name="osd_quality_high">high</string>
+    <string name="osd_quality_lossless">lossless</string>
+    <string name="osd_quality">Quality: %1$s</string>
+    <string name="osd_quality_applied">Quality: %1$s requested · %2$s applied</string>
+    <string name="osd_codec_wanted">Codec: %1$s requested</string>
+    <string name="osd_rate_lossless">lossless</string>
+    <string name="video_summary">%1$s · %2$s</string>
 </resources>

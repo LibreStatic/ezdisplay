@@ -39,7 +39,7 @@ pub use probe::{
     ProbeResult, encoder_available, probe_encoder, probe_encoder_with, software_encoders,
 };
 pub use rate::{
-    NVENC_CQ, PEAK_FACTOR, RateSettings, VAAPI_QP, VBV_FRAMES, X264_CRF, describe_rate,
+    HIGH_QP, NVENC_CQ, PEAK_FACTOR, RateSettings, VAAPI_QP, VBV_FRAMES, X264_CRF, describe_rate,
     options_label, rate_settings,
 };
 pub use source::SwVideoSource;

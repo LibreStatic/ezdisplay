@@ -6,6 +6,7 @@
 //!   |<------------------- Hello --|
 //!   |-- ClientCaps -------------->|
 //!   |-- ClientHdr (minor >= 5) --->|     the host waits for it when the client speaks minor >= 5
+//!   |-- ClientPrefs (minor >= 8) ->|     codec and quality the client asks for
 //!   |<--------------- HostCaps ---|
 //!   |<------------ StreamColor ---|     minor >= 5 only
 //!   |<------------- StreamConfig -|     negotiate_hdr(ClientCaps, HostCaps, Prefs, ..)
@@ -25,9 +26,10 @@ use crate::source::{CursorSink, SourceError, SourceHdr, VideoSource};
 use crate::time::now_us;
 use ezd_link::{Link, MuxClosed, MuxError, MuxOptions, MuxReceiver, MuxSender, VideoCredit};
 use ezd_proto::{
-    Bye, ClientCaps, ClientHdr, ClientOptions, ClientStats, ClockSync, Codec, DEFAULT_CHUNK_LEN,
-    DynamicRange, Hello, HostCaps, InputStatus, Message, Ping, Pong, Prefs, ProtoError, Reject,
-    Role, StreamColor, StreamConfig, StreamReport, VideoFrame, negotiate_hdr,
+    Bye, ClientCaps, ClientHdr, ClientOptions, ClientPrefs, ClientStats, ClockSync, Codec,
+    DEFAULT_CHUNK_LEN, DynamicRange, Hello, HostCaps, InputStatus, Message, Ping, Pong, Prefs,
+    ProtoError, QualityLevel, RateMode, Reject, Role, StreamColor, StreamConfig, StreamReport,
+    VideoFrame, negotiate_hdr,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -290,6 +292,12 @@ pub async fn run_host_session_with(
         cfg,
         color,
         range: dynamic_range,
+        quality:
+            QualityPlan {
+                wanted: wanted_quality,
+                applied: applied_quality,
+                wanted_codec,
+            },
     } = match setup {
         Ok(v) => v,
         Err(e) => {
@@ -363,6 +371,9 @@ pub async fn run_host_session_with(
             }),
             user_bitrate: prefs.bitrate_kbps.is_some(),
             ceiling_kbps: ezd_proto::bitrate_ceiling_kbps(&prefs),
+            wanted_quality,
+            applied_quality,
+            wanted_codec,
         });
         let input_for_video = input_tx.clone();
         let handle = tokio::runtime::Handle::current();
@@ -372,6 +383,7 @@ pub async fn run_host_session_with(
             .spawn(move || {
                 let mut source = source;
                 source.set_dynamic_range(dynamic_range, &color);
+                source.set_quality(applied_quality);
                 let cursor = CursorSink::new(tx.clone());
                 let r = match source.start(&cfg, cursor) {
                     Ok(()) => {
@@ -725,6 +737,18 @@ struct Negotiated {
     cfg: StreamConfig,
     color: StreamColor,
     range: DynamicRange,
+    quality: QualityPlan,
+}
+
+/// What the client asked for and what the host applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QualityPlan {
+    /// Quality the client asked for (normal for a client without `ClientPrefs`).
+    wanted: QualityLevel,
+    /// Quality the host applies after its own rules.
+    applied: QualityLevel,
+    /// Codec the client prefers (`None` = auto).
+    wanted_codec: Option<Codec>,
 }
 
 async fn handshake(
@@ -768,11 +792,24 @@ async fn handshake(
     } else {
         None
     };
+    // A client with minor >= 8 follows `ClientHdr` with its stream preferences.
+    let client_prefs: Option<ClientPrefs> = if hello.supports_stream_prefs() {
+        Some(
+            expect(rx, tx, "ClientPrefs", wait, |m| match m {
+                Message::ClientPrefs(p) => Ok(p),
+                o => Err(o),
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
     tx.send_control(Message::HostCaps(host_caps.clone()))?;
+    let merged = prefs.with_client(client_prefs.as_ref());
     let (cfg, range) = match negotiate_hdr(
         &caps,
         host_caps,
-        prefs,
+        &merged,
         hdr_in.source_hdr.is_some(),
         client_hdr.as_ref(),
         &hdr_in.main10,
@@ -796,12 +833,18 @@ async fn handshake(
         o => Err(o),
     })
     .await?;
+    let applied = merged.applied_quality(cfg.codec);
     Ok(Negotiated {
         hello,
         caps,
         cfg,
         color,
         range,
+        quality: QualityPlan {
+            wanted: client_prefs.map_or(QualityLevel::Normal, |p| p.quality()),
+            applied,
+            wanted_codec: client_prefs.and_then(|p| p.codec()),
+        },
     })
 }
 
@@ -814,6 +857,9 @@ struct ReportBase {
     wanted_kbps: u32,
     user_bitrate: bool,
     ceiling_kbps: u32,
+    wanted_quality: QualityLevel,
+    applied_quality: QualityLevel,
+    wanted_codec: Option<Codec>,
 }
 
 fn video_loop(
@@ -867,6 +913,21 @@ fn video_loop(
                 ceiling_kbps: report_base.as_ref().map_or(0, |b| b.ceiling_kbps),
                 attempts: setup.attempts,
                 rate: setup.rate,
+                wanted_quality: report_base.as_ref().map_or(0, |b| b.wanted_quality.code()),
+                applied_quality: report_base.as_ref().map_or(0, |b| {
+                    // Lossless that did not open (the high sets ran) is reported as high.
+                    match b.applied_quality {
+                        QualityLevel::Lossless if setup.rate.rate_mode() != RateMode::Lossless => {
+                            QualityLevel::High
+                        }
+                        q => q,
+                    }
+                    .code()
+                }),
+                wanted_codec: report_base
+                    .as_ref()
+                    .and_then(|b| b.wanted_codec)
+                    .map_or(0, Codec::code),
             };
             tracing::info!(
                 wanted_kbps = report.wanted_kbps,
@@ -874,6 +935,9 @@ fn video_loop(
                 ceiling_kbps = report.ceiling_kbps,
                 rate_mode = report.rate.rate_mode().name(),
                 quality = report.rate.quality,
+                wanted_quality = report.wanted_quality,
+                applied_quality = report.applied_quality,
+                wanted_codec = report.wanted_codec,
                 target_kbps = report.rate.target_kbps,
                 max_kbps = report.rate.max_kbps,
                 attempts = ?report.attempts,
@@ -988,6 +1052,8 @@ mod tests {
             .unwrap();
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
             .unwrap();
         assert!(matches!(recv(&mut rx).await, Message::Hello(h) if h.role == Role::Host));
         assert!(matches!(recv(&mut rx).await, Message::HostCaps(_)));
@@ -1134,6 +1200,8 @@ mod tests {
         tx.send_control(Message::ClientCaps(c)).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+            .unwrap();
         assert!(matches!(recv(&mut rx).await, Message::Hello(_)));
         assert!(matches!(recv(&mut rx).await, Message::HostCaps(_)));
         assert!(matches!(recv(&mut rx).await, Message::Reject(_)));
@@ -1221,6 +1289,10 @@ mod tests {
         tx.send_control(Message::ClientCaps(c)).unwrap();
         if let Some(h) = client_hdr {
             tx.send_control(Message::ClientHdr(h)).unwrap();
+            if minor >= ezd_proto::MINOR_STREAM_PREFS {
+                tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+                    .unwrap();
+            }
         }
         let mut seen = Vec::new();
         loop {
@@ -1247,9 +1319,13 @@ mod tests {
         inner: ScriptedSource,
         pending: bool,
         offered: bool,
+        quality: Arc<std::sync::Mutex<Option<QualityLevel>>>,
     }
 
     impl VideoSource for ReportingSource {
+        fn set_quality(&mut self, quality: QualityLevel) {
+            *self.quality.lock().unwrap() = Some(quality);
+        }
         fn encoders(&self) -> Vec<ezd_proto::EncoderCaps> {
             self.inner.encoders()
         }
@@ -1290,16 +1366,30 @@ mod tests {
 
     /// Messages a client of `minor` receives up to its first few video frames.
     async fn messages_until_video(minor: u16) -> Vec<Message> {
+        messages_with_prefs(minor, ClientPrefs::auto(), Prefs::default())
+            .await
+            .0
+    }
+
+    /// Like [`messages_until_video`] with the client's preferences and the host's `Prefs`; also
+    /// returns the quality the source was told.
+    async fn messages_with_prefs(
+        minor: u16,
+        client_prefs: ClientPrefs,
+        prefs: Prefs,
+    ) -> (Vec<Message>, Option<QualityLevel>) {
         let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let told = Arc::new(std::sync::Mutex::new(None));
         let src = ReportingSource {
             inner: ScriptedSource::new(Duration::from_millis(5), 3000),
             pending: false,
             offered: false,
+            quality: told.clone(),
         };
         let host = tokio::spawn(run_host_session_with(
             host_link,
             Box::new(src),
-            Prefs::default(),
+            prefs,
             fast_opts(),
         ));
         let (tx, mut rx, _t) = client_link.into_mux(DEFAULT_CHUNK_LEN);
@@ -1309,6 +1399,9 @@ mod tests {
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
+        if minor >= ezd_proto::MINOR_STREAM_PREFS {
+            tx.send_control(Message::ClientPrefs(client_prefs)).unwrap();
+        }
         loop {
             if matches!(recv(&mut rx).await, Message::StreamConfig(_)) {
                 break;
@@ -1325,12 +1418,13 @@ mod tests {
         tx.send_control(Message::Bye(Bye { reason: "t".into() }))
             .unwrap();
         let _ = timeout(Duration::from_secs(10), host).await;
-        seen
+        let told = *told.lock().unwrap();
+        (seen, told)
     }
 
     #[tokio::test]
     async fn report_precedes_the_first_frame_for_a_new_client() {
-        let seen = messages_until_video(ezd_proto::MINOR_REPORT).await;
+        let seen = messages_until_video(ezd_proto::MINOR_STREAM_PREFS).await;
         let report = seen
             .iter()
             .position(|m| matches!(m, Message::StreamReport(_)))
@@ -1353,9 +1447,72 @@ mod tests {
         assert_eq!(count, 1, "one setup, one report");
     }
 
+    fn report_of(seen: &[Message]) -> &StreamReport {
+        seen.iter()
+            .find_map(|m| match m {
+                Message::StreamReport(r) => Some(r),
+                _ => None,
+            })
+            .expect("no StreamReport")
+    }
+
+    #[tokio::test]
+    async fn client_quality_reaches_the_source_and_the_report() {
+        let high = ClientPrefs::new(Some(Codec::H264), QualityLevel::High);
+        let (seen, told) =
+            messages_with_prefs(ezd_proto::PROTOCOL_MINOR, high, Prefs::default()).await;
+        assert_eq!(told, Some(QualityLevel::High));
+        let r = report_of(&seen);
+        assert_eq!(
+            (r.wanted_quality, r.applied_quality, r.wanted_codec),
+            (QualityLevel::High.code(), QualityLevel::High.code(), 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn network_link_and_h264_downgrade_the_applied_quality() {
+        let lossless = ClientPrefs::new(None, QualityLevel::Lossless);
+        // The scripted client decodes H.264 only: lossless falls back to high.
+        let (seen, told) =
+            messages_with_prefs(ezd_proto::PROTOCOL_MINOR, lossless, Prefs::default()).await;
+        assert_eq!(told, Some(QualityLevel::High));
+        let r = report_of(&seen);
+        assert_eq!(
+            (r.wanted_quality, r.applied_quality),
+            (QualityLevel::Lossless.code(), QualityLevel::High.code())
+        );
+        let net = Prefs {
+            link: ezd_proto::LinkKind::Network,
+            ..Prefs::default()
+        };
+        let (seen, told) = messages_with_prefs(ezd_proto::PROTOCOL_MINOR, lossless, net).await;
+        assert_eq!(told, Some(QualityLevel::Normal));
+        let r = report_of(&seen);
+        assert_eq!(
+            (r.wanted_quality, r.applied_quality),
+            (QualityLevel::Lossless.code(), QualityLevel::Normal.code())
+        );
+    }
+
+    #[tokio::test]
+    async fn host_quality_overrides_the_client() {
+        let host = Prefs {
+            quality: QualityLevel::High,
+            ..Prefs::default()
+        };
+        let (seen, told) =
+            messages_with_prefs(ezd_proto::PROTOCOL_MINOR, ClientPrefs::auto(), host).await;
+        assert_eq!(told, Some(QualityLevel::High));
+        let r = report_of(&seen);
+        assert_eq!(
+            (r.wanted_quality, r.applied_quality),
+            (QualityLevel::Normal.code(), QualityLevel::High.code())
+        );
+    }
+
     #[tokio::test]
     async fn old_client_gets_no_report() {
-        let seen = messages_until_video(ezd_proto::MINOR_REPORT - 1).await;
+        let seen = messages_until_video(ezd_proto::MINOR_STREAM_PREFS - 1).await;
         assert!(!seen.iter().any(|m| matches!(m, Message::StreamReport(_))));
     }
 
@@ -1457,6 +1614,8 @@ mod tests {
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+            .unwrap();
         for _ in 0..3 {
             recv(&mut rx).await;
         }
@@ -1501,6 +1660,8 @@ mod tests {
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
             .unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+            .unwrap();
         for _ in 0..3 {
             recv(&mut rx).await;
         }
@@ -1543,6 +1704,8 @@ mod tests {
             .unwrap();
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
             .unwrap();
         for _ in 0..3 {
             recv(&mut rx).await;

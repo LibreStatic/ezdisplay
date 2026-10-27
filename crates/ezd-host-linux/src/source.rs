@@ -17,7 +17,9 @@ use ezd_host_core::{
     CursorSink, EncodedFrame, EncoderSetup, OutputInfo, PlatformOptions, SourceError, SourceHdr,
     VideoSource,
 };
-use ezd_proto::{Codec, DynamicRange, EncoderAttempt, EncoderCaps, StreamColor, StreamConfig};
+use ezd_proto::{
+    Codec, DynamicRange, EncoderAttempt, EncoderCaps, QualityLevel, StreamColor, StreamConfig,
+};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -31,7 +33,11 @@ fn cache() -> &'static ProbeCache {
 
 /// Probes `plan` once per process (the result is cached, including failures).
 pub fn plan_works(plan: &Plan) -> Result<(), String> {
-    let key = (plan.name.to_string(), plan.node.clone().unwrap_or_default());
+    // The 8-bit and the Main10 plan of an HEVC encoder are probed separately.
+    let key = (
+        format!("{}{}", plan.name, if plan.ten_bit { "/10" } else { "" }),
+        plan.node.clone().unwrap_or_default(),
+    );
     if let Some(r) = cache().lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return r.clone();
     }
@@ -87,6 +93,8 @@ pub struct LinuxSource {
     /// Dynamic range negotiated for the session and the matching stream colour.
     range: DynamicRange,
     color: StreamColor,
+    /// Quality level the host applies (see `set_quality`).
+    quality: QualityLevel,
     running: Option<Running>,
     force_key: bool,
     /// The output the stream shows (virtual output or the captured monitor), after `start`.
@@ -242,6 +250,7 @@ impl LinuxSource {
             hdr_source,
             range: DynamicRange::Sdr,
             color: StreamColor::sdr_bt709(),
+            quality: QualityLevel::Normal,
             running: None,
             force_key: false,
             output: None,
@@ -267,18 +276,18 @@ impl LinuxSource {
 
 impl VideoSource for LinuxSource {
     fn encoders(&self) -> Vec<EncoderCaps> {
-        let codec = |p: &Plan| {
-            if p.hdr10() { Codec::Hevc } else { Codec::H264 }
-        };
-        self.plans
-            .iter()
-            .chain(&self.hdr_plans)
-            .map(|p| EncoderCaps {
-                codec: codec(p),
-                name: p.name.to_string(),
-                hardware: p.hardware(),
-            })
-            .collect()
+        // The SDR and the Main10 plan of an HEVC encoder share a name: offer it once.
+        let mut caps: Vec<EncoderCaps> = Vec::new();
+        for p in self.plans.iter().chain(&self.hdr_plans) {
+            if !caps.iter().any(|c| c.name == p.name) {
+                caps.push(EncoderCaps {
+                    codec: p.codec(),
+                    name: p.name.to_string(),
+                    hardware: p.hardware(),
+                });
+            }
+        }
+        caps
     }
 
     fn source_hdr(&self) -> Option<SourceHdr> {
@@ -298,6 +307,10 @@ impl VideoSource for LinuxSource {
         self.color = *color;
     }
 
+    fn set_quality(&mut self, quality: QualityLevel) {
+        self.quality = quality;
+    }
+
     fn gpu_description(&self) -> String {
         self.node
             .as_ref()
@@ -306,20 +319,13 @@ impl VideoSource for LinuxSource {
     }
 
     fn start(&mut self, cfg: &StreamConfig, cursor: CursorSink) -> Result<(), SourceError> {
-        // H.264 is the SDR codec; HEVC only exists here as HDR10 (Main10).
+        // H.264 and HEVC stream as SDR 8-bit; HEVC is also the HDR10 codec (Main10).
         let hdr10 = matches!(self.range, DynamicRange::Hdr10 { codec } if codec == cfg.codec);
-        match (cfg.codec, hdr10) {
-            (Codec::H264, false) | (Codec::Hevc, true) => {}
-            (Codec::Hevc, false) => {
-                return Err(SourceError::msg(
-                    "the Linux host only produces HEVC for HDR10 streams",
-                ));
-            }
-            (codec, _) => {
-                return Err(SourceError::msg(format!(
-                    "the Linux host cannot encode {codec:?}"
-                )));
-            }
+        if !matches!(cfg.codec, Codec::H264 | Codec::Hevc) {
+            return Err(SourceError::msg(format!(
+                "the Linux host cannot encode {:?}",
+                cfg.codec
+            )));
         }
         let plan = self
             .plans
@@ -393,7 +399,10 @@ impl VideoSource for LinuxSource {
         tracing::info!(convert_ahead = ?ahead, "encode pipeline ready");
         let input = match ahead {
             Some(start) => Input::Ahead {
-                enc: Encoder::new(plan.name, cfg.refresh_mhz, cfg.bitrate_kbps).with_tags(tags),
+                enc: Encoder::new(plan.name, cfg.refresh_mhz, cfg.bitrate_kbps)
+                    .with_ten_bit(plan.ten_bit)
+                    .with_quality(self.quality)
+                    .with_tags(tags),
                 conv: ConvertAhead::start(
                     Converter::new(plan, cfg.refresh_mhz).with_tags(tags),
                     capture.frames(),
@@ -402,7 +411,9 @@ impl VideoSource for LinuxSource {
                 .map_err(SourceError::msg)?,
             },
             None => Input::Serial(
-                Pipeline::new(plan, cfg.refresh_mhz, cfg.bitrate_kbps).with_tags(tags),
+                Pipeline::new(plan, cfg.refresh_mhz, cfg.bitrate_kbps)
+                    .with_quality(self.quality)
+                    .with_tags(tags),
             ),
         };
         self.running = Some(Running {

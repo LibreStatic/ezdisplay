@@ -16,6 +16,8 @@ arg-connect-timeout = Versucht die TCP-Verbindung so viele Sekunden lang erneut.
 arg-max-seconds = Bricht nach dieser Anzahl von Sekunden ab.
 arg-input-script = Spielt einmal eine vorgefertigte Eingabesequenz ab, beginnend mit dem ersten Videobild: tap, drag, circle, touch2, scroll oder keys (Strg+Leertaste während eines Stiftstrichs gehalten; benötigt einen Host mit KEYS).
 arg-exit-after-script = Beendet kurz nach Ende des Eingabeskripts.
+arg-codec = Beim Host angefragter Codec: auto, h264, hevc oder av1. Der Host nutzt ihn nur, wenn beide Seiten ihn unterstützen.
+arg-quality = Beim Host angefragte Qualität: normal, high oder lossless. Der Host setzt high und lossless nur bei einer USB-Verbindung um; lossless benötigt HEVC.
 
 err-dump-frame = --dump-frame N muss eine Zahl sein
 err-connecting = Verbindung zu { $addr }

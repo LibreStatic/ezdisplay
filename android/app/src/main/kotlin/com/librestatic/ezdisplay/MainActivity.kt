@@ -98,6 +98,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private val handler = Handler(Looper.getMainLooper())
     private var chosenMode: android.view.Display.Mode? = null
     private var capsJson: String? = null
+    private val hevcAvailable by lazy { Capabilities.hasDecoder("hevc") }
 
     private var started = false // between onStart and onStop
     private var surfaceReady = false
@@ -484,7 +485,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     private fun connect() {
         if (!started || sessionActive) return
         if (!surfaceReady) return // surfaceCreated reschedules
-        val caps = capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it }
+        val base = capsJson ?: Capabilities.toJson(this, chosenMode).also { capsJson = it }
+        // Codec and quality may change in the settings while this activity stays alive.
+        val caps = JSONObject(base)
+            .put("stream_prefs", Capabilities.streamPrefs(InputPrefs.prefs(this), hevcAvailable))
+            .toString()
         pushKeyboardState()
         val acc = accessory?.takeIf { usbManager.hasPermission(it) }
         val wifiChoice = if (tryWifiNext) wifiTarget() else null

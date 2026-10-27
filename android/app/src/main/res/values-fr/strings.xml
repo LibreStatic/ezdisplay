@@ -170,4 +170,22 @@
         <item quantity="many">+%1$d de plus</item>
         <item quantity="other">+%1$d de plus</item>
     </plurals>
+
+    <string name="section_video">Vidéo</string>
+    <string name="video_codec_title">Codec vidéo</string>
+    <string name="video_codec_auto">Automatique</string>
+    <string name="video_codec_desc">Automatique choisit le meilleur codec pris en charge par cette tablette et par le PC. Les changements s\'appliquent à la prochaine connexion.</string>
+    <string name="video_quality_title">Qualité via USB</string>
+    <string name="video_quality_normal">Normale</string>
+    <string name="video_quality_high">Élevée</string>
+    <string name="video_quality_lossless">Sans perte</string>
+    <string name="video_quality_desc">Élevée est une qualité fixe quasi sans perte et utilise plus de données. Sans perte est du HEVC sans perte (4:2:0) : le plus de données, avec une latence parfois accrue. Les deux ne s\'appliquent que via USB ; le Wi-Fi utilise toujours Normale.</string>
+    <string name="osd_quality_normal">normale</string>
+    <string name="osd_quality_high">élevée</string>
+    <string name="osd_quality_lossless">sans perte</string>
+    <string name="osd_quality">Qualité : %1$s</string>
+    <string name="osd_quality_applied">Qualité : %1$s demandée · %2$s appliquée</string>
+    <string name="osd_codec_wanted">Codec : %1$s demandé</string>
+    <string name="osd_rate_lossless">sans perte</string>
+    <string name="video_summary">%1$s · %2$s</string>
 </resources>

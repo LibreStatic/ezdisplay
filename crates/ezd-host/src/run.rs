@@ -5,8 +5,8 @@ use anyhow::{Result, anyhow};
 use clap::{Args, Command, ValueEnum};
 use ezd_host_core::SessionSummary;
 use ezd_host_service::{
-    AdbMode, AoaMode, HostEvent, HostService, HostStatus, LinkChoice, PenChoice, ServiceConfig,
-    ServiceError, SourceKind,
+    AdbMode, AoaMode, CodecChoice, HostEvent, HostService, HostStatus, LinkChoice, PenChoice,
+    QualityChoice, ServiceConfig, ServiceError, SourceKind,
 };
 use i18n_embed::fluent::FluentLanguageLoader;
 use std::net::ToSocketAddrs;
@@ -35,6 +35,21 @@ pub enum PenModeArg {
     Mouse,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CodecArg {
+    Auto,
+    H264,
+    Hevc,
+    Av1,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum QualityArg {
+    Normal,
+    High,
+    Lossless,
+}
+
 // Option help texts live in i18n/<lang>/ezd-host.ftl (`run-<option>` ids); see `localize`.
 #[derive(Args, Debug)]
 pub struct RunArgs {
@@ -54,6 +69,10 @@ pub struct RunArgs {
     bitrate_kbps: Option<u32>,
     #[arg(long)]
     encoder: Option<String>,
+    #[arg(long, value_enum, default_value = "auto")]
+    codec: CodecArg,
+    #[arg(long, value_enum, default_value = "normal")]
+    quality: QualityArg,
     #[arg(long)]
     adapter: Option<String>,
     #[arg(long)]
@@ -96,6 +115,8 @@ pub fn localize(cmd: Command, l: &FluentLanguageLoader) -> Command {
         .mut_arg("max_refresh_mhz", |a| a.help(fl!(l, "run-max-refresh-mhz")))
         .mut_arg("bitrate_kbps", |a| a.help(fl!(l, "run-bitrate-kbps")))
         .mut_arg("encoder", |a| a.help(fl!(l, "run-encoder")))
+        .mut_arg("codec", |a| a.help(fl!(l, "run-codec")))
+        .mut_arg("quality", |a| a.help(fl!(l, "run-quality")))
         .mut_arg("adapter", |a| a.help(fl!(l, "run-adapter")))
         .mut_arg("prefer_dgpu", |a| a.help(fl!(l, "run-prefer-dgpu")))
         .mut_arg("output", |a| a.help(fl!(l, "run-output")))
@@ -163,6 +184,17 @@ fn config(args: &RunArgs) -> Result<ServiceConfig> {
         max_refresh_mhz: args.max_refresh_mhz,
         bitrate_kbps: args.bitrate_kbps,
         encoder: args.encoder.clone(),
+        codec: match args.codec {
+            CodecArg::Auto => CodecChoice::Auto,
+            CodecArg::H264 => CodecChoice::H264,
+            CodecArg::Hevc => CodecChoice::Hevc,
+            CodecArg::Av1 => CodecChoice::Av1,
+        },
+        quality: match args.quality {
+            QualityArg::Normal => QualityChoice::Normal,
+            QualityArg::High => QualityChoice::High,
+            QualityArg::Lossless => QualityChoice::Lossless,
+        },
         scale_permille: (args.scale * 1000.0).round() as u16,
         adapter: args.adapter.clone(),
         prefer_dgpu: args.prefer_dgpu,

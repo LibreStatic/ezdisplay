@@ -2,6 +2,7 @@ use crate::color::{ColorInfo, HdrMeta, tag_frame};
 use crate::error::{EAGAIN, FfmpegError, averror_eof, init_logging};
 use crate::hw::HwDevice;
 use crate::options::option_sets_for;
+use ezd_proto::QualityLevel;
 use ffmpeg_sys_next as ffi;
 use std::ffi::{CStr, CString};
 use std::ptr;
@@ -67,6 +68,8 @@ pub struct EncoderConfig {
     pub hdr: Option<HdrMeta>,
     /// Extra AVOptions applied on top of the preset (override it).
     pub extra_options: Vec<(String, String)>,
+    /// Quality level selecting the option sets (default [`QualityLevel::Normal`]).
+    pub quality: QualityLevel,
 }
 
 impl EncoderConfig {
@@ -89,6 +92,7 @@ impl EncoderConfig {
             color: ColorInfo::default(),
             hdr: None,
             extra_options: Vec::new(),
+            quality: QualityLevel::Normal,
         }
     }
 }
@@ -157,7 +161,7 @@ impl Encoder {
             )));
         }
         let mut last = FfmpegError::msg("no option set");
-        for set in option_sets_for(&cfg.name, cfg.pix_fmt == RawPixelFormat::P010) {
+        for set in option_sets_for(&cfg.name, cfg.pix_fmt == RawPixelFormat::P010, cfg.quality) {
             match Self::try_open(codec, cfg.clone(), &set) {
                 Ok(e) => return Ok(e),
                 Err(e) => {

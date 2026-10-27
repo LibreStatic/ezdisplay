@@ -16,7 +16,8 @@ Repository-wide rules (languages and localization, naming) are in the root `AGEN
     while a key editor is visible). There is no navigation rail. `BoxWithConstraints` is used instead of
     `WindowSizeClass` because the size classes put 841 and 1056 dp in the same 840 dp bucket. The Wide page measures
     its own width: >= 900 dp gives three profile columns and zoom beside touch, otherwise two columns and stacked.
-    At 1691x978 dp the Wide page must not scroll (covered by `SettingsWideTest`).
+    At 1691x978 dp the Wide page must not scroll (covered by `SettingsWideTest`); for that the Wide page shows Video
+    (codec and quality) as one row that opens a dialog, like the Connection hosts.
   - `Sections.kt`: shared components. Colours and type come from `MaterialTheme` only.
 
 ## Build and test

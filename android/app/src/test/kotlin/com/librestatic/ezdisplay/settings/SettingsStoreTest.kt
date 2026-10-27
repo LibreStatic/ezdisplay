@@ -3,6 +3,7 @@ package com.librestatic.ezdisplay.settings
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
+import com.librestatic.ezdisplay.Capabilities
 import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.InputPrefs.KeyCombo
 import org.json.JSONObject
@@ -267,5 +268,45 @@ class SettingsStoreTest {
         assertEquals("raw", InputPrefs.profile(prefs))
         assertEquals("raw", JSONObject(InputPrefs.toJson(context)).getString("profile"))
         assertEquals("raw", SettingsStore(prefs, AirActions.Off).state.value.profile)
+    }
+
+    @Test fun videoPrefsDefaultToAutoAndNormal() {
+        assertEquals("auto", s.videoCodec)
+        assertEquals("normal", s.streamQuality)
+        assertEquals("auto", Capabilities.streamPrefs(prefs, hevcAvailable = true).getString("codec"))
+        assertEquals("normal", Capabilities.streamPrefs(prefs, hevcAvailable = true).getString("quality"))
+    }
+
+    @Test fun videoPrefsPersistAndReachTheCapabilities() {
+        store.setVideoCodec("hevc")
+        store.setStreamQuality("lossless")
+        assertEquals("hevc", s.videoCodec)
+        assertEquals("lossless", s.streamQuality)
+        val reread = SettingsStore(prefs, AirActions.Off).state.value
+        assertEquals("hevc", reread.videoCodec)
+        assertEquals("lossless", reread.streamQuality)
+        val j = Capabilities.streamPrefs(prefs, hevcAvailable = true)
+        assertEquals("hevc", j.getString("codec"))
+        assertEquals("lossless", j.getString("quality"))
+    }
+
+    @Test fun invalidVideoValuesAreIgnored() {
+        store.setVideoCodec("av1")
+        store.setStreamQuality("ultra")
+        assertEquals("auto", s.videoCodec)
+        assertEquals("normal", s.streamQuality)
+        prefs.edit().putString(SettingsStore.VIDEO_CODEC, "bogus").putString(SettingsStore.STREAM_QUALITY, "x").commit()
+        val j = Capabilities.streamPrefs(prefs, hevcAvailable = true)
+        assertEquals("auto", j.getString("codec"))
+        assertEquals("normal", j.getString("quality"))
+    }
+
+    @Test fun hevcIsRefusedWithoutADecoder() {
+        val noHevc = SettingsStore(prefs, AirActions.Off, hevcAvailable = false)
+        noHevc.setVideoCodec("hevc")
+        assertEquals("auto", noHevc.state.value.videoCodec)
+        assertFalse(noHevc.state.value.hevcAvailable)
+        prefs.edit().putString(SettingsStore.VIDEO_CODEC, "hevc").commit()
+        assertEquals("auto", Capabilities.streamPrefs(prefs, hevcAvailable = false).getString("codec"))
     }
 }

@@ -9,11 +9,17 @@
 //!                 "low_latency": true, "max_width": 4096, "max_height": 4096, "max_fps": 240, "hdr10": false}],
 //!   "hdr": {"display_hdr10": true, "max_nits": 1000, "max_avg_nits": 600, "min_millinits": 0},
 //!   "stylus": true,
-//!   "max_touch_points": 10
+//!   "max_touch_points": 10,
+//!   "stream_prefs": {"codec": "auto", "quality": "normal"}
 //! }
 //! ```
+//!
+//! `stream_prefs` is optional: `codec` is `auto`, `h264`, `hevc` or `av1`, `quality` is `normal`,
+//! `high` or `lossless`; a missing object or an unknown string means `auto` / `normal`.
 
-use ezd_proto::{ClientCaps, ClientHdr, Codec, DecoderCaps, DisplayInfo};
+use ezd_proto::{
+    ClientCaps, ClientHdr, ClientPrefs, Codec, DecoderCaps, DisplayInfo, QualityLevel,
+};
 use serde::Deserialize;
 
 /// Parsed capabilities plus the device name.
@@ -25,6 +31,16 @@ pub struct ParsedCaps {
     pub caps: ClientCaps,
     /// HDR10 capabilities for `ClientConfig.hdr`; `None` when the JSON has no `hdr` object.
     pub hdr: Option<ClientHdr>,
+    /// Codec and quality for `ClientConfig.prefs`.
+    pub prefs: ClientPrefs,
+}
+
+#[derive(Deserialize, Default)]
+struct JsonPrefs {
+    #[serde(default)]
+    codec: String,
+    #[serde(default)]
+    quality: String,
 }
 
 #[derive(Deserialize)]
@@ -38,6 +54,8 @@ struct JsonCaps {
     hdr: Option<JsonHdr>,
     #[serde(default)]
     stylus: bool,
+    #[serde(default)]
+    stream_prefs: Option<JsonPrefs>,
     #[serde(default = "default_touch")]
     max_touch_points: u32,
 }
@@ -101,6 +119,14 @@ fn parse_codec(s: &str) -> Option<Codec> {
     }
 }
 
+fn parse_quality(s: &str) -> QualityLevel {
+    match s.to_ascii_lowercase().as_str() {
+        "high" => QualityLevel::High,
+        "lossless" => QualityLevel::Lossless,
+        _ => QualityLevel::Normal,
+    }
+}
+
 /// Parses the Kotlin-provided capabilities JSON. Decoders of unknown codecs are skipped.
 pub fn parse_caps(json: &str) -> Result<ParsedCaps, String> {
     let j: JsonCaps = serde_json::from_str(json).map_err(|e| format!("bad caps json: {e}"))?;
@@ -143,8 +169,10 @@ pub fn parse_caps(json: &str) -> Result<ParsedCaps, String> {
             &main10,
         )
     });
+    let prefs = j.stream_prefs.unwrap_or_default();
     Ok(ParsedCaps {
         hdr,
+        prefs: ClientPrefs::new(parse_codec(&prefs.codec), parse_quality(&prefs.quality)),
         device_name: if j.device_name.is_empty() {
             "android".into()
         } else {
@@ -280,6 +308,39 @@ mod tests {
         .hdr
         .unwrap();
         assert_eq!(h, ClientHdr::none());
+    }
+
+    #[test]
+    fn parses_stream_prefs() {
+        let with = |prefs: &str| {
+            let json = format!(
+                r#"{{"display": {{"width_px": 1, "height_px": 1, "refresh_rates_mhz": [60000]}}{prefs}}}"#
+            );
+            parse_caps(&json).unwrap().prefs
+        };
+        assert_eq!(with(""), ClientPrefs::auto());
+        assert_eq!(with(r#", "stream_prefs": {}"#), ClientPrefs::auto());
+        assert_eq!(
+            with(r#", "stream_prefs": {"codec": "hevc", "quality": "lossless"}"#),
+            ClientPrefs::new(Some(Codec::Hevc), QualityLevel::Lossless)
+        );
+        assert_eq!(
+            with(r#", "stream_prefs": {"codec": "h264", "quality": "high"}"#),
+            ClientPrefs::new(Some(Codec::H264), QualityLevel::High)
+        );
+        assert_eq!(
+            with(r#", "stream_prefs": {"codec": "av1"}"#),
+            ClientPrefs::new(Some(Codec::Av1), QualityLevel::Normal)
+        );
+        // Unknown strings mean auto / normal.
+        assert_eq!(
+            with(r#", "stream_prefs": {"codec": "vp9", "quality": "ultra"}"#),
+            ClientPrefs::auto()
+        );
+        assert_eq!(
+            with(r#", "stream_prefs": {"codec": "auto", "quality": "normal"}"#),
+            ClientPrefs::auto()
+        );
     }
 
     #[test]

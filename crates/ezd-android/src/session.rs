@@ -422,6 +422,7 @@ fn run(
         let mut cfg = ClientConfig::new(caps.device_name, caps.caps);
         cfg.app_version = env!("CARGO_PKG_VERSION").into();
         cfg.hdr = caps.hdr;
+        cfg.prefs = caps.prefs;
         let mut handler = Handler {
             shared: shared.clone(),
             dec: dec.clone(),

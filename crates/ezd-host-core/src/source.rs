@@ -3,7 +3,7 @@
 use ezd_link::{MuxClosed, MuxSender};
 use ezd_proto::{
     Codec, CursorShape, CursorState, DynamicRange, EncoderAttempt, EncoderCaps, Mastering,
-    RateControl, StreamColor, StreamConfig,
+    QualityLevel, RateControl, StreamColor, StreamConfig,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -179,6 +179,10 @@ pub trait VideoSource: Send {
     /// [`start`](Self::start). `StreamConfig::codec` already matches an HDR10 range. Default:
     /// ignored (SDR BT.709 stream).
     fn set_dynamic_range(&mut self, _range: DynamicRange, _color: &StreamColor) {}
+
+    /// Tells the source the quality level the host applies, right before
+    /// [`start`](Self::start). Default: ignored (the normal, rate-controlled stream).
+    fn set_quality(&mut self, _quality: QualityLevel) {}
 
     /// Starts capture and encoding with the negotiated configuration. The
     /// first produced frame must be a keyframe carrying `codec_config`.

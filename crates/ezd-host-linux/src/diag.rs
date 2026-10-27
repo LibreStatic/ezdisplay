@@ -26,9 +26,9 @@ pub fn section() -> Value {
         .map(|n| {
             let mut encs = Vec::new();
             let plans = [if n.is_nvidia() {
-                Plan { name: "h264_nvenc", kind: Kind::Nvenc, node: Some(n.path.clone()) }
+                Plan { name: "h264_nvenc", kind: Kind::Nvenc, node: Some(n.path.clone()), ten_bit: false }
             } else {
-                Plan { name: "h264_vaapi", kind: Kind::Vaapi, node: Some(n.path.clone()) }
+                Plan { name: "h264_vaapi", kind: Kind::Vaapi, node: Some(n.path.clone()), ten_bit: false }
             }];
             // Only non-NVIDIA nodes are probed in diag so the dGPU is not woken up needlessly.
             for p in plans {
@@ -56,6 +56,7 @@ pub fn section() -> Value {
         name: "libx264",
         kind: Kind::X264,
         node: None,
+        ten_bit: false,
     };
     let sw = plan_works(&x264);
     let token = |k| portal::token_path(k).is_some_and(|p| p.exists());

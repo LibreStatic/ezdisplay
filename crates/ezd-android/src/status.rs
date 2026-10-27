@@ -1,7 +1,7 @@
 //! Session phase and the JSON returned by `pollStats()`.
 
 use ezd_client_core::ClientSnapshot;
-use ezd_proto::{Codec, StreamConfig, StreamReport};
+use ezd_proto::{Codec, QualityLevel, StreamConfig, StreamReport};
 use serde::Serialize;
 use std::sync::Mutex;
 
@@ -161,6 +161,13 @@ impl Shared {
                 "quality": r.rate.quality,
                 "target_kbps": r.rate.target_kbps,
                 "max_kbps": r.rate.max_kbps,
+                "wanted_quality": QualityLevel::from_code(r.wanted_quality).name(),
+                "applied_quality": QualityLevel::from_code(r.applied_quality).name(),
+                "wanted_codec": Codec::from_code(r.wanted_codec).map_or("auto", |c| match c {
+                    Codec::H264 => "h264",
+                    Codec::Hevc => "hevc",
+                    Codec::Av1 => "av1",
+                }),
             })
         });
         let v = serde_json::json!({
@@ -256,6 +263,9 @@ mod tests {
                 target_kbps: 45_949,
                 max_kbps: 91_898,
             },
+            wanted_quality: QualityLevel::Lossless.code(),
+            applied_quality: QualityLevel::High.code(),
+            wanted_codec: Codec::Hevc.code(),
         });
         let v = j(&sh);
         assert_eq!(v["report_seq"], 1);
@@ -269,6 +279,9 @@ mod tests {
         assert_eq!(r["attempts"][0]["error"], "");
         assert_eq!(r["rate_mode"], "vbr");
         assert_eq!(r["quality"], 19);
+        assert_eq!(r["wanted_quality"], "lossless");
+        assert_eq!(r["applied_quality"], "high");
+        assert_eq!(r["wanted_codec"], "hevc");
         assert_eq!(
             (r["target_kbps"].as_u64(), r["max_kbps"].as_u64()),
             (Some(45_949), Some(91_898))

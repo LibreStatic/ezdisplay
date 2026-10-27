@@ -26,6 +26,10 @@ data class OsdReport(
     val quality: Int,
     val targetKbps: Int,
     val maxKbps: Int,
+    /** `normal` / `high` / `lossless`; `normal` and `auto` when an older host does not report them. */
+    val wantedQuality: String = "normal",
+    val appliedQuality: String = "normal",
+    val wantedCodec: String = "auto",
 )
 
 /** What the on-screen display needs from one status poll. */
@@ -64,6 +68,9 @@ object StreamOsd {
                 quality = it.optInt("quality"),
                 targetKbps = it.optInt("target_kbps"),
                 maxKbps = it.optInt("max_kbps"),
+                wantedQuality = it.optString("wanted_quality", "normal"),
+                appliedQuality = it.optString("applied_quality", "normal"),
+                wantedCodec = it.optString("wanted_codec", "auto"),
             )
         }
         return OsdInfo(
@@ -94,6 +101,12 @@ object StreamOsd {
         return if (mbit < 10) String.format(locale(res), "%.1f", mbit) else String.format(locale(res), "%d", Math.round(mbit))
     }
 
+    private fun qualityName(res: Resources, q: String): String = when (q) {
+        "high" -> res.getString(R.string.osd_quality_high)
+        "lossless" -> res.getString(R.string.osd_quality_lossless)
+        else -> res.getString(R.string.osd_quality_normal)
+    }
+
     private fun hz(res: Resources, mhz: Int): String =
         if (mhz % 1000 == 0) (mhz / 1000).toString() else String.format(locale(res), "%.2f", mhz / 1000.0)
 
@@ -117,6 +130,19 @@ object StreamOsd {
             }
             if (report.ceilingKbps > 0) parts += res.getString(R.string.osd_link_limit, mbit(res, report.ceilingKbps))
             lines += parts.joinToString(" · ")
+            if (report.wantedQuality != "normal") {
+                lines += if (report.appliedQuality == report.wantedQuality) {
+                    res.getString(R.string.osd_quality, qualityName(res, report.wantedQuality))
+                } else {
+                    res.getString(
+                        R.string.osd_quality_applied,
+                        qualityName(res, report.wantedQuality), qualityName(res, report.appliedQuality),
+                    )
+                }
+            }
+            if (report.wantedCodec != "auto" && !report.wantedCodec.equals(info.codec, ignoreCase = true)) {
+                lines += res.getString(R.string.osd_codec_wanted, codecName(report.wantedCodec))
+            }
             val hidden = (report.attempts.size - MAX_ATTEMPTS).coerceAtLeast(0)
             if (hidden > 0) lines += res.getQuantityString(R.plurals.osd_more_attempts, hidden, hidden)
             for (a in report.attempts.drop(hidden)) {
@@ -131,13 +157,18 @@ object StreamOsd {
                 "vbr" -> res.getString(R.string.osd_rate_vbr, report.quality)
                 "cqp" -> res.getString(R.string.osd_rate_cqp, report.quality)
                 "crf" -> res.getString(R.string.osd_rate_crf, report.quality)
+                "lossless" -> res.getString(R.string.osd_rate_lossless)
                 else -> null
             }?.let { headline += it }
         }
-        headline += if (report != null && report.maxKbps > info.bitrateKbps && info.bitrateKbps > 0) {
-            res.getString(R.string.osd_rate_peak, mbitNumber(res, info.bitrateKbps), mbitNumber(res, report.maxKbps))
-        } else {
-            mbit(res, info.bitrateKbps)
+        // A fixed quantiser or lossless stream has no target rate: the negotiated one would mislead.
+        val fixedQuality = report?.rateMode == "cqp" || report?.rateMode == "lossless"
+        if (!fixedQuality) {
+            headline += if (report != null && report.maxKbps > info.bitrateKbps && info.bitrateKbps > 0) {
+                res.getString(R.string.osd_rate_peak, mbitNumber(res, info.bitrateKbps), mbitNumber(res, report.maxKbps))
+            } else {
+                mbit(res, info.bitrateKbps)
+            }
         }
         return OsdContent(lines, headline.joinToString(" · "))
     }
@@ -149,7 +180,7 @@ class StreamOsdView(context: Context) : LinearLayout(context) {
         setTextColor(Color.WHITE)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
         typeface = Typeface.MONOSPACE
-        maxLines = 8
+        maxLines = 10
         ellipsize = TextUtils.TruncateAt.END
     }
     private val headline = TextView(context).apply {

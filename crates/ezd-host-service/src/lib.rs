@@ -30,7 +30,10 @@ pub mod store;
 mod wifi;
 
 pub use adb::{AdbClient, AdbLocator, is_network_serial};
-pub use config::{AdbMode, AoaMode, HdrChoice, LinkChoice, PenChoice, ServiceConfig, SourceKind};
+pub use config::{
+    AdbMode, AoaMode, CodecChoice, HdrChoice, LinkChoice, PenChoice, QualityChoice, ServiceConfig,
+    SourceKind,
+};
 #[cfg(feature = "wifi")]
 pub use config::{CongestionChoice, WifiConfig};
 pub use error::ServiceError;

@@ -170,4 +170,22 @@
         <item quantity="many">+%1$d a mais</item>
         <item quantity="other">+%1$d a mais</item>
     </plurals>
+
+    <string name="section_video">Vídeo</string>
+    <string name="video_codec_title">Codec de vídeo</string>
+    <string name="video_codec_auto">Automático</string>
+    <string name="video_codec_desc">Automático escolhe o melhor codec compatível com este tablet e com o PC. As alterações valem a partir da próxima conexão.</string>
+    <string name="video_quality_title">Qualidade via USB</string>
+    <string name="video_quality_normal">Normal</string>
+    <string name="video_quality_high">Alta</string>
+    <string name="video_quality_lossless">Sem perdas</string>
+    <string name="video_quality_desc">Alta é uma qualidade fixa quase sem perdas e usa mais dados. Sem perdas é HEVC sem perdas (4:2:0): o máximo de dados, com possível aumento de latência. Ambas só valem via USB; o Wi-Fi sempre usa Normal.</string>
+    <string name="osd_quality_normal">normal</string>
+    <string name="osd_quality_high">alta</string>
+    <string name="osd_quality_lossless">sem perdas</string>
+    <string name="osd_quality">Qualidade: %1$s</string>
+    <string name="osd_quality_applied">Qualidade: %1$s solicitada · %2$s aplicada</string>
+    <string name="osd_codec_wanted">Codec: %1$s solicitado</string>
+    <string name="osd_rate_lossless">sem perdas</string>
+    <string name="video_summary">%1$s · %2$s</string>
 </resources>

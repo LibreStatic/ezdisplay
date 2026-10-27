@@ -11,7 +11,7 @@ use ezd_ffmpeg::HwDevice;
 use ezd_ffmpeg::HwKind;
 use ezd_ffmpeg::sys as ff;
 use ezd_host_core::{EncoderSetup, now_us};
-use ezd_proto::EncoderAttempt;
+use ezd_proto::{Codec, EncoderAttempt, QualityLevel};
 use std::ffi::{CStr, CString, c_void};
 use std::os::fd::IntoRawFd;
 use std::ptr;
@@ -37,6 +37,8 @@ pub struct Plan {
     pub kind: Kind,
     /// Render node used (VAAPI, NVENC for description).
     pub node: Option<String>,
+    /// 10-bit HDR10 variant (HEVC Main10, P010 input) instead of the 8-bit SDR one.
+    pub ten_bit: bool,
 }
 
 impl Plan {
@@ -45,15 +47,19 @@ impl Plan {
         self.kind != Kind::X264
     }
 
-    /// The HDR10 variant: HEVC Main10 (P010) instead of 8-bit H.264.
+    /// The HDR10 variant: HEVC Main10 (P010) instead of the 8-bit SDR one.
     pub fn hdr10(&self) -> bool {
-        ten_bit_encoder(self.name)
+        self.ten_bit
     }
-}
 
-/// Encoders that only run the 10-bit HDR10 chain (there is no 8-bit HEVC plan).
-fn ten_bit_encoder(name: &str) -> bool {
-    name.starts_with("hevc_")
+    /// The codec this plan produces.
+    pub fn codec(&self) -> Codec {
+        if self.name.starts_with("hevc_") {
+            Codec::Hevc
+        } else {
+            Codec::H264
+        }
+    }
 }
 
 /// Chooses the HDR10 encoders for `node`: HEVC Main10, best first. Empty without a hardware
@@ -68,43 +74,47 @@ pub fn plan_hdr_encoders(node: Option<&RenderNode>, works: &dyn Fn(&Plan) -> boo
             name: "hevc_nvenc",
             kind: Kind::Nvenc,
             node: Some(n.path.clone()),
+            ten_bit: true,
         }
     } else {
         Plan {
             name: "hevc_vaapi",
             kind: Kind::Vaapi,
             node: Some(n.path.clone()),
+            ten_bit: true,
         }
     };
     if works(&plan) { vec![plan] } else { Vec::new() }
 }
 
-/// Chooses the encoders to offer for `node`, best first. `works` tells whether a plan was
-/// verified on this machine. libx264 is always the last resort.
+/// Chooses the SDR encoders to offer for `node`, best first: the H.264 primary, then 8-bit HEVC
+/// on the same node (the tablet can ask for it, and lossless needs it). `works` tells whether a
+/// plan was verified on this machine. libx264 is always the last resort.
 pub fn plan_encoders(node: Option<&RenderNode>, works: &dyn Fn(&Plan) -> bool) -> Vec<Plan> {
     let mut out = Vec::new();
     if let Some(n) = node {
-        let primary = if n.is_nvidia() {
-            Plan {
-                name: "h264_nvenc",
-                kind: Kind::Nvenc,
-                node: Some(n.path.clone()),
-            }
+        let (primary, hevc) = if n.is_nvidia() {
+            (("h264_nvenc", Kind::Nvenc), ("hevc_nvenc", Kind::Nvenc))
         } else {
-            Plan {
-                name: "h264_vaapi",
-                kind: Kind::Vaapi,
-                node: Some(n.path.clone()),
-            }
+            (("h264_vaapi", Kind::Vaapi), ("hevc_vaapi", Kind::Vaapi))
         };
-        if works(&primary) {
-            out.push(primary);
+        for (name, kind) in [primary, hevc] {
+            let plan = Plan {
+                name,
+                kind,
+                node: Some(n.path.clone()),
+                ten_bit: false,
+            };
+            if works(&plan) {
+                out.push(plan);
+            }
         }
     }
     let x264 = Plan {
         name: "libx264",
         kind: Kind::X264,
         node: None,
+        ten_bit: false,
     };
     if works(&x264) {
         out.push(x264);
@@ -383,6 +393,8 @@ struct EncParams<'a> {
     color: ColorInfo,
     /// 10-bit input (HEVC Main10 option sets).
     ten_bit: bool,
+    /// Quality level selecting the option sets.
+    quality: QualityLevel,
 }
 
 /// The FFmpeg enums of the H.273 codes of `c`; codes we do not stream stay unspecified.
@@ -433,7 +445,7 @@ impl Enc {
         }
         let mut last = String::from("no option set");
         let mut attempts = Vec::new();
-        for set in ezd_ffmpeg::option_sets_for(p.name, p.ten_bit) {
+        for set in ezd_ffmpeg::option_sets_for(p.name, p.ten_bit, p.quality) {
             let mut attempt = EncoderAttempt {
                 encoder: p.name.to_string(),
                 options: ezd_ffmpeg::options_label(&set),
@@ -1207,6 +1219,9 @@ pub struct Encoder {
     tags: StreamTags,
     fps_mhz: u32,
     kbps: u32,
+    /// 10-bit HDR10 stream (HEVC Main10).
+    ten_bit: bool,
+    quality: QualityLevel,
     active: Option<Active>,
     /// Setup of the encoder opened last, until the source takes it.
     setup: Option<EncoderSetup>,
@@ -1220,9 +1235,23 @@ impl Encoder {
             tags: StreamTags::default(),
             fps_mhz,
             kbps,
+            ten_bit: false,
+            quality: QualityLevel::Normal,
             active: None,
             setup: None,
         }
+    }
+
+    /// Makes this the 10-bit HDR10 encoder (HEVC Main10) of `plan`.
+    pub fn with_ten_bit(mut self, ten_bit: bool) -> Encoder {
+        self.ten_bit = ten_bit;
+        self
+    }
+
+    /// Sets the quality level that selects the option sets (default normal).
+    pub fn with_quality(mut self, quality: QualityLevel) -> Encoder {
+        self.quality = quality;
+        self
     }
 
     /// The setup of the encoder opened since the last call (every open makes a new one).
@@ -1256,7 +1285,8 @@ impl Encoder {
                 pix_fmt: p.pix_fmt,
                 hw_frames: (!hw.is_null()).then_some(hw),
                 color: self.tags.color,
-                ten_bit: ten_bit_encoder(self.name),
+                ten_bit: self.ten_bit,
+                quality: self.quality,
             })?;
             self.setup = enc.setup.take();
             self.active = Some(Active {
@@ -1280,7 +1310,7 @@ impl Encoder {
         // SAFETY: `frame` is a valid frame we own.
         unsafe {
             let f = &mut *frame.0;
-            if ten_bit_encoder(self.name) {
+            if self.ten_bit {
                 // HDR10 frames carry the stream's colour tags (8-bit streams keep what the
                 // conversion left, which the encoder ignores in favour of the context).
                 (f.color_primaries, f.color_trc, f.colorspace, f.color_range) =
@@ -1340,8 +1370,16 @@ impl Pipeline {
     /// New pipeline; nothing is opened until the first frame arrives.
     pub fn new(plan: Plan, fps_mhz: u32, kbps: u32) -> Pipeline {
         Pipeline {
-            enc: Encoder::new(plan.name, fps_mhz, kbps),
+            enc: Encoder::new(plan.name, fps_mhz, kbps).with_ten_bit(plan.ten_bit),
             conv: Converter::new(plan, fps_mhz),
+        }
+    }
+
+    /// Sets the quality level that selects the encoder option sets (default normal).
+    pub fn with_quality(self, quality: QualityLevel) -> Pipeline {
+        Pipeline {
+            enc: self.enc.with_quality(quality),
+            conv: self.conv,
         }
     }
 
@@ -1871,12 +1909,29 @@ mod tests {
         let intel = plan_encoders(Some(&node("/dev/dri/renderD129", 0x8086)), &all);
         assert_eq!(
             intel.iter().map(|p| p.name).collect::<Vec<_>>(),
-            ["h264_vaapi", "libx264"]
+            ["h264_vaapi", "hevc_vaapi", "libx264"]
         );
         assert_eq!(intel[0].node.as_deref(), Some("/dev/dri/renderD129"));
-        assert!(intel[0].hardware() && !intel[1].hardware());
+        assert!(intel[0].hardware() && intel[1].hardware() && !intel[2].hardware());
+        // The 8-bit HEVC plan is SDR: 8-bit input, no HDR10 chain.
+        assert!(!intel[1].hdr10() && !intel[1].ten_bit);
+        assert_eq!(
+            intel.iter().map(Plan::codec).collect::<Vec<_>>(),
+            [Codec::H264, Codec::Hevc, Codec::H264]
+        );
         let nv = plan_encoders(Some(&node("/dev/dri/renderD128", 0x10de)), &all);
-        assert_eq!(nv[0].name, "h264_nvenc");
+        assert_eq!(
+            nv.iter().map(|p| p.name).collect::<Vec<_>>(),
+            ["h264_nvenc", "hevc_nvenc", "libx264"]
+        );
+        // The HEVC plan is offered only when it was verified on this machine.
+        let no_hevc = plan_encoders(Some(&node("/dev/dri/renderD128", 0x10de)), &|p| {
+            !p.name.starts_with("hevc_")
+        });
+        assert_eq!(
+            no_hevc.iter().map(|p| p.name).collect::<Vec<_>>(),
+            ["h264_nvenc", "libx264"]
+        );
         // A broken hardware path leaves only x264; nothing works -> empty.
         let sw = plan_encoders(Some(&node("/dev/dri/renderD129", 0x8086)), &|p| {
             p.kind == Kind::X264
@@ -1928,6 +1983,7 @@ mod tests {
             name: "libx264",
             kind: Kind::X264,
             node: None,
+            ten_bit: false,
         };
         let mut p = Pipeline::new(plan, 60_000, 8_000);
         let out = p
@@ -1957,6 +2013,7 @@ mod tests {
             name: "libx264",
             kind: Kind::X264,
             node: None,
+            ten_bit: false,
         };
         let mut p = Pipeline::new(plan, 60_000, 8_000);
         p.encode(test_shm_frame(320, 240, Q), false)
@@ -1987,6 +2044,7 @@ mod tests {
             name: "h264_vaapi",
             kind: Kind::Vaapi,
             node: Some(node),
+            ten_bit: false,
         };
         let mut p = Pipeline::new(plan, 60_000, 8_000);
         match p.encode(test_shm_frame(640, 360, Q), false) {
@@ -2005,6 +2063,7 @@ mod tests {
             name: "hevc_vaapi",
             kind: Kind::Vaapi,
             node: Some(node),
+            ten_bit: true,
         }
     }
 
@@ -2293,6 +2352,7 @@ mod tests {
             name: "h264_vaapi",
             kind: Kind::Vaapi,
             node: Some(node),
+            ten_bit: false,
         };
         let mut p = Pipeline::new(plan, 60_000, 8_000);
         let out = p
@@ -2321,6 +2381,7 @@ mod tests {
             name: "h264_vaapi",
             kind: Kind::Vaapi,
             node: Some(node),
+            ten_bit: false,
         };
         let mut conv = Converter::new(plan, 60_000);
         let p = conv
@@ -2513,11 +2574,87 @@ mod tests {
         );
     }
 
+    fn hevc_nvenc_sdr_plan(node: String) -> Plan {
+        Plan {
+            name: "hevc_nvenc",
+            kind: Kind::Nvenc,
+            node: Some(node),
+            ten_bit: false,
+        }
+    }
+
+    fn decode_hevc_first(out: &Output) -> ezd_ffmpeg::DecodedFrame {
+        let mut d = Decoder::new(Codec::Hevc).unwrap();
+        if let Some(c) = &out.codec_config {
+            d.push_config(c).unwrap();
+        }
+        let mut frames = d.decode(&out.data, 0).unwrap();
+        frames.extend(d.flush().unwrap());
+        frames.into_iter().next().expect("decoded a picture")
+    }
+
+    /// 8-bit HEVC on NVENC from system memory at the tablet's size: the high set (constant
+    /// quantiser) and the lossless tune open, report what ran, and decode with the right colours.
+    #[test]
+    fn nvenc_hevc_8bit_high_and_lossless_if_available() {
+        let Some(node) = crate::adapter::list_render_nodes()
+            .into_iter()
+            .find(|n| n.is_nvidia())
+        else {
+            return eprintln!("skip: no NVIDIA render node");
+        };
+        for (quality, mode, first_ok) in [
+            (QualityLevel::High, ezd_proto::RateMode::Cqp, true),
+            (QualityLevel::Lossless, ezd_proto::RateMode::Lossless, true),
+        ] {
+            let mut p = Pipeline::new(hevc_nvenc_sdr_plan(node.path.clone()), 60_000, 8_000)
+                .with_quality(quality);
+            let out = match p.encode(test_shm_frame(2960, 1848, Q), false) {
+                Ok(Some(o)) => o,
+                Ok(None) => panic!("{quality:?}: no packet"),
+                Err(e) => return eprintln!("skip {quality:?}: {e}"),
+            };
+            let setup = p.take_setup().expect("setup after the open");
+            assert_eq!(setup.attempts[0].ok, first_ok, "{quality:?}: {setup:?}");
+            assert_eq!(setup.rate.rate_mode(), mode, "{quality:?}: {setup:?}");
+            if quality == QualityLevel::High {
+                assert_eq!(setup.rate.quality, ezd_ffmpeg::HIGH_QP as u16);
+            } else {
+                assert!(setup.attempts[0].options.contains("tune=lossless"));
+            }
+            assert!(out.keyframe && out.codec_config.is_some());
+            check_colors(&decode_hevc_first(&out));
+        }
+    }
+
+    /// libx264 at the high level runs CRF 10 and reports it.
+    #[test]
+    fn x264_high_quality_reports_crf() {
+        let plan = Plan {
+            name: "libx264",
+            kind: Kind::X264,
+            node: None,
+            ten_bit: false,
+        };
+        let mut p = Pipeline::new(plan, 60_000, 8_000).with_quality(QualityLevel::High);
+        let out = p
+            .encode(test_shm_frame(320, 240, Q), false)
+            .unwrap()
+            .unwrap();
+        let setup = p.take_setup().expect("setup after the open");
+        assert_eq!(
+            (setup.rate.rate_mode(), setup.rate.quality),
+            (ezd_proto::RateMode::Crf, 10)
+        );
+        check_colors(&decode_first(&out));
+    }
+
     fn nvenc_plan(node: String) -> Plan {
         Plan {
             name: "h264_nvenc",
             kind: Kind::Nvenc,
             node: Some(node),
+            ten_bit: false,
         }
     }
 
@@ -2678,6 +2815,7 @@ mod tests {
                 name: "h264_vaapi",
                 kind: Kind::Vaapi,
                 node: Some(node.clone()),
+                ten_bit: false,
             };
             bench("vaapi-shm", plan.clone(), &|| test_shm_frame(1920, 1080, Q));
             bench("vaapi-dmabuf", plan, &|| {
@@ -2688,6 +2826,7 @@ mod tests {
             name: "libx264",
             kind: Kind::X264,
             node: None,
+            ten_bit: false,
         };
         bench("x264", x, &|| test_shm_frame(1920, 1080, Q));
     }

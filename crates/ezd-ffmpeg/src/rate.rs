@@ -10,6 +10,8 @@ pub const VBV_FRAMES: u32 = 4;
 pub const NVENC_CQ: u32 = 19;
 /// libx264 constant rate factor.
 pub const X264_CRF: u32 = 20;
+/// Fixed quantiser (CRF for libx264) of the high-quality option sets.
+pub const HIGH_QP: u32 = 10;
 /// Fixed quantiser of the VAAPI CQP fallback sets.
 pub const VAAPI_QP: u32 = 20;
 
@@ -45,13 +47,15 @@ pub fn describe_rate(name: &str, options: &[(&str, String)], kbps: u32) -> RateC
             .map(|(_, v)| v.as_str())
     };
     let num = |key: &str| get(key).and_then(|v| v.parse::<u16>().ok()).unwrap_or(0);
-    let (mode, quality) = if let Some(crf) = get("crf") {
+    let (mode, quality) = if get("tune") == Some("lossless") {
+        (RateMode::Lossless, 0)
+    } else if let Some(crf) = get("crf") {
         (RateMode::Crf, crf.parse().unwrap_or(0))
     } else if let Some(rc) = get("rc") {
         match rc {
             "cbr" => (RateMode::Cbr, 0),
             "vbr" | "vbr_peak" | "vbr_latency" => (RateMode::Vbr, num("cq")),
-            "cqp" => (RateMode::Cqp, num("qp")),
+            "cqp" | "constqp" => (RateMode::Cqp, num("qp").max(num("qp_i"))),
             _ => (RateMode::Unknown, 0),
         }
     } else if let Some(rc) = get("rc_mode") {
@@ -71,8 +75,8 @@ pub fn describe_rate(name: &str, options: &[(&str, String)], kbps: u32) -> RateC
         mode: mode.code(),
         quality,
         target_kbps: kbps,
-        // A fixed quantiser ignores the rate limits.
-        max_kbps: if mode == RateMode::Cqp {
+        // A fixed quantiser and lossless ignore the rate limits.
+        max_kbps: if matches!(mode, RateMode::Cqp | RateMode::Lossless) {
             0
         } else {
             kbps.saturating_mul(PEAK_FACTOR)
@@ -82,11 +86,12 @@ pub fn describe_rate(name: &str, options: &[(&str, String)], kbps: u32) -> RateC
 
 /// Compact `k=v` label of the interesting options of a set, joined by spaces.
 pub fn options_label(options: &[(&str, String)]) -> String {
-    const KEYS: [&str; 8] = [
+    const KEYS: [&str; 9] = [
         "rc",
         "rc_mode",
         "cq",
         "qp",
+        "qp_i",
         "crf",
         "low_power",
         "profile",
@@ -94,7 +99,7 @@ pub fn options_label(options: &[(&str, String)]) -> String {
     ];
     options
         .iter()
-        .filter(|(k, _)| KEYS.contains(k))
+        .filter(|(k, v)| KEYS.contains(k) || (*k == "tune" && v == "lossless"))
         .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join(" ")
@@ -104,6 +109,7 @@ pub fn options_label(options: &[(&str, String)]) -> String {
 mod tests {
     use super::*;
     use crate::option_sets;
+    use ezd_proto::QualityLevel;
 
     #[test]
     fn settings_use_peak_and_four_frame_vbv() {
@@ -117,7 +123,7 @@ mod tests {
     #[test]
     fn describes_the_set_that_opened() {
         let d = |name: &str, i: usize| {
-            let sets = option_sets(name);
+            let sets = option_sets(name, QualityLevel::Normal);
             describe_rate(name, &sets[i], 1000)
         };
         let nv = d("h264_nvenc", 0);
@@ -135,8 +141,30 @@ mod tests {
     }
 
     #[test]
+    fn describes_high_and_lossless_sets() {
+        let sets = option_sets("hevc_nvenc", QualityLevel::Lossless);
+        let lossless = describe_rate("hevc_nvenc", &sets[0], 1000);
+        assert_eq!(
+            (lossless.rate_mode(), lossless.quality, lossless.max_kbps),
+            (RateMode::Lossless, 0, 0)
+        );
+        assert_eq!(options_label(&sets[0]), "tune=lossless");
+        let high = describe_rate("hevc_nvenc", &sets[1], 1000);
+        assert_eq!(
+            (high.rate_mode(), high.quality, high.max_kbps),
+            (RateMode::Cqp, 10, 0)
+        );
+        let x = option_sets("libx264", QualityLevel::High);
+        let x = describe_rate("libx264", &x[0], 1000);
+        assert_eq!((x.rate_mode(), x.quality), (RateMode::Crf, 10));
+        let amf = option_sets("hevc_amf", QualityLevel::High);
+        let amf = describe_rate("hevc_amf", &amf[0], 1000);
+        assert_eq!((amf.rate_mode(), amf.quality), (RateMode::Cqp, 10));
+    }
+
+    #[test]
     fn label_keeps_only_interesting_keys() {
-        let sets = option_sets("h264_vaapi");
+        let sets = option_sets("h264_vaapi", QualityLevel::Normal);
         assert_eq!(
             options_label(&sets[1]),
             "rc_mode=CQP qp=20 low_power=1 level=5.2"

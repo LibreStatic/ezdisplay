@@ -3,8 +3,8 @@
 use crate::{ClientHandle, now_us};
 use ezd_link::{Link, MuxError, MuxReceiver, MuxSender};
 use ezd_proto::{
-    Bye, ClientCaps, ClientHdr, CursorShape, CursorState, FrameAck, Hello, Message, Ping, Pong,
-    Role, StreamColor, StreamConfig, StreamReport, VideoFrame,
+    Bye, ClientCaps, ClientHdr, ClientPrefs, CursorShape, CursorState, FrameAck, Hello, Message,
+    Ping, Pong, Role, StreamColor, StreamConfig, StreamReport, VideoFrame,
 };
 use std::time::Duration;
 use tokio::time::{MissedTickBehavior, interval, timeout};
@@ -71,6 +71,9 @@ pub struct ClientConfig {
     /// `ClientHdr` is sent right after the host `Hello`; `None` sends [`ClientHdr::none`]
     /// (no HDR10), so the host always gets an answer and never waits for it in vain.
     pub hdr: Option<ClientHdr>,
+    /// Codec and quality asked for in `ClientPrefs`, sent right after `ClientHdr` whenever the
+    /// host speaks protocol 0.8. The default is [`ClientPrefs::auto`].
+    pub prefs: ClientPrefs,
     /// Interval of `ClientStats` messages.
     pub stats_interval: Duration,
     /// Interval of client-initiated pings (clock sync).
@@ -96,6 +99,7 @@ impl ClientConfig {
             app_version: env!("CARGO_PKG_VERSION").into(),
             caps,
             hdr: None,
+            prefs: ClientPrefs::auto(),
             stats_interval: Duration::from_secs(1),
             ping_interval: Duration::from_millis(500),
             max_duration: None,
@@ -223,6 +227,7 @@ pub async fn run_client<H: ClientHandler>(
     }
     let my_minor_supports_hdr = my_hello.supports_hdr();
     let my_minor_supports_keyboard = my_hello.supports_keyboard();
+    let my_minor_supports_prefs = my_hello.supports_stream_prefs();
     tx.send_control(Message::Hello(my_hello))?;
     tx.send_control(Message::ClientCaps(cfg.caps.clone()))?;
     let hello = wait_for(&mut rx, &tx, "Hello", wait, |m| match m {
@@ -237,6 +242,9 @@ pub async fn run_client<H: ClientHandler>(
         tx.send_control(Message::ClientHdr(
             cfg.hdr.clone().unwrap_or_else(ClientHdr::none),
         ))?;
+    }
+    if hello.supports_stream_prefs() && my_minor_supports_prefs {
+        tx.send_control(Message::ClientPrefs(cfg.prefs))?;
     }
     wait_for(&mut rx, &tx, "HostCaps", wait, |m| match m {
         Message::HostCaps(h) => Ok(h),

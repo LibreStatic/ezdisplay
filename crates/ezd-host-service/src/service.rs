@@ -643,8 +643,8 @@ pub(crate) mod tests {
     use ezd_link::adb::DeviceState as AdbState;
     use ezd_link::{MuxReceiver, MuxSender};
     use ezd_proto::{
-        Bye, ClientCaps, ClientHdr, Codec, DEFAULT_CHUNK_LEN, DecoderCaps, DisplayInfo, Hello,
-        Message, Role,
+        Bye, ClientCaps, ClientHdr, ClientPrefs, Codec, DEFAULT_CHUNK_LEN, DecoderCaps,
+        DisplayInfo, Hello, Message, Role,
     };
     use tokio::time::timeout;
 
@@ -722,6 +722,8 @@ pub(crate) mod tests {
             .unwrap();
         tx.send_control(Message::ClientCaps(caps())).unwrap();
         tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
             .unwrap();
         let mut seen = 0;
         while seen < 4 {

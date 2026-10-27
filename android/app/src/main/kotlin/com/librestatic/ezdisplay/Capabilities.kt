@@ -1,11 +1,15 @@
 package com.librestatic.ezdisplay
 
 import android.app.Activity
+import android.content.SharedPreferences
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.os.Build
 import android.view.Display
 import android.view.InputDevice
+import com.librestatic.ezdisplay.settings.SettingsStore
+import com.librestatic.ezdisplay.settings.StreamQualities
+import com.librestatic.ezdisplay.settings.VideoCodecs
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.max
@@ -39,6 +43,26 @@ object Capabilities {
         return NativeModes(native.first, native.second, modes)
     }
 
+    /** True when the device lists a decoder for [codec] (`h264`, `hevc`, `av1`). */
+    fun hasDecoder(codec: String): Boolean {
+        val mime = CODECS.firstOrNull { it.first == codec }?.second ?: return false
+        return MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+            !info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+        }
+    }
+
+    /**
+     * `stream_prefs` from the settings. HEVC without an HEVC decoder is sent as `auto`; unknown or missing values
+     * are `auto` / `normal`.
+     */
+    fun streamPrefs(prefs: SharedPreferences, hevcAvailable: Boolean = hasDecoder("hevc")): JSONObject {
+        val codec = prefs.getString(SettingsStore.VIDEO_CODEC, null).takeIf { it in VideoCodecs } ?: "auto"
+        val quality = prefs.getString(SettingsStore.STREAM_QUALITY, null).takeIf { it in StreamQualities } ?: "normal"
+        return JSONObject()
+            .put("codec", if (codec == "hevc" && !hevcAvailable) "auto" else codec)
+            .put("quality", quality)
+    }
+
     fun toJson(activity: Activity, chosen: Display.Mode?): String {
         val display = display(activity)
         val native = nativeModes(display)
@@ -59,6 +83,7 @@ object Capabilities {
             .put("decoders", decoders(native.width, native.height))
             .put("stylus", hasStylus())
             .put("max_touch_points", 10)
+            .put("stream_prefs", streamPrefs(InputPrefs.prefs(activity)))
         return json.toString()
     }
 

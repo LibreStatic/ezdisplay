@@ -104,6 +104,45 @@ class StreamOsdTest {
         assertTrue(c.headline, c.headline.contains("tasa de bits variable, calidad 19"))
     }
 
+    private val losslessReport = """{"wanted_kbps":46000,"user_bitrate":false,"ceiling_kbps":0,
+        "attempts":[{"encoder":"hevc_nvenc","options":"tune=lossless","ok":false,"error":"Function not implemented"},
+        {"encoder":"hevc_nvenc","options":"rc=constqp qp=10","ok":true,"error":""}],
+        "rate_mode":"cqp","quality":10,"target_kbps":46000,"max_kbps":0,
+        "wanted_quality":"lossless","applied_quality":"high","wanted_codec":"hevc"}"""
+
+    @Test fun qualityLineShowsRequestedAndApplied() {
+        val j = status(losslessReport).put("codec", "hevc")
+        val c = StreamOsd.render(res, StreamOsd.parse(j))
+        assertEquals("Quality: lossless requested · high applied", c.lines[1])
+        assertEquals("HEVC · constant quality 10", c.headline)
+    }
+
+    @Test fun qualityLineWhenAppliedAsWanted() {
+        val r = losslessReport.replace("\"applied_quality\":\"high\"", "\"applied_quality\":\"lossless\"")
+            .replace("\"cqp\"", "\"lossless\"")
+        val c = StreamOsd.render(res, StreamOsd.parse(status(r).put("codec", "hevc")))
+        assertEquals("Quality: lossless", c.lines[1])
+        assertEquals("HEVC · lossless", c.headline)
+    }
+
+    @Test fun codecLineOnlyWhenTheFinalCodecDiffers() {
+        val c = StreamOsd.render(res, StreamOsd.parse(status(losslessReport)))
+        assertTrue(c.lines.toString(), c.lines.contains("Codec: HEVC requested"))
+        val same = StreamOsd.render(res, StreamOsd.parse(status(losslessReport).put("codec", "hevc")))
+        assertFalse(same.lines.toString(), same.lines.any { it.startsWith("Codec:") })
+    }
+
+    @Test fun missingNewKeysAddNoLines() {
+        val c = StreamOsd.render(res, StreamOsd.parse(status(autoReport)))
+        assertEquals(3, c.lines.size)
+        assertFalse(c.lines.any { it.startsWith("Quality:") || it.startsWith("Codec:") })
+    }
+
+    @Test @Config(qualifiers = "es") fun spanishQualityLine() {
+        val c = StreamOsd.render(res, StreamOsd.parse(status(losslessReport).put("codec", "hevc")))
+        assertEquals("Calidad: sin pérdida solicitada · alta aplicada", c.lines[1])
+    }
+
     @Test fun viewIsNotInteractive() {
         val v = StreamOsdView(context)
         assertFalse(v.isClickable)
@@ -120,5 +159,16 @@ class StreamOsdTest {
         osd.show(StreamOsd.render(activity.resources, StreamOsd.parse(status(autoReport))))
         assertEquals(View.VISIBLE, osd.visibility)
         root.captureRoboImage("build/outputs/roborazzi/stream_osd.png")
+    }
+
+    @Test @Config(qualifiers = "w1280dp-h800dp-notnight")
+    fun captureOsdLossless() {
+        val activity = Robolectric.buildActivity(ComponentActivity::class.java).setup().get()
+        val root = FrameLayout(activity).apply { setBackgroundColor(Color.rgb(40, 60, 90)) }
+        val osd = StreamOsdView(activity)
+        root.addView(osd, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { setMargins(32, 32, 32, 32) })
+        activity.setContentView(root)
+        osd.show(StreamOsd.render(activity.resources, StreamOsd.parse(status(losslessReport).put("codec", "hevc"))))
+        root.captureRoboImage("build/outputs/roborazzi/stream_osd_lossless.png")
     }
 }

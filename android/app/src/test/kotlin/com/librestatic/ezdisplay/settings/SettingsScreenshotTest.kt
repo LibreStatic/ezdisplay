@@ -42,6 +42,8 @@ class SettingsScreenshotTest {
         override fun setDoubleClickMs(ms: Int) {}
         override fun setPalmRejection(on: Boolean) {}
         override fun setWifiEnabled(on: Boolean) {}
+        override fun setVideoCodec(codec: String) {}
+        override fun setStreamQuality(quality: String) {}
         override fun startPairing(name: String, shortFp: String, addr: String) {}
         override fun startPairing(link: PairLink) {}
         override fun submitPairing(pin: String) {}
@@ -94,6 +96,14 @@ class SettingsScreenshotTest {
         discovered = listOf(DiscoveredHost("desk", "Studio PC", "3f2a-91c0-77de-0b14", "192.168.1.9:27183")),
         deviceFingerprint = "abcd-0123-4567-89ef",
     )
+
+    @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
+    fun phone_video_dark() {
+        show(SettingsState(videoCodec = "hevc", streamQuality = "lossless"))
+        rule.onNodeWithTag("video_group").performScrollTo()
+        rule.waitForIdle()
+        capture("phone_video_dark")
+    }
 
     @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
     fun phone_connection_dark() {

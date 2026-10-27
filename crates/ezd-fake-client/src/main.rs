@@ -6,6 +6,7 @@ use ezd_fake_client::fl;
 use ezd_fake_client::i18n;
 use ezd_fake_client::{FakeClientConfig, InputScript, run_fake_client};
 use ezd_link::Link;
+use ezd_proto::{ClientPrefs, Codec, QualityLevel};
 use i18n_embed::fluent::FluentLanguageLoader;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -38,6 +39,10 @@ struct Args {
     input_script: Option<ScriptArg>,
     #[arg(long)]
     exit_after_script: bool,
+    #[arg(long, value_enum, default_value_t = CodecArg::Auto)]
+    codec: CodecArg,
+    #[arg(long, value_enum, default_value_t = QualityArg::Normal)]
+    quality: QualityArg,
     #[arg(long, hide = true)]
     proto_minor: Option<u16>,
     #[cfg(feature = "wifi")]
@@ -64,6 +69,21 @@ enum ScriptArg {
     Keys,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CodecArg {
+    Auto,
+    H264,
+    Hevc,
+    Av1,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum QualityArg {
+    Normal,
+    High,
+    Lossless,
+}
+
 /// The command line with every help text taken from `l`.
 fn command(l: &FluentLanguageLoader) -> Command {
     use i18n_embed_fl::fl;
@@ -85,7 +105,9 @@ fn command(l: &FluentLanguageLoader) -> Command {
         .mut_arg("input_script", |a| a.help(fl!(l, "arg-input-script")))
         .mut_arg("exit_after_script", |a| {
             a.help(fl!(l, "arg-exit-after-script"))
-        });
+        })
+        .mut_arg("codec", |a| a.help(fl!(l, "arg-codec")))
+        .mut_arg("quality", |a| a.help(fl!(l, "arg-quality")));
     #[cfg(feature = "wifi")]
     let cmd = cmd
         .mut_arg("wifi", |a| a.help(fl!(l, "arg-wifi")))
@@ -136,6 +158,19 @@ async fn main() -> Result<()> {
         }),
         stop_after_script: a.exit_after_script,
         proto_minor: a.proto_minor,
+        prefs: ClientPrefs::new(
+            match a.codec {
+                CodecArg::Auto => None,
+                CodecArg::H264 => Some(Codec::H264),
+                CodecArg::Hevc => Some(Codec::Hevc),
+                CodecArg::Av1 => Some(Codec::Av1),
+            },
+            match a.quality {
+                QualityArg::Normal => QualityLevel::Normal,
+                QualityArg::High => QualityLevel::High,
+                QualityArg::Lossless => QualityLevel::Lossless,
+            },
+        ),
         ..Default::default()
     };
 

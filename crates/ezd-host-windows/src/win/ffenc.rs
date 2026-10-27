@@ -351,7 +351,10 @@ impl ZeroCopyEncoder {
                 return Err(format!("encoder {name} not available in this FFmpeg build"));
             }
             let mut last = String::from("no option set");
-            for set in ezd_ffmpeg::option_sets_for(name, format.ten_bit) {
+            // The Windows host does not plumb the quality level yet: always the normal sets.
+            for set in
+                ezd_ffmpeg::option_sets_for(name, format.ten_bit, ezd_proto::QualityLevel::Normal)
+            {
                 match enc.try_open(codec, &set, width, height, refresh_mhz, bitrate_kbps) {
                     Ok(()) => {
                         enc.pkt = ffi::av_packet_alloc();

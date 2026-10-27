@@ -124,6 +124,17 @@ class SettingsWideTest : SettingsUiTestBase() {
         }
     }
 
+    @Test fun videoRowOpensADialogWithTheChoices() {
+        launch()
+        tag("video_group").assertDoesNotExist()
+        tag("video_summary").performClick()
+        tag("video_dialog").assertExists()
+        tag("stream_quality_high").performClick()
+        assertEquals("high", prefs.getString(SettingsStore.STREAM_QUALITY, null))
+        tag("video_dialog_close").performClick()
+        tag("video_dialog").assertDoesNotExist()
+    }
+
     @Test fun airCardSitsBelowThePalmRow() {
         launch(AirActions.On) { putString(InputPrefs.PROFILE, "graphics_tablet") }
         val palm = bounds("palm_row")
