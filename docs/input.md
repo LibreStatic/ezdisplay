@@ -275,3 +275,64 @@ The Windows host injects the pen and touch through synthetic pointer devices (`C
 - **Mouse pen mode** (`--pen-mode mouse`). No pen device is created. The pen moves the mouse, contact is the left button, the barrel button is the right button, and leaving range releases them.
 - **Limits.** Windows blocks injected input to windows of an elevated (administrator) process (UIPI) unless the host also runs elevated. The tray app therefore runs elevated by default on Windows (through its `ezdisplay` scheduled task, so there is no UAC prompt at launch); the *Control administrator windows (run elevated)* setting turns that off. `ezd-host run` from a normal terminal is not elevated. The host logs a rate-limited warning when `SendInput` injects fewer events than requested.
 - **Status.** `InputStatus` always carries ACTIONS and KEYS, and TOUCH and PEN only when their device was created. If a device cannot be created (Windows older than 1809), the note says so. Without a known virtual display, input is unavailable. `ezd-host diag` has an `input` section that reports whether both devices can be created.
+
+## Linux (Sway and Hyprland)
+
+The same uinput devices are created, plus a fourth absolute pointer, and each one is mapped to the
+virtual output by the compositor, per device. Because the mapping is per device, the pointer needs no
+workspace layout and the host skips the position conversion used on KDE and GNOME.
+
+| Device | Sway identifier | Hyprland name |
+| --- | --- | --- |
+| touch | `4617:60881:ezdisplay_touch` | `ezdisplay-touch` |
+| pen | `4617:60882:ezdisplay_pen` | `ezdisplay-pen` |
+| pointer | `4617:60883:ezdisplay_pointer` | `ezdisplay-pointer` |
+
+- Sway: `swaymsg input <vendor>:<product>:<name> map_to_output <OUTPUT>`. The identifier is built the
+  way sway does it: vendor and product in decimal, and spaces and unprintable characters in the name
+  replaced by `_`. When the session ends the host runs `map_to_output *` to release the device.
+- Hyprland: `hyprctl keyword device[<name>]:output <OUTPUT>`, with lowercase, dash-separated names.
+  When the session ends the host sets the value back to `[[Auto]]`.
+
+Neither restore command has been checked on a live compositor (both are harmless for a device that is
+gone). Sway accepts the `map_to_output` commands for devices that do not exist yet, which is how the
+headless test exercises the path; real device mapping needs a session with udev. `ezd-host diag`
+reports the compositor, its version and the capture protocols it advertises.
+
+## Linux (X11)
+
+The same four uinput devices are created. The X server (libinput or evdev driver) adds the touch and
+pen devices as XInput2 slave devices a moment later; their `Device Node` property names the
+`/dev/input/eventN` node, which is how the host finds the ones it created (it waits up to three
+seconds). Each one gets the `Coordinate Transformation Matrix` property (`FLOAT`, nine values,
+row-major) that maps the device's whole range onto the `EZDISPLAY` monitor inside the screen:
+
+```
+[ w/SW  0     x/SW ]
+[ 0     h/SH  y/SH ]
+[ 0     0     1    ]
+```
+
+with `x, y, w, h` the monitor's rectangle and `SW, SH` the screen size. A pen that the driver exposes
+as several devices (stylus, eraser, pad) gets the matrix on all of them. When the session ends the
+identity matrix is set again.
+
+The mapping stays current while the session lives. A watcher thread (its own connection) listens for
+XInput2 hierarchy changes and RandR screen changes. Drivers such as xf86-input-libinput create a
+tablet's stylus and eraser devices only on the tool's first proximity, so a device that appears later
+with one of the host's `Device Node` values gets the matrix when it is added. When the screen size
+changes (the virtual monitor being applied again, a monitor plugged in) the matrix is recomputed from
+the current layout and set again on every device it was set on. Both are debounced by 300 ms and
+logged at info level.
+
+The absolute pointer is not mapped by the server per device: it is spread over the whole screen, so
+the host computes the position itself, like on KDE, from the RandR monitors plus one entry for the
+whole screen (the screen can be taller than every monitor).
+
+The pointer can only reach the virtual monitor because the backend enables panning on a CRTC (see
+`docs/architecture.md`): Xorg otherwise clamps every pointer, including the absolute ones and XTest, to
+the CRTC areas. `ezd-host diag` has an `x11` section with the server vendor and release, the versions
+of RandR, MIT-SHM, XFixes, Damage and XInput, the monitors, the window manager and whether a compositor
+is running. `tools/x11-dummy-test.sh` runs the tests against Xorg with the dummy driver; the transformation
+of a real uinput device runs only where the server hot-plugs input devices and `/dev/uinput` is
+accessible, and is skipped otherwise; the re-mapping on a screen change is tested on the XTEST pointer.

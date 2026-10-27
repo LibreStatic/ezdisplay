@@ -57,29 +57,94 @@ enum Cmd {
     Quit,
 }
 
+/// Mailbox state shared between a capture thread and its consumers (also used by `wl_capture`).
 #[derive(Default)]
-struct State {
-    latest: Option<Frame>,
-    fmt: Option<NegotiatedFormat>,
-    fmt_version: u64,
-    error: Option<String>,
-    closed: bool,
-    produced: u64,
-    coalesced: u64,
+pub(crate) struct State {
+    pub(crate) latest: Option<Frame>,
+    pub(crate) fmt: Option<NegotiatedFormat>,
+    pub(crate) fmt_version: u64,
+    pub(crate) error: Option<String>,
+    pub(crate) closed: bool,
+    pub(crate) produced: u64,
+    pub(crate) coalesced: u64,
 }
 
-struct Shared {
+/// One-slot frame mailbox plus the negotiated format.
+pub(crate) struct Shared {
     m: Mutex<State>,
     cv: Condvar,
 }
 
 impl Shared {
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+    /// An empty mailbox.
+    pub(crate) fn new() -> Shared {
+        Shared {
+            m: Mutex::new(State::default()),
+            cv: Condvar::new(),
+        }
+    }
+
+    /// Wakes the threads waiting in `next` and the `wait_*` calls.
+    pub(crate) fn notify(&self) {
+        self.cv.notify_all();
+    }
+
+    /// Waits until a format with exactly `want` size is negotiated (or `timeout`); returns the
+    /// last known format either way.
+    pub(crate) fn wait_format(
+        &self,
+        want: (u32, u32),
+        timeout: Duration,
+    ) -> Option<NegotiatedFormat> {
+        let deadline = Instant::now() + timeout;
+        let mut s = self.lock();
+        loop {
+            if let Some(f) = s.fmt
+                && (f.width, f.height) == want
+            {
+                return Some(f);
+            }
+            if s.closed || s.error.is_some() {
+                return s.fmt;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return s.fmt;
+            }
+            s = self
+                .cv
+                .wait_timeout(s, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
+    /// Waits for any format to be negotiated.
+    pub(crate) fn wait_any_format(&self, timeout: Duration) -> Option<NegotiatedFormat> {
+        let deadline = Instant::now() + timeout;
+        let mut s = self.lock();
+        loop {
+            if s.fmt.is_some() || s.closed || s.error.is_some() {
+                return s.fmt;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            s = self
+                .cv
+                .wait_timeout(s, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.m.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Takes the newest frame, waiting up to `timeout`. `Err` when the stream died.
-    fn next(&self, timeout: Duration) -> Result<Option<Frame>, String> {
+    pub(crate) fn next(&self, timeout: Duration) -> Result<Option<Frame>, String> {
         let deadline = Instant::now() + timeout;
         let mut s = self.lock();
         loop {
@@ -106,7 +171,7 @@ impl Shared {
 }
 
 /// Takes frames from the capture thread; usable from any thread while the capture runs.
-pub struct Frames(Arc<Shared>);
+pub struct Frames(pub(crate) Arc<Shared>);
 
 impl crate::ahead::FrameSource for Frames {
     fn next(&self, timeout: Duration) -> Result<Option<Frame>, String> {
@@ -129,10 +194,7 @@ impl PwCapture {
         params: PwParams,
         cursor: CursorSink,
     ) -> Result<PwCapture, String> {
-        let shared = Arc::new(Shared {
-            m: Mutex::new(State::default()),
-            cv: Condvar::new(),
-        });
+        let shared = Arc::new(Shared::new());
         let (tx, rx) = pw::channel::channel::<Cmd>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
         let thread = {
@@ -188,49 +250,12 @@ impl PwCapture {
     /// Waits until a format with exactly `want` size is negotiated (or `timeout`); returns the
     /// last known format either way.
     pub fn wait_format(&self, want: (u32, u32), timeout: Duration) -> Option<NegotiatedFormat> {
-        let deadline = Instant::now() + timeout;
-        let mut s = self.shared.lock();
-        loop {
-            if let Some(f) = s.fmt
-                && (f.width, f.height) == want
-            {
-                return Some(f);
-            }
-            if s.closed || s.error.is_some() {
-                return s.fmt;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return s.fmt;
-            }
-            s = self
-                .shared
-                .cv
-                .wait_timeout(s, deadline - now)
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
-        }
+        self.shared.wait_format(want, timeout)
     }
 
     /// Waits for any format to be negotiated.
     pub fn wait_any_format(&self, timeout: Duration) -> Option<NegotiatedFormat> {
-        let deadline = Instant::now() + timeout;
-        let mut s = self.shared.lock();
-        loop {
-            if s.fmt.is_some() || s.closed || s.error.is_some() {
-                return s.fmt;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return None;
-            }
-            s = self
-                .shared
-                .cv
-                .wait_timeout(s, deadline - now)
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
-        }
+        self.shared.wait_any_format(timeout)
     }
 
     /// Takes the newest frame, waiting up to `timeout`. `Err` when the stream died.

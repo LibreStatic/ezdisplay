@@ -1,6 +1,6 @@
 # Linux packaging
 
-Only KDE Plasma 6 and GNOME on Wayland are supported today. CI builds all of this in
+KDE Plasma 6, GNOME, Sway and Hyprland on Wayland, and any desktop on X11 (RandR 1.5), are supported. CI builds all of this in
 `.github/workflows/linux-packages.yml`; the commands below reproduce it locally. Replace
 `~/.cache/ezd-pkg` with any scratch directory on a disk (not a RAM-backed `/tmp`).
 
@@ -56,7 +56,7 @@ docker run --rm -v "$PWD:/src:ro" -v ~/.cache/ezd-pkg/deb:/work -e CARGO_HOME=/w
 leave in the binaries. Use `1~debian13` on `debian:trixie` and `1~ubuntu26.04` on `ubuntu:26.04`. The revision suffix
 keeps the three files distinct and makes each sort below a later plain revision. `adb` is a hard
 dependency; `xdg-desktop-portal-kde` and the package that ships `kscreen-doctor` are recommended
-(KDE only; GNOME needs nothing beyond its own session). On Arch they are optional dependencies.
+(KDE only; GNOME, Sway, Hyprland and X11 need nothing beyond their own session). On Arch they are optional dependencies.
 
 ## AppImage
 

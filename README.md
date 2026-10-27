@@ -12,7 +12,7 @@
 [![Release](https://img.shields.io/github/v/release/LibreStatic/ezdisplay?include_prereleases&label=release)](https://github.com/LibreStatic/ezdisplay/releases)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
-Windows · KDE Plasma 6 and GNOME (Wayland) · Android tablets · Rust + Kotlin
+Windows · KDE Plasma 6, GNOME, Sway and Hyprland (Wayland) · X11 · Android tablets · Rust + Kotlin
 
 [Download](https://github.com/LibreStatic/ezdisplay/releases) ·
 [Install](#install) ·
@@ -55,19 +55,22 @@ and no telemetry, and everything travels through the cable.
 ezdisplay is in **alpha** (see the [releases](https://github.com/LibreStatic/ezdisplay/releases); every change merged to `main` is published as a pre-release).
 Working today, over USB with ADB:
 
-| | Windows | KDE Plasma 6 (Wayland) | GNOME (Wayland) |
-| --- | :---: | :---: | :---: |
-| Extended display at native resolution and refresh rate | ✅ | ✅ | 🧪 |
-| Locally drawn cursor | ✅ | ✅ | 🧪 |
-| Zero-copy hardware encode | ✅ | ✅ | 🧪 |
-| Touch, pen pressure, tilt and hover | ✅ | ✅ | 🧪 |
-| Tray app with settings and live statistics | ✅ | ✅ | 🧪 |
-| Installer / packages | ✅ `.exe` | ✅ AppImage, `.deb`, Arch | 🧪 AppImage, `.deb`, Arch |
+| | Windows | KDE Plasma 6 (Wayland) | GNOME (Wayland) | Sway, Hyprland | X11 |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| Extended display at native resolution and refresh rate | ✅ | ✅ | 🧪 | 🧪 | 🧪 |
+| Locally drawn cursor | ✅ | ✅ | 🧪 | 🧪 | 🧪 |
+| Zero-copy hardware encode | ✅ | ✅ | 🧪 | ❌ shared-memory capture | ❌ shared-memory capture |
+| Touch, pen pressure, tilt and hover | ✅ | ✅ | 🧪 | 🧪 | 🧪 |
+| Tray app with settings and live statistics | ✅ | ✅ | 🧪 | 🧪 | 🧪 |
+| Installer / packages | ✅ `.exe` | ✅ AppImage, `.deb`, Arch | 🧪 AppImage, `.deb`, Arch | 🧪 AppImage, `.deb`, Arch | 🧪 AppImage, `.deb`, Arch |
 
-🧪 GNOME support is new: it has been tested against a headless Mutter only, not yet on a real GNOME
-session with a tablet. The tray needs the AppIndicator extension there.
+🧪 New and not yet tested on a real session with a tablet: GNOME has been tested against a
+headless Mutter (the tray needs the AppIndicator extension there), Sway against a headless sway,
+Hyprland only through unit tests, and X11 against Xorg with the dummy video driver (i3, xfwm4).
+X11 works with any window manager or desktop that honours RandR 1.5 monitors; the proprietary
+NVIDIA driver is untested.
 
-**Not yet:** audio, wlroots backends, X11.
+**Not yet:** audio.
 
 ## How it works
 
@@ -132,11 +135,15 @@ notification area. Connect the tablet over USB: the app opens on the tablet and 
 > and Smart App Control blocks it. See [docs/windows-testing.md](docs/windows-testing.md) and
 > [packaging/windows/README.md](packaging/windows/README.md).
 
-### 2. PC: Linux (KDE Plasma 6 or GNOME, Wayland)
+### 2. PC: Linux (KDE Plasma 6, GNOME, Sway or Hyprland on Wayland; any desktop on X11)
 
-Plasma 6 or a recent GNOME on Wayland is required; X11 and other desktops are not supported yet.
-The host picks the desktop from `XDG_CURRENT_DESKTOP` and the session bus;
-`EZD_LINUX_BACKEND=kde|gnome` overrides it. Pick one:
+On Wayland, Plasma 6, a recent GNOME, Sway or Hyprland is required; other Wayland compositors are
+not supported yet. On X11 the server needs RandR 1.5, MIT-SHM, XFixes, Damage and XInput 2 (any
+Xorg of the last decade). A desktop daemon that rewrites the layout (kscreen,
+gnome-settings-daemon, xfsettingsd) is answered by re-applying the virtual monitor, at most a few
+times per ten seconds. The host picks the backend from an X11 session (`XDG_SESSION_TYPE=x11`, or
+`DISPLAY` without `WAYLAND_DISPLAY`), then `XDG_CURRENT_DESKTOP` and the session bus;
+`EZD_LINUX_BACKEND=kde|gnome|sway|hyprland|x11` overrides it. Pick one:
 
 - **Arch Linux**: `sudo pacman -U ezdisplay-*.pkg.tar.zst`.
 - **Debian and Ubuntu**: `sudo apt install ./ezdisplay_*.deb`, using the file for your release:
@@ -229,7 +236,7 @@ cargo check --target aarch64-linux-android -p ezd-proto -p ezd-link
 | `ezd-link` | `Link` byte streams (TCP, in-memory), ADB helper, prioritized mux. |
 | `ezd-host-core` | `VideoSource` / `VirtualDisplay` traits, host session, synthetic test frames. |
 | `ezd-host-service` | The host loop as a library, with live status for the CLI and the tray app. |
-| `ezd-host-linux` | KDE and GNOME virtual output, PipeWire capture, VAAPI/NVENC encode, uinput input. |
+| `ezd-host-linux` | KDE, GNOME, Sway, Hyprland and X11 virtual output, PipeWire, Wayland and X11 capture, VAAPI/NVENC encode, uinput input. |
 | `ezd-host-windows` | GPU policy, Virtual Display Driver, Desktop Duplication, D3D11 encode, input injection. |
 | `ezd-ffmpeg` | Safe FFmpeg wrapper: low-latency `Encoder`, `Decoder`, `SwVideoSource`, encoder probing. |
 | `ezd-host` | The host CLI: `run`, `diag` and `vdd`. |

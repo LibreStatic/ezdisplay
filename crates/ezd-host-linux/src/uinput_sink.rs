@@ -137,7 +137,7 @@ pub fn create_keyboard() -> io::Result<VirtualDevice> {
 }
 
 /// `eventN` names of a freshly created device (the nodes can show up a moment later).
-fn event_name(dev: &mut VirtualDevice) -> Option<String> {
+pub(crate) fn event_name(dev: &mut VirtualDevice) -> Option<String> {
     for _ in 0..40 {
         if let Ok(nodes) = dev.enumerate_dev_nodes_blocking() {
             for p in nodes.flatten() {
@@ -339,6 +339,13 @@ pub trait DesktopInput: Send + Sync {
 
     /// The current output layout, `None` when it cannot be read.
     fn outputs(&self) -> Option<Vec<KOutput>>;
+
+    /// True when the compositor maps the absolute pointer to the output itself: `map_devices`
+    /// then also gets a `pointer` device, and the sink sends coordinates over the output
+    /// instead of over the whole workspace.
+    fn maps_pointer(&self) -> bool {
+        false
+    }
 }
 
 /// Result of [`DesktopInput::map_devices`].
@@ -397,7 +404,7 @@ impl InputBackend for UinputBackend {
         let mouse = target.pen_mode == PenMode::Mouse;
         let mut notes: Vec<String> = Vec::new();
 
-        let pointer = create_pointer().map_err(|e| open_error(&e))?;
+        let mut pointer = create_pointer().map_err(|e| open_error(&e))?;
         let mut touch_dev = create_touch(mm).map_err(|e| open_error(&e))?;
         let mut pen_dev = if mouse {
             None
@@ -406,7 +413,8 @@ impl InputBackend for UinputBackend {
         };
 
         // The compositor drops touch and tablet events of devices without an output.
-        let (mut touch_ok, mut pen_ok) = (false, false);
+        let (mut touch_ok, mut pen_ok, mut pointer_ok) = (false, false, false);
+        let map_pointer = self.desktop.maps_pointer();
         let mut mapping_guard = None;
         match target.output.as_ref().map(|o| o.name.as_str()) {
             None | Some("") => notes.push(
@@ -425,6 +433,12 @@ impl InputBackend for UinputBackend {
                         None => notes.push("the pen device has no /dev/input node".into()),
                     }
                 }
+                if map_pointer {
+                    match event_name(&mut pointer) {
+                        Some(n) => devices.push(("pointer", n)),
+                        None => notes.push("the pointer device has no /dev/input node".into()),
+                    }
+                }
                 let refs: Vec<(&str, &str)> =
                     devices.iter().map(|(l, n)| (*l, n.as_str())).collect();
                 let mapped = self.desktop.map_devices(&refs, output);
@@ -433,6 +447,7 @@ impl InputBackend for UinputBackend {
                     match r {
                         Ok(()) => match *label {
                             "touch" => touch_ok = true,
+                            "pointer" => pointer_ok = true,
                             _ => pen_ok = true,
                         },
                         Err(e) => notes.push(format!("{label}: {e}")),
@@ -459,7 +474,12 @@ impl InputBackend for UinputBackend {
         // Output geometry for the pointer (one blocking call here, then a helper thread).
         let mut mapper = Mapper::identity();
         let mut refresh = None;
-        if let Some(o) = target.output.as_ref().filter(|o| !o.name.is_empty()) {
+        // A pointer the compositor maps to the output needs no workspace geometry.
+        let geometry_output = target
+            .output
+            .as_ref()
+            .filter(|o| !o.name.is_empty() && !pointer_ok);
+        if let Some(o) = geometry_output {
             if let Some(outs) = self.desktop.outputs() {
                 mapper = Mapper::from_outputs(&outs, &o.name);
             }
