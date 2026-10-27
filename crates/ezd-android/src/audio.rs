@@ -126,9 +126,13 @@ impl AudioPlayer {
         let n = self.core.stats.packets.fetch_add(1, Relaxed) + 1;
         if n % STATS_EVERY == 0 {
             let (_, underruns, dropped) = self.core.stats.snapshot();
-            let buffered = lock(&self.core.jitter).len() / self.core.channels;
+            let (len, target) = {
+                let j = lock(&self.core.jitter);
+                (j.len(), j.target_ms())
+            };
+            let buffered = len / self.core.channels;
             tracing::debug!(
-                "audio: {n} packets, {underruns} underruns, {dropped} frames dropped, {} ms buffered",
+                "audio: {n} packets, {underruns} underruns, {dropped} frames dropped, {} ms buffered, target {target} ms",
                 buffered as u64 * 1000 / u64::from(SAMPLE_RATE)
             );
         }
@@ -193,6 +197,7 @@ fn open_output(core: &Arc<Core>, reopen_tx: &Sender<()>) -> Result<SendStream, S
             let samples = frames.max(0) as usize * channels;
             let mut jitter = lock(&data_core.jitter);
             let mut underrun = false;
+            let mut drift = 0usize;
             if i16_out {
                 // SAFETY: AAudio hands over `frames * channels` writable samples of the format
                 // that was requested.
@@ -200,7 +205,9 @@ fn open_output(core: &Arc<Core>, reopen_tx: &Sender<()>) -> Result<SendStream, S
                 let mut tmp = [0f32; CHUNK_SAMPLES];
                 for chunk in out.chunks_mut(CHUNK_SAMPLES) {
                     let t = &mut tmp[..chunk.len()];
-                    underrun |= jitter.pull(t);
+                    let (u, d) = jitter.pull_counting(t);
+                    underrun |= u;
+                    drift += d;
                     for (o, s) in chunk.iter_mut().zip(t.iter()) {
                         *o = f32_to_i16(*s);
                     }
@@ -208,9 +215,15 @@ fn open_output(core: &Arc<Core>, reopen_tx: &Sender<()>) -> Result<SendStream, S
             } else {
                 // SAFETY: as above, for f32.
                 let out = unsafe { std::slice::from_raw_parts_mut(data.cast::<f32>(), samples) };
-                underrun = jitter.pull(out);
+                (underrun, drift) = jitter.pull_counting(out);
             }
             drop(jitter);
+            if drift > 0 {
+                data_core
+                    .stats
+                    .dropped_frames
+                    .fetch_add(drift as u64, Ordering::Relaxed);
+            }
             if underrun {
                 data_core.stats.underruns.fetch_add(1, Ordering::Relaxed);
             }

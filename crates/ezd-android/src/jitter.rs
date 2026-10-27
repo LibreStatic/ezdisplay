@@ -7,10 +7,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Output sample rate; the host sends 48 kHz.
 pub const SAMPLE_RATE: u32 = 48_000;
-/// Playback starts once this much audio is buffered (after the start or an underrun).
-pub const TARGET_MS: u32 = 20;
-/// Above this much buffered audio the oldest samples are dropped down to [`TARGET_MS`].
-pub const MAX_MS: u32 = 60;
+/// Initial and minimum prebuffer: playback starts once this much audio is buffered.
+pub const MIN_TARGET_MS: u32 = 20;
+/// The target never grows beyond this.
+pub const MAX_TARGET_MS: u32 = 80;
+/// The target grows by this much on every underrun.
+pub const TARGET_STEP_UP_MS: u32 = 10;
+/// The target shrinks by this much after [`CALM_SECS`] without an underrun.
+pub const TARGET_STEP_DOWN_MS: u32 = 5;
+/// Seconds of playback without an underrun before the target is lowered.
+pub const CALM_SECS: u32 = 30;
+/// Above `target + HARD_CAP_MS` the oldest samples are dropped down to the target.
+pub const HARD_CAP_MS: u32 = 40;
+/// Clock drift: above `target + DRIFT_START_MS` single frames are dropped, one per pull.
+pub const DRIFT_START_MS: u32 = 20;
+/// Clock drift: dropping stops once the buffer is back under `target + DRIFT_STOP_MS`.
+pub const DRIFT_STOP_MS: u32 = 10;
 /// Opus seek pre-roll that MediaCodec expects in `csd-2`.
 pub const OPUS_SEEK_PREROLL_NS: u64 = 80_000_000;
 
@@ -36,27 +48,46 @@ impl AudioStats {
     }
 }
 
-/// Interleaved f32 FIFO with a prebuffer and a latency cap.
+/// Interleaved f32 FIFO with an adaptive prebuffer and a latency cap.
+///
+/// The target (prebuffer) starts at [`MIN_TARGET_MS`], grows on every underrun and decays after
+/// [`CALM_SECS`] of clean playback. Time is counted in samples pulled, not wall clock.
 pub struct Jitter {
+    rate: usize,
     channels: usize,
     buf: VecDeque<f32>,
-    target: usize,
-    max: usize,
+    target_ms: u32,
     playing: bool,
+    /// Frames pulled while playing since the last underrun or decay step.
+    calm_frames: u64,
+    /// Clock drift: single frames are being dropped, one per pull.
+    draining: bool,
 }
 
 impl Jitter {
     /// Buffer for `channels` interleaved channels at `rate` Hz.
     pub fn new(rate: u32, channels: usize) -> Self {
         let channels = channels.max(1);
-        let samples = |ms: u32| (rate as usize * ms as usize / 1000) * channels;
+        let rate = rate as usize;
         Jitter {
+            rate,
             channels,
-            buf: VecDeque::with_capacity(samples(MAX_MS) * 2),
-            target: samples(TARGET_MS),
-            max: samples(MAX_MS),
+            buf: VecDeque::with_capacity((rate * 150 / 1000) * channels),
+            target_ms: MIN_TARGET_MS,
             playing: false,
+            calm_frames: 0,
+            draining: false,
         }
+    }
+
+    /// Samples (all channels) in `ms` milliseconds.
+    fn samples(&self, ms: u32) -> usize {
+        (self.rate * ms as usize / 1000) * self.channels
+    }
+
+    /// Current prebuffer target in milliseconds.
+    pub fn target_ms(&self) -> u32 {
+        self.target_ms
     }
 
     /// Buffered samples (all channels).
@@ -74,45 +105,82 @@ impl Jitter {
         self.playing
     }
 
-    /// Appends `samples` (a whole number of frames). When more than [`MAX_MS`] is buffered the
-    /// oldest audio is dropped down to [`TARGET_MS`]. Returns the sample frames dropped.
+    /// Appends `samples` (a whole number of frames). Above `target + HARD_CAP_MS` the oldest
+    /// audio is dropped down to the target. Returns the sample frames dropped.
     pub fn push(&mut self, samples: &[f32]) -> usize {
         self.buf.extend(samples.iter().copied());
-        if self.buf.len() <= self.max {
+        let target = self.samples(self.target_ms);
+        if self.buf.len() <= target + self.samples(HARD_CAP_MS) {
             return 0;
         }
-        let drop = (self.buf.len() - self.target) / self.channels * self.channels;
+        let drop = (self.buf.len() - target) / self.channels * self.channels;
         self.buf.drain(..drop);
+        self.draining = false;
         drop / self.channels
     }
 
     /// Fills `out` with buffered audio. While prebuffering, or for the part that is missing on an
     /// underrun, it writes silence. Returns true when an underrun happened (the buffer ran dry
-    /// while playing); playback then waits for the prebuffer again.
+    /// while playing); playback then waits for the (larger) prebuffer again.
+    ///
+    /// When clock drift has built up more than `target + DRIFT_START_MS`, one frame is dropped
+    /// per call until the buffer is under `target + DRIFT_STOP_MS`.
     pub fn pull(&mut self, out: &mut [f32]) -> bool {
+        self.pull_counting(out).0
+    }
+
+    /// Like [`Jitter::pull`], also returning the sample frames dropped for clock drift.
+    pub fn pull_counting(&mut self, out: &mut [f32]) -> (bool, usize) {
+        let target = self.samples(self.target_ms);
         if !self.playing {
-            if self.buf.len() < self.target {
+            if self.buf.len() < target {
                 out.fill(0.0);
-                return false;
+                return (false, 0);
             }
             self.playing = true;
+        }
+        let mut dropped = 0;
+        if self.draining {
+            if self.buf.len() < target + self.samples(DRIFT_STOP_MS) {
+                self.draining = false;
+            }
+        } else if self.buf.len() > target + self.samples(DRIFT_START_MS) {
+            self.draining = true;
+        }
+        if self.draining && self.buf.len() > self.channels {
+            self.buf.drain(..self.channels);
+            dropped = 1;
         }
         let n = out.len().min(self.buf.len());
         for (o, s) in out.iter_mut().zip(self.buf.drain(..n)) {
             *o = s;
         }
+        let frames = (n / self.channels) as u64;
         if n < out.len() {
             out[n..].fill(0.0);
             self.playing = false;
-            return true;
+            self.draining = false;
+            self.calm_frames = 0;
+            self.target_ms = (self.target_ms + TARGET_STEP_UP_MS).min(MAX_TARGET_MS);
+            return (true, dropped);
         }
-        false
+        self.calm_frames += frames;
+        if self.calm_frames >= self.rate as u64 * u64::from(CALM_SECS) {
+            self.calm_frames = 0;
+            self.target_ms = self
+                .target_ms
+                .saturating_sub(TARGET_STEP_DOWN_MS)
+                .max(MIN_TARGET_MS);
+        }
+        (false, dropped)
     }
 
-    /// Forgets everything and prebuffers again.
+    /// Forgets everything and prebuffers again (the target is kept).
     pub fn reset(&mut self) {
         self.buf.clear();
         self.playing = false;
+        self.draining = false;
+        self.calm_frames = 0;
     }
 }
 
@@ -180,15 +248,34 @@ mod tests {
         assert_eq!(j.len(), 1920 - 96);
     }
 
+    /// Pulls `n` ms of stereo in 10 ms steps, pushing 10 ms before each pull.
+    fn run(j: &mut Jitter, n: usize) -> (u64, usize) {
+        let (mut underruns, mut dropped) = (0, 0);
+        let mut out = vec![0.0; 48 * 10 * 2];
+        for _ in 0..n / 10 {
+            j.push(&ms(10, 0.1));
+            let (u, d) = j.pull_counting(&mut out);
+            underruns += u64::from(u);
+            dropped += d;
+        }
+        (underruns, dropped)
+    }
+
+    /// Drains the buffer to cause one underrun.
+    fn underrun(j: &mut Jitter) {
+        let mut out = vec![0.0; j.len() + 96];
+        assert!(j.pull(&mut out));
+    }
+
     #[test]
-    fn drops_the_oldest_above_the_cap() {
+    fn hard_cap_drops_the_oldest_down_to_the_target() {
         let mut j = Jitter::new(48_000, 2);
         j.push(&ms(30, 0.1));
-        j.push(&ms(20, 0.2));
-        assert_eq!(j.len(), 48 * 50 * 2);
-        // 70 ms in total: down to 20 ms, keeping the newest.
+        j.push(&ms(30, 0.2));
+        assert_eq!(j.len(), 48 * 60 * 2);
+        // Over 20 + 40 ms: down to 20 ms, keeping the newest.
         let dropped = j.push(&ms(20, 0.3));
-        assert_eq!(dropped, 48 * 50);
+        assert_eq!(dropped, 48 * 60);
         assert_eq!(j.len(), 48 * 20 * 2);
         let mut out = vec![0.0; 48 * 20 * 2];
         j.pull(&mut out);
@@ -211,14 +298,103 @@ mod tests {
         assert!(out[..48 * 20 * 2].iter().all(|&s| s == 0.5));
         assert!(out[48 * 20 * 2..].iter().all(|&s| s == 0.0));
         assert!(!j.is_playing());
-        // Less than the target arrives: still silent.
-        j.push(&ms(10, 0.7));
+        // The target grew to 30 ms: 20 ms is not enough any more.
+        assert_eq!(j.target_ms(), 30);
+        j.push(&ms(20, 0.7));
         let mut out = vec![1.0; 96];
         assert!(!j.pull(&mut out));
         assert!(out.iter().all(|&s| s == 0.0));
         j.push(&ms(10, 0.7));
         assert!(!j.pull(&mut out));
         assert!(out.iter().all(|&s| s == 0.7));
+    }
+
+    #[test]
+    fn underruns_raise_the_target_up_to_the_cap() {
+        let mut j = Jitter::new(48_000, 2);
+        assert_eq!(j.target_ms(), 20);
+        let mut seen = Vec::new();
+        for _ in 0..9 {
+            j.push(&ms(MAX_TARGET_MS as usize, 0.1));
+            underrun(&mut j);
+            seen.push(j.target_ms());
+        }
+        assert_eq!(seen, vec![30, 40, 50, 60, 70, 80, 80, 80, 80]);
+    }
+
+    #[test]
+    fn the_target_decays_after_clean_playback_down_to_the_floor() {
+        let mut j = Jitter::new(48_000, 2);
+        for _ in 0..3 {
+            j.push(&ms(80, 0.1));
+            underrun(&mut j);
+        }
+        assert_eq!(j.target_ms(), 50);
+        // Just under 30 s: unchanged. Steady state buffers exactly the target.
+        j.push(&ms(50, 0.1));
+        run(&mut j, 29_900);
+        assert_eq!(j.target_ms(), 50);
+        run(&mut j, 100);
+        assert_eq!(j.target_ms(), 45);
+        run(&mut j, 30_000);
+        assert_eq!(j.target_ms(), 40);
+        run(&mut j, 30_000 * 10);
+        assert_eq!(j.target_ms(), 20, "never below the floor");
+    }
+
+    #[test]
+    fn an_underrun_restarts_the_calm_period() {
+        let mut j = Jitter::new(48_000, 2);
+        j.push(&ms(30, 0.1));
+        underrun(&mut j);
+        assert_eq!(j.target_ms(), 30);
+        j.push(&ms(30, 0.1));
+        run(&mut j, 20_000);
+        j.push(&ms(30, 0.1));
+        underrun(&mut j);
+        assert_eq!(j.target_ms(), 40);
+        j.push(&ms(40, 0.1));
+        run(&mut j, 29_000);
+        assert_eq!(j.target_ms(), 40);
+    }
+
+    #[test]
+    fn drift_is_dropped_one_frame_per_pull() {
+        let mut j = Jitter::new(48_000, 2);
+        j.push(&ms(40, 0.1)); // exactly target + 20: not yet drifting
+        let mut out = vec![0.0; 2];
+        assert_eq!(j.pull_counting(&mut out), (false, 0));
+        j.push(&ms(1, 0.1)); // now above target + 20 ms
+        let before = j.len();
+        let mut dropped = 0;
+        let mut pulls = 0;
+        // Pull one frame per call while nothing new arrives: each call removes the frame it
+        // returns plus at most one dropped frame.
+        while j.len() > 48 * 30 * 2 - 2 {
+            let (_, d) = j.pull_counting(&mut out);
+            assert!(d <= 1);
+            dropped += d;
+            pulls += 1;
+        }
+        assert!(dropped > 1, "dropped {dropped} frames");
+        assert_eq!(dropped, pulls, "one dropped frame per pull");
+        assert_eq!(before - j.len(), (dropped + pulls) * 2);
+    }
+
+    #[test]
+    fn drift_dropping_stops_under_target_plus_10() {
+        let mut j = Jitter::new(48_000, 2);
+        j.push(&ms(55, 0.1));
+        let mut out = vec![0.0; 2];
+        for _ in 0..10_000 {
+            j.pull(&mut out);
+        }
+        // Stops once under 30 ms and then only the pulled frames leave.
+        assert!(j.len() < 48 * 30 * 2);
+        let len = j.len();
+        let (_, d) = j.pull_counting(&mut out);
+        assert_eq!(d, 0);
+        assert_eq!(j.len(), len.saturating_sub(2));
     }
 
     #[test]
