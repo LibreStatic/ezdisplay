@@ -25,6 +25,31 @@ object InputPrefs {
     const val KEYS_ZOOM_OUT = "keys_zoom_out"
     const val KEYS_PAN = "keys_pan"
 
+    /** Screensaver and display settings; kept in the same file but never part of [toJson]. */
+    const val SCREENSAVER_ENABLED = "screensaver_enabled"
+    const val SCREENSAVER_IDLE_MIN = "screensaver_idle_min"
+    const val SCREENSAVER_BRIGHTNESS_PCT = "screensaver_brightness_pct"
+    const val SCREENSAVER_BLANK_MIN = "screensaver_blank_min"
+    const val SCREENSAVER_SPEED = "screensaver_speed"
+    const val SCREENSAVER_MOTION = "screensaver_motion"
+    const val PANEL_TYPE_DETECTED = "panel_type_detected"
+
+    const val SCREENSAVER_IDLE_DEFAULT = 5
+    const val SCREENSAVER_IDLE_MIN_VALUE = 1
+    const val SCREENSAVER_IDLE_MAX_VALUE = 30
+    const val SCREENSAVER_BRIGHTNESS_DEFAULT = 8
+    const val SCREENSAVER_BRIGHTNESS_MIN_VALUE = 1
+    const val SCREENSAVER_BRIGHTNESS_MAX_VALUE = 30
+    /** 0 means never blank to pure black. */
+    const val SCREENSAVER_BLANK_DEFAULT = 30
+    const val SCREENSAVER_BLANK_MIN_VALUE = 5
+    const val SCREENSAVER_BLANK_MAX_VALUE = 120
+    const val SCREENSAVER_BLANK_STEP = 5
+    /** Shape speed level; one level is 10 dp per second. */
+    const val SCREENSAVER_SPEED_DEFAULT = 4
+    const val SCREENSAVER_SPEED_MIN_VALUE = 1
+    const val SCREENSAVER_SPEED_MAX_VALUE = 10
+
     const val MOD_CTRL = 1
     const val MOD_SHIFT = 2
     const val MOD_ALT = 4

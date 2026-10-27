@@ -12,6 +12,14 @@ import androidx.compose.runtime.mutableStateOf
 import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.InputPrefs.KeyCombo
 import com.librestatic.ezdisplay.R
+import com.librestatic.ezdisplay.display.PanelDetector
+import com.librestatic.ezdisplay.display.PanelType
+import com.librestatic.ezdisplay.screensaver.ScreensaverMotionMode
+import com.librestatic.ezdisplay.screensaver.ScreensaverPrefs
+import com.librestatic.ezdisplay.screensaver.normalizeBlankMin
+import com.librestatic.ezdisplay.screensaver.normalizeBrightnessPct
+import com.librestatic.ezdisplay.screensaver.normalizeIdleMin
+import com.librestatic.ezdisplay.screensaver.normalizeSpeed
 import com.librestatic.ezdisplay.wifi.DiscoveredHost
 import com.librestatic.ezdisplay.wifi.NativeWifiBackend
 import com.librestatic.ezdisplay.wifi.PairLink
@@ -126,6 +134,19 @@ data class SettingsState(
     val zoomFactor: Float = 2f,
     val doubleClickMs: Int = 300,
     val palmRejection: Boolean = true,
+    /** Detected screen type; the screensaver is on by default only for [PanelType.Oled]. */
+    val panelType: PanelType = PanelType.Unknown,
+    val screensaverEnabled: Boolean = false,
+    /** Minutes without touch before the screensaver starts (1..30). */
+    val screensaverIdleMin: Int = InputPrefs.SCREENSAVER_IDLE_DEFAULT,
+    /** Screensaver brightness in percent (1..30). */
+    val screensaverBrightnessPct: Int = InputPrefs.SCREENSAVER_BRIGHTNESS_DEFAULT,
+    /** Minutes of screensaver before the screen goes pure black; 0 is never, otherwise 5..120. */
+    val screensaverBlankMin: Int = InputPrefs.SCREENSAVER_BLANK_DEFAULT,
+    /** Shape speed level (1..10, 10 dp per second each). */
+    val screensaverSpeed: Int = InputPrefs.SCREENSAVER_SPEED_DEFAULT,
+    /** How the shapes travel: across the screen or bouncing off the edges. */
+    val screensaverMotion: ScreensaverMotionMode = ScreensaverMotionMode.Drift,
     val airActions: AirActions = AirActions.NotSamsung,
     /** Connect over Wi-Fi when the USB connection is not there. */
     val wifiEnabled: Boolean = false,
@@ -191,6 +212,13 @@ fun roundDoubleClickMs(raw: Float): Int {
 /** A stored zoom factor that is not one of [InputPrefs.ZOOM_FACTORS] counts as 2x. */
 fun normalizeZoomFactor(f: Float): Float = if (f in InputPrefs.ZOOM_FACTORS) f else 2f
 
+/** Slider positions to stored values: whole minutes and percents (blank-after is `roundBlankMin`: 5-minute steps, 0 is never). */
+fun roundIdleMin(raw: Float): Int = normalizeIdleMin(raw.roundToInt())
+
+fun roundBrightnessPct(raw: Float): Int = normalizeBrightnessPct(raw.roundToInt())
+
+fun roundSpeed(raw: Float): Int = normalizeSpeed(raw.roundToInt())
+
 /** Reads the Samsung S Pen "Air actions" system setting. */
 fun readAirActions(context: Context): AirActions {
     if (!Build.MANUFACTURER.equals("samsung", ignoreCase = true)) return AirActions.NotSamsung
@@ -217,6 +245,23 @@ interface SettingsActions {
     fun setDoubleClickMs(ms: Int)
     fun setPalmRejection(on: Boolean)
     fun setWifiEnabled(on: Boolean)
+    fun setScreensaverEnabled(on: Boolean)
+    fun setScreensaverIdleMin(min: Int)
+    fun setScreensaverBrightnessPct(pct: Int)
+
+    /** 0 is never; otherwise 5..120. */
+    fun setScreensaverBlankMin(min: Int)
+
+    /** Shape speed level, 1..10. */
+    fun setScreensaverSpeed(level: Int)
+
+    fun setScreensaverMotion(mode: ScreensaverMotionMode)
+
+    /** Shows the screensaver once, as it would appear when idle. */
+    fun previewScreensaver() {}
+
+    /** Opens the getting-started guide again. */
+    fun replayOnboarding() {}
 
     /** Opens the PIN dialog for a host that was found or typed. */
     fun startPairing(name: String, shortFp: String, addr: String)
@@ -238,6 +283,9 @@ class SettingsStore(
     private val deviceName: String = Build.MODEL,
     /** Runs the blocking pairing; replaced by a direct executor in tests. */
     private val io: Executor = Executors.newSingleThreadExecutor(),
+    private val panelType: PanelType = PanelType.Unknown,
+    private val onPreviewScreensaver: () -> Unit = {},
+    private val onReplayOnboarding: () -> Unit = {},
 ) : SettingsActions {
     private val main = Handler(Looper.getMainLooper())
     private val _state = mutableStateOf(read(airActions))
@@ -251,6 +299,21 @@ class SettingsStore(
         doubleClickMs = prefs.getInt(InputPrefs.DOUBLE_CLICK_MS, 300)
             .coerceIn(InputPrefs.DOUBLE_CLICK_MIN, InputPrefs.DOUBLE_CLICK_MAX),
         palmRejection = prefs.getBoolean(InputPrefs.PALM_REJECTION, true),
+        panelType = panelType,
+        screensaverEnabled = ScreensaverPrefs.enabled(prefs, panelType),
+        screensaverIdleMin = normalizeIdleMin(
+            prefs.getInt(InputPrefs.SCREENSAVER_IDLE_MIN, InputPrefs.SCREENSAVER_IDLE_DEFAULT),
+        ),
+        screensaverBrightnessPct = normalizeBrightnessPct(
+            prefs.getInt(InputPrefs.SCREENSAVER_BRIGHTNESS_PCT, InputPrefs.SCREENSAVER_BRIGHTNESS_DEFAULT),
+        ),
+        screensaverBlankMin = normalizeBlankMin(
+            prefs.getInt(InputPrefs.SCREENSAVER_BLANK_MIN, InputPrefs.SCREENSAVER_BLANK_DEFAULT),
+        ),
+        screensaverSpeed = normalizeSpeed(
+            prefs.getInt(InputPrefs.SCREENSAVER_SPEED, InputPrefs.SCREENSAVER_SPEED_DEFAULT),
+        ),
+        screensaverMotion = ScreensaverMotionMode.fromKey(prefs.getString(InputPrefs.SCREENSAVER_MOTION, null)),
         airActions = airActions,
         wifiEnabled = prefs.getBoolean(WIFI_ENABLED, false),
         wifiHosts = wifi.hosts(),
@@ -310,6 +373,44 @@ class SettingsStore(
         prefs.edit { putBoolean(InputPrefs.PALM_REJECTION, on) }
         _state.value = _state.value.copy(palmRejection = on)
     }
+
+    override fun setScreensaverEnabled(on: Boolean) {
+        prefs.edit { putBoolean(InputPrefs.SCREENSAVER_ENABLED, on) }
+        _state.value = _state.value.copy(screensaverEnabled = on)
+    }
+
+    override fun setScreensaverIdleMin(min: Int) {
+        val v = normalizeIdleMin(min)
+        prefs.edit { putInt(InputPrefs.SCREENSAVER_IDLE_MIN, v) }
+        _state.value = _state.value.copy(screensaverIdleMin = v)
+    }
+
+    override fun setScreensaverBrightnessPct(pct: Int) {
+        val v = normalizeBrightnessPct(pct)
+        prefs.edit { putInt(InputPrefs.SCREENSAVER_BRIGHTNESS_PCT, v) }
+        _state.value = _state.value.copy(screensaverBrightnessPct = v)
+    }
+
+    override fun setScreensaverBlankMin(min: Int) {
+        val v = normalizeBlankMin(min)
+        prefs.edit { putInt(InputPrefs.SCREENSAVER_BLANK_MIN, v) }
+        _state.value = _state.value.copy(screensaverBlankMin = v)
+    }
+
+    override fun setScreensaverSpeed(level: Int) {
+        val v = normalizeSpeed(level)
+        prefs.edit { putInt(InputPrefs.SCREENSAVER_SPEED, v) }
+        _state.value = _state.value.copy(screensaverSpeed = v)
+    }
+
+    override fun setScreensaverMotion(mode: ScreensaverMotionMode) {
+        prefs.edit { putString(InputPrefs.SCREENSAVER_MOTION, mode.key) }
+        _state.value = _state.value.copy(screensaverMotion = mode)
+    }
+
+    override fun previewScreensaver() = onPreviewScreensaver()
+
+    override fun replayOnboarding() = onReplayOnboarding()
 
     override fun setWifiEnabled(on: Boolean) {
         prefs.edit { putBoolean(WIFI_ENABLED, on) }
@@ -381,8 +482,14 @@ class SettingsStore(
         /** Pref key of the Wi-Fi switch, read by MainActivity. */
         const val WIFI_ENABLED = "wifi_enabled"
 
-        fun create(context: Context) = SettingsStore(
+        fun create(
+            context: Context,
+            onPreviewScreensaver: () -> Unit = {},
+            onReplayOnboarding: () -> Unit = {},
+        ) = SettingsStore(
             InputPrefs.prefs(context), readAirActions(context), NativeWifiBackend(context),
+            panelType = PanelDetector.cached(context),
+            onPreviewScreensaver = onPreviewScreensaver, onReplayOnboarding = onReplayOnboarding,
         )
     }
 }

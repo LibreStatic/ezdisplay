@@ -154,4 +154,66 @@
         <item quantity="many">%1$d host associati</item>
         <item quantity="other">%1$d host associati</item>
     </plurals>
+    <!-- Display and screensaver -->
+    <string name="section_display">Display</string>
+    <string name="screensaver_off">Salvaschermo disattivato</string>
+    <string name="screensaver_title">Salvaschermo</string>
+    <string name="screensaver_detected">Schermo rilevato: %1$s</string>
+    <string name="panel_oled">OLED</string>
+    <string name="panel_lcd">LCD</string>
+    <string name="panel_unknown">Sconosciuto</string>
+    <string name="screensaver_idle_title">Avvia dopo</string>
+    <string name="screensaver_brightness_title">Luminosità del salvaschermo</string>
+    <string name="screensaver_blank_title">Schermo nero dopo</string>
+    <string name="screensaver_blank_never">Mai</string>
+    <string name="screensaver_speed_title">Velocità delle forme</string>
+    <string name="screensaver_speed_slow">Lenta</string>
+    <string name="screensaver_speed_fast">Veloce</string>
+    <string name="screensaver_motion_title">Movimento</string>
+    <string name="screensaver_motion_drift">Attraversa lo schermo</string>
+    <string name="screensaver_motion_bounce">Rimbalza sui bordi</string>
+    <string name="settings_percent">%1$d%%</string>
+    <string name="screensaver_preview_button">Anteprima salvaschermo</string>
+    <string name="onboarding_replay_title">Rivedi i primi passi</string>
+    <string name="onboarding_replay_desc">Ripercorri la guida introduttiva</string>
+    <plurals name="settings_minutes">
+        <item quantity="one">%1$d minuto</item>
+        <item quantity="many">%1$d minuti</item>
+        <item quantity="other">%1$d minuti</item>
+    </plurals>
+    <string name="session_disconnect">Disconnetti</string>
+    <!-- Getting started -->
+    <string name="onboarding_skip">Salta</string>
+    <string name="onboarding_back">Indietro</string>
+    <string name="onboarding_next">Avanti</string>
+    <string name="onboarding_get_started">Inizia</string>
+    <string name="onboarding_connect">Collega</string>
+    <string name="onboarding_step_of">Passo %1$d di %2$d</string>
+    <string name="onboarding_welcome_title">Il tuo tablet, uno schermo a penna</string>
+    <string name="onboarding_welcome_body">ezdisplay trasforma il tuo tablet in uno schermo a penna per il PC: un vero secondo monitor con penna sensibile alla pressione. La configurazione richiede un minuto.</string>
+    <string name="onboarding_host_title">Installa l’app sul PC</string>
+    <string name="onboarding_host_body">Il tablet comunica con una piccola app sul tuo computer. Funziona su Linux e Windows.</string>
+    <string name="onboarding_host_linux_title">Linux</string>
+    <string name="onboarding_host_linux_desc">KDE Plasma 6, GNOME, Sway o Hyprland su Wayland. Installa il pacchetto della tua distro (Arch, Debian, Ubuntu) oppure avvia l’AppImage.</string>
+    <string name="onboarding_host_windows_title">Windows</string>
+    <string name="onboarding_host_windows_desc">Avvia il programma di installazione. Configura per te il driver dello schermo virtuale.</string>
+    <string name="onboarding_host_download">Scarica</string>
+    <string name="onboarding_host_run">Poi avvia ezdisplay dal menu delle applicazioni, oppure esegui questo comando in un terminale:</string>
+    <string name="onboarding_host_copy">Copia comando</string>
+    <string name="onboarding_connection_title">Scegli come collegarti</string>
+    <string name="onboarding_connection_body">Puoi usare l’una o l’altra quando vuoi.</string>
+    <string name="onboarding_connection_usb">Cavo USB</string>
+    <string name="onboarding_connection_usb_desc">Collega il tablet al PC con un cavo USB e accetta la richiesta sul tablet. Se Android chiede quale app deve aprire l’accessorio, scegli ezdisplay.</string>
+    <string name="onboarding_connection_wifi">Wi-Fi</string>
+    <string name="onboarding_connection_wifi_desc">Associa i dispositivi una sola volta con un PIN e la prossima volta il tablet troverà il PC da solo. Devono essere sulla stessa rete.</string>
+    <string name="onboarding_pen_title">Scegli il pulsante della penna</string>
+    <string name="onboarding_pen_body">Scegli cosa fa il pulsante della tua penna.</string>
+    <string name="onboarding_pen_later">Puoi cambiarlo più tardi nelle impostazioni.</string>
+    <string name="onboarding_display_title">Abbi cura dello schermo</string>
+    <string name="onboarding_display_body">Rendi le sessioni lunghe più gentili con lo schermo.</string>
+    <string name="onboarding_display_explain">Dopo %1$s senza tocchi, lo schermo si abbassa al %2$d%% e piccoli monitor, tablet e penne lo attraversano. Dopo %3$s così, diventa completamente nero.</string>
+    <string name="onboarding_display_explain_never">Dopo %1$s senza tocchi, lo schermo si abbassa al %2$d%% e piccoli monitor, tablet e penne lo attraversano. Non diventa mai completamente nero.</string>
+    <string name="onboarding_display_gesture">Scorri verso il basso dal bordo superiore mentre sei collegato per aprire le impostazioni di input.</string>
+    <string name="onboarding_done_title">Tutto pronto</string>
+    <string name="onboarding_done_body">Collega il tablet al PC e inizia a disegnare. Puoi riaprire questa guida dalle impostazioni.</string>
 </resources>

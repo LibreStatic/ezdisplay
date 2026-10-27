@@ -1,7 +1,6 @@
 package com.librestatic.ezdisplay
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
@@ -38,6 +37,28 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
+import android.view.ViewConfiguration
+import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import com.librestatic.ezdisplay.onboarding.OnboardingActivity
+import com.librestatic.ezdisplay.onboarding.OnboardingStore
+import com.librestatic.ezdisplay.screensaver.IdleState
+import com.librestatic.ezdisplay.screensaver.IdleTracker
+import com.librestatic.ezdisplay.screensaver.ScreensaverConfig
+import com.librestatic.ezdisplay.screensaver.ScreensaverController
+import com.librestatic.ezdisplay.screensaver.ScreensaverOverlay
+import com.librestatic.ezdisplay.screensaver.ScreensaverPrefs
+import com.librestatic.ezdisplay.session.EdgeResult
+import com.librestatic.ezdisplay.session.SessionPill
+import com.librestatic.ezdisplay.session.interceptKeys
+import com.librestatic.ezdisplay.session.TopEdgeGesture
+import com.librestatic.ezdisplay.settings.SettingsTheme
 import com.librestatic.ezdisplay.settings.SettingsStore
 import com.librestatic.ezdisplay.settings.wifiErrorText
 import com.librestatic.ezdisplay.usb.Route
@@ -68,7 +89,7 @@ import java.util.Locale
  * with a paired host known, the next attempt goes to that host over Wi-Fi; if the Wi-Fi attempt fails the next one is
  * USB again, so plugging the cable in always wins.
  */
-class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCallback {
+class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.FrameCallback {
     private companion object {
         const val TAG = "ezdisplay"
         const val HOST = "127.0.0.1"
@@ -141,6 +162,29 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
 
     private val connectRunnable = Runnable { connect() }
 
+    private var routedAway = false // first run: the onboarding screen took over, nothing here was set up
+
+    // Idle screensaver.
+    private lateinit var screensaver: ScreensaverController
+    private var idleConfig = ScreensaverConfig(enabled = false, idleMin = 5, brightnessPct = 10, blankMin = 0)
+    private val idle = IdleTracker(idleConfig)
+    private var saverSpeed by mutableStateOf(idleConfig.speed)
+    private var saverMotion by mutableStateOf(idleConfig.motion)
+    private var swallowTouch = false // the gesture that woke the screen, dropped until it ends
+    private var swallowHover = false
+    private val swallowKeys = HashSet<Int>()
+
+    // Top-edge swipe that opens the session pill.
+    private val edge by lazy {
+        TopEdgeGesture(0f, 48 * resources.displayMetrics.density, ViewConfiguration.get(this).scaledTouchSlop.toFloat())
+    }
+    private val heldEvents = ArrayList<MotionEvent>()
+    private var pillVisible by mutableStateOf(false)
+    private var viewsGesture = false // the current touch gesture goes to the views (the pill), not the host
+    private val edgeTimeout = Runnable {
+        if (edge.checkTimeout(SystemClock.uptimeMillis()) == EdgeResult.Release) replayHeld()
+    }
+
     private lateinit var discovery: HostDiscovery
     private val wifi by lazy { NativeWifiBackend(this) }
     private var activeWifi: WifiChoice? = null // set while the current session is over Wi-Fi
@@ -175,6 +219,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED && OnboardingStore.shouldShow(this)) {
+            routedAway = true
+            startActivity(Intent(this, OnboardingActivity::class.java))
+            finish()
+            return
+        }
         launchIntent = intent
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= 28) {
@@ -187,6 +237,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         discovery = HostDiscovery(this) { }
         buildUi()
         hideSystemBars()
+        screensaver = ScreensaverController(this, window)
+        window.interceptKeys(::handleKey)
     }
 
     private fun buildUi() {
@@ -241,6 +293,31 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         root.addView(settingsButton, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END,
         ).apply { setMargins(16, 16, 16, 16) })
+        // Screensaver layer and session pill: take no touches unless the pill is up (see dispatchTouchEvent).
+        root.addView(
+            ComposeView(this).apply {
+                setContent {
+                    SettingsTheme {
+                        Box(Modifier.fillMaxSize()) {
+                            ScreensaverOverlay(screensaver.state, speed = saverSpeed, motion = saverMotion)
+                            SessionPill(
+                                visible = pillVisible,
+                                onSettings = {
+                                    pillVisible = false
+                                    startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+                                },
+                                onDisconnect = {
+                                    pillVisible = false
+                                    finish()
+                                },
+                                onDismiss = { pillVisible = false },
+                            )
+                        }
+                    }
+                }
+            },
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+        )
         setContentView(root)
     }
 
@@ -308,6 +385,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
 
     override fun onResume() {
         super.onResume()
+        if (routedAway) return
+        val now = SystemClock.uptimeMillis()
+        idleConfig = ScreensaverPrefs.read(this)
+        saverSpeed = idleConfig.speed
+        saverMotion = idleConfig.motion
+        idle.setConfig(idleConfig, now)
+        idle.setArmed(true, now)
         applyInputConfig()
         updateDiscovery()
         checkAccessory()
@@ -420,6 +504,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
 
     override fun onStart() {
         super.onStart()
+        if (routedAway) return
         started = true
         backoffMs = BACKOFF_MIN_MS
         tryWifiNext = false
@@ -432,11 +517,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     }
 
     override fun onPause() {
-        releaseAllKeys()
+        if (!routedAway) {
+            releaseAllKeys()
+            idle.setArmed(false, SystemClock.uptimeMillis())
+            screensaver.release()
+            pillVisible = false
+            dropHeld()
+            edge.reset()
+        }
         super.onPause()
     }
 
     override fun onStop() {
+        if (routedAway) {
+            super.onStop()
+            return
+        }
         started = false
         handler.removeCallbacks(connectRunnable)
         Choreographer.getInstance().removeFrameCallback(this)
@@ -504,6 +600,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
         activeAccessory = route == Route.ACCESSORY
         applyInputConfig()
         wasStreaming = false
+        idle.resetFrames()
         lastInputNote = ""
         keysHintShown = false
         hostLacksKeys = false
@@ -569,6 +666,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
     override fun doFrame(frameTimeNanos: Long) {
         if (!started) return
         Choreographer.getInstance().postFrameCallback(this)
+        idle.tick(SystemClock.uptimeMillis())
+        applyIdle()
         if (!sessionActive) return
         val view = NativeBridge.pollView()
         applyStage(view)
@@ -686,6 +785,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
             Log.w(TAG, "bad stats", e)
             return
         }
+        if (j.optString("phase") == "streaming") idle.onFramesReceived(j.optLong("frames_received"), now)
         val bw = j.optInt("buffer_width")
         val bh = j.optInt("buffer_height")
         if (bw > 0 && bh > 0 && (bw != bufW || bh != bufH)) {
@@ -842,28 +942,133 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
 
     // --- Input forwarding ---
 
+    /** Pushes the idle state to the screensaver; coming back from it asks the host for a fresh frame. */
+    private fun applyIdle() {
+        val before = screensaver.state
+        screensaver.apply(idle.state, idleConfig)
+        if (before != IdleState.Active && idle.state == IdleState.Active && sessionActive) NativeBridge.requestKeyframe()
+    }
+
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (inputActive()) {
-            if (Build.VERSION.SDK_INT < 31 && ev.actionMasked == MotionEvent.ACTION_DOWN) {
-                root.requestUnbufferedDispatch(ev)
-            }
-            forward(ev)
+        if (routedAway) return super.dispatchTouchEvent(ev)
+        val action = ev.actionMasked
+        val ending = action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
+        if (swallowTouch) {
+            if (ending) swallowTouch = false
             return true
         }
+        if (idle.onLocalInput(SystemClock.uptimeMillis())) {
+            applyIdle()
+            // The input that wakes the screen is not for the host; a gesture already running keeps flowing.
+            if (action == MotionEvent.ACTION_DOWN) {
+                swallowTouch = true
+                return true
+            }
+        }
+        if (edge.phase == TopEdgeGesture.Phase.Swallowing) {
+            edge.onEvent(action, ev.pointerCount, ev.x, ev.y, ev.eventTime, true)
+            return true
+        }
+        if (action == MotionEvent.ACTION_DOWN) viewsGesture = pillVisible
+        if (viewsGesture) {
+            if (ending) viewsGesture = false
+            return super.dispatchTouchEvent(ev)
+        }
+        if (inputActive()) {
+            if (Build.VERSION.SDK_INT < 31 && action == MotionEvent.ACTION_DOWN) {
+                root.requestUnbufferedDispatch(ev)
+            }
+            if (action == MotionEvent.ACTION_DOWN) edge.topZonePx = topEdgeZonePx()
+            val notFinger = ev.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER
+            when (edge.onEvent(action, ev.pointerCount, ev.x, ev.y, ev.eventTime, notFinger)) {
+                EdgeResult.Pass -> forward(ev)
+                EdgeResult.Hold -> {
+                    if (action == MotionEvent.ACTION_DOWN) {
+                        handler.removeCallbacks(edgeTimeout)
+                        handler.postDelayed(edgeTimeout, TopEdgeGesture.TIMEOUT_MS)
+                    }
+                    heldEvents.add(MotionEvent.obtain(ev))
+                }
+                EdgeResult.Release -> {
+                    handler.removeCallbacks(edgeTimeout)
+                    replayHeld()
+                    forward(ev)
+                }
+                EdgeResult.Gesture -> {
+                    handler.removeCallbacks(edgeTimeout)
+                    dropHeld()
+                    pillVisible = true
+                }
+                EdgeResult.Swallow -> Unit
+            }
+            return true
+        }
+        edge.reset()
         return super.dispatchTouchEvent(ev)
     }
 
+    /** The strip at the top where a downward swipe opens the pill: 24 dp, or the system gesture inset if larger. */
+    private fun topEdgeZonePx(): Float {
+        val min = 24 * resources.displayMetrics.density
+        val inset = if (Build.VERSION.SDK_INT >= 30) {
+            root.rootWindowInsets?.getInsets(WindowInsets.Type.systemGestures())?.top ?: 0
+        } else 0
+        return maxOf(min, inset.toFloat())
+    }
+
+    /** Forwards the events kept while the top-edge swipe was undecided, in order, then forgets them. */
+    private fun replayHeld() {
+        val events = heldEvents.toList()
+        heldEvents.clear()
+        for (e in events) {
+            forward(e)
+            e.recycle()
+        }
+    }
+
+    private fun dropHeld() {
+        handler.removeCallbacks(edgeTimeout)
+        heldEvents.forEach { it.recycle() }
+        heldEvents.clear()
+    }
+
     override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
-        if (inputActive() && ev.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
-            forward(ev)
-            return true
+        if (routedAway) return super.dispatchGenericMotionEvent(ev)
+        if (ev.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
+            val exit = ev.actionMasked == MotionEvent.ACTION_HOVER_EXIT
+            if (swallowHover) {
+                if (exit) swallowHover = false
+                return true
+            }
+            if (idle.onLocalInput(SystemClock.uptimeMillis())) {
+                applyIdle()
+                if (!exit) swallowHover = true
+                return true
+            }
+            if (inputActive()) {
+                forward(ev)
+                return true
+            }
         }
         return super.dispatchGenericMotionEvent(ev)
     }
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    /** Key events before the activity sees them (see [interceptKeys]); true when consumed. */
+    private fun handleKey(event: KeyEvent): Boolean {
+        if (routedAway) return false
+        val code = event.keyCode
+        if (swallowKeys.contains(code)) {
+            if (event.action == KeyEvent.ACTION_UP) swallowKeys.remove(code)
+            return true
+        }
+        if (idle.onLocalInput(SystemClock.uptimeMillis())) {
+            applyIdle()
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                swallowKeys.add(code)
+                return true
+            }
+        }
         if (inputActive() && isHardwareKey(event)) {
-            val code = event.keyCode
             val nanos = event.eventTime * 1_000_000L
             when (event.action) {
                 // repeatCount > 0 is an autorepeat: the host treats a press of a key already down as one.
@@ -881,7 +1086,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, Choreographer.FrameCall
                 }
             }
         }
-        return super.dispatchKeyEvent(event)
+        return false
     }
 
     /** A key from a physical keyboard that Android does not need for itself. */

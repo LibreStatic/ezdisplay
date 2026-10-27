@@ -35,24 +35,33 @@ fun SettingsTheme(dynamicColor: Boolean = true, content: @Composable () -> Unit)
 private const val MinContrast = 4.5
 
 /**
- * Some OEM dynamic schemes pair a mid-tone `primary` with a white `onPrimary` below WCAG AA (Samsung's light scheme:
- * #387AFF on #FFFFFF is 3.9:1). Walks `primary`'s CIELAB lightness away from `onPrimary` (down in light themes, up in
- * dark ones), keeping a and b, until the pair reaches 4.5:1. Schemes that already pass are returned unchanged.
+ * Some OEM dynamic schemes pair `primary` and `onPrimary` below WCAG AA. Samsung's light scheme has #387AFF on
+ * #FFFFFF (3.9:1); its dark scheme has a pale `primary` with a white `onPrimary`, which makes filled buttons unreadable.
+ * Walks CIELAB lightness (keeping a and b) until the pair reaches 4.5:1: `primary` down in light themes; in dark themes
+ * `onPrimary` down when it is lighter than `primary`, `primary` up otherwise. Schemes that already pass are unchanged.
  */
 internal fun ensurePrimaryContrast(scheme: ColorScheme, dark: Boolean): ColorScheme {
     val on = scheme.onPrimary.toArgb()
     val primary = scheme.primary.toArgb()
     if (ColorUtils.calculateContrast(on, primary) >= MinContrast) return scheme
-    val lab = DoubleArray(3)
-    ColorUtils.colorToLAB(primary, lab)
-    var l = lab[0]
-    var adjusted = primary
-    while (ColorUtils.calculateContrast(on, adjusted) < MinContrast && l in 0.0..100.0) {
-        l += if (dark) 1.0 else -1.0
-        adjusted = ColorUtils.LABToColor(l.coerceIn(0.0, 100.0), lab[1], lab[2])
-        if (l <= 0.0 || l >= 100.0) break
+    if (dark && ColorUtils.calculateLuminance(on) > ColorUtils.calculateLuminance(primary)) {
+        return scheme.copy(onPrimary = Color(walkLightness(on, against = primary, step = -1.0)))
     }
-    return scheme.copy(primary = Color(adjusted))
+    return scheme.copy(primary = Color(walkLightness(primary, against = on, step = if (dark) 1.0 else -1.0)))
+}
+
+/** Moves [color]'s CIELAB lightness by [step] until it reaches [MinContrast] against [against] or runs out of range. */
+private fun walkLightness(color: Int, against: Int, step: Double): Int {
+    val lab = DoubleArray(3)
+    ColorUtils.colorToLAB(color, lab)
+    var l = lab[0]
+    var adjusted = color
+    while (ColorUtils.calculateContrast(against, adjusted) < MinContrast) {
+        l += step
+        if (l !in 0.0..100.0) break
+        adjusted = ColorUtils.LABToColor(l, lab[1], lab[2])
+    }
+    return adjusted
 }
 
 // Generated from seed #2C2A79 with material-color-utilities (tonal spot).

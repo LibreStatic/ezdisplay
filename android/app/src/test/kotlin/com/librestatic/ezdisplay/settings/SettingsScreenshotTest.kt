@@ -1,6 +1,9 @@
 package com.librestatic.ezdisplay.settings
 
+import com.librestatic.ezdisplay.screensaver.ScreensaverMotionMode
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -13,6 +16,8 @@ import androidx.compose.ui.test.swipeUp
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.InputPrefs.KeyCombo
+import com.librestatic.ezdisplay.display.PanelType
+import com.librestatic.ezdisplay.screensaver.ScreensaverContent
 import com.librestatic.ezdisplay.wifi.DiscoveredHost
 import com.librestatic.ezdisplay.wifi.PairLink
 import com.librestatic.ezdisplay.wifi.WifiHost
@@ -42,6 +47,12 @@ class SettingsScreenshotTest {
         override fun setDoubleClickMs(ms: Int) {}
         override fun setPalmRejection(on: Boolean) {}
         override fun setWifiEnabled(on: Boolean) {}
+        override fun setScreensaverEnabled(on: Boolean) {}
+        override fun setScreensaverIdleMin(min: Int) {}
+        override fun setScreensaverBrightnessPct(pct: Int) {}
+        override fun setScreensaverBlankMin(min: Int) {}
+        override fun setScreensaverSpeed(level: Int) {}
+        override fun setScreensaverMotion(mode: ScreensaverMotionMode) {}
         override fun startPairing(name: String, shortFp: String, addr: String) {}
         override fun startPairing(link: PairLink) {}
         override fun submitPairing(pin: String) {}
@@ -63,6 +74,14 @@ class SettingsScreenshotTest {
         ),
         airActions = AirActions.On,
     )
+
+    @org.junit.Before fun noAnimations() {
+        // The screensaver preview animates for ever, which would keep Compose from ever going idle.
+        android.provider.Settings.Global.putFloat(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>().contentResolver,
+            android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 0f,
+        )
+    }
 
     private fun show(state: SettingsState) {
         rule.setContent { SettingsTheme(dynamicColor = false) { SettingsContent(state, NoOpActions) } }
@@ -155,4 +174,47 @@ class SettingsScreenshotTest {
 
     @Test @Config(sdk = [36], qualifiers = "w1056dp-h1691dp-night-280dpi")
     fun tablet_portrait_dark() { show(tabletState); capture("tablet_portrait_dark") }
+
+    private val displayState = SettingsState(
+        panelType = PanelType.Oled,
+        screensaverEnabled = true,
+    )
+
+    @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
+    fun phone_display_dark() {
+        show(displayState)
+        rule.onNodeWithTag("screensaver_row").performScrollTo()
+        rule.waitForIdle()
+        capture("phone_display_dark")
+    }
+
+    @Test @Config(sdk = [36], qualifiers = "w841dp-h701dp-night")
+    fun foldable_display_dark() {
+        show(displayState)
+        rule.onNodeWithTag("section_Display").performClick()
+        rule.waitForIdle()
+        capture("foldable_display_dark")
+    }
+
+    @Test @Config(sdk = [36], qualifiers = "w1691dp-h978dp-night-280dpi")
+    fun tablet_display_sheet_dark() {
+        show(displayState)
+        rule.onNodeWithTag("screensaver_button").performClick()
+        rule.waitForIdle()
+        capture("tablet_display_sheet_dark")
+    }
+
+    @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
+    fun screensaver_content() {
+        rule.setContent { ScreensaverContent(Modifier.fillMaxSize(), seed = 7) }
+        rule.waitForIdle()
+        capture("screensaver_content")
+    }
+
+    @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
+    fun screensaver_content_blank() {
+        rule.setContent { ScreensaverContent(Modifier.fillMaxSize(), blank = true, seed = 7) }
+        rule.waitForIdle()
+        capture("screensaver_content_blank")
+    }
 }

@@ -154,4 +154,66 @@
         <item quantity="many">%1$d hôtes associés</item>
         <item quantity="other">%1$d hôtes associés</item>
     </plurals>
+    <!-- Display and screensaver -->
+    <string name="section_display">Écran</string>
+    <string name="screensaver_off">Économiseur désactivé</string>
+    <string name="screensaver_title">Économiseur d\'écran</string>
+    <string name="screensaver_detected">Écran détecté : %1$s</string>
+    <string name="panel_oled">OLED</string>
+    <string name="panel_lcd">LCD</string>
+    <string name="panel_unknown">Inconnu</string>
+    <string name="screensaver_idle_title">Démarrer après</string>
+    <string name="screensaver_brightness_title">Luminosité de l\'économiseur</string>
+    <string name="screensaver_blank_title">Passer au noir complet après</string>
+    <string name="screensaver_blank_never">Jamais</string>
+    <string name="screensaver_speed_title">Vitesse des formes</string>
+    <string name="screensaver_speed_slow">Lente</string>
+    <string name="screensaver_speed_fast">Rapide</string>
+    <string name="screensaver_motion_title">Mouvement</string>
+    <string name="screensaver_motion_drift">Traverser l’écran</string>
+    <string name="screensaver_motion_bounce">Rebondir sur les bords</string>
+    <string name="settings_percent">%1$d %%</string>
+    <string name="screensaver_preview_button">Aperçu de l\'économiseur</string>
+    <string name="onboarding_replay_title">Revoir la prise en main</string>
+    <string name="onboarding_replay_desc">Parcourez de nouveau le guide de démarrage</string>
+    <plurals name="settings_minutes">
+        <item quantity="one">%1$d minute</item>
+        <item quantity="many">%1$d minutes</item>
+        <item quantity="other">%1$d minutes</item>
+    </plurals>
+    <string name="session_disconnect">Déconnecter</string>
+    <!-- Getting started -->
+    <string name="onboarding_skip">Passer</string>
+    <string name="onboarding_back">Retour</string>
+    <string name="onboarding_next">Suivant</string>
+    <string name="onboarding_get_started">Commencer</string>
+    <string name="onboarding_connect">Connecter</string>
+    <string name="onboarding_step_of">Étape %1$d sur %2$d</string>
+    <string name="onboarding_welcome_title">Votre tablette, un écran à stylet</string>
+    <string name="onboarding_welcome_body">ezdisplay transforme votre tablette en écran à stylet pour votre PC : un vrai second écran avec un stylet sensible à la pression. La configuration prend une minute.</string>
+    <string name="onboarding_host_title">Installez l’application du PC</string>
+    <string name="onboarding_host_body">La tablette communique avec une petite application sur votre ordinateur. Elle fonctionne sous Linux et Windows.</string>
+    <string name="onboarding_host_linux_title">Linux</string>
+    <string name="onboarding_host_linux_desc">KDE Plasma 6, GNOME, Sway ou Hyprland sous Wayland. Installez le paquet de votre distribution (Arch, Debian, Ubuntu) ou lancez l’AppImage.</string>
+    <string name="onboarding_host_windows_title">Windows</string>
+    <string name="onboarding_host_windows_desc">Lancez l’installateur. Il configure le pilote d’écran virtuel pour vous.</string>
+    <string name="onboarding_host_download">Télécharger</string>
+    <string name="onboarding_host_run">Lancez ensuite ezdisplay depuis votre lanceur d’applications, ou exécutez ceci dans un terminal :</string>
+    <string name="onboarding_host_copy">Copier la commande</string>
+    <string name="onboarding_connection_title">Choisissez le mode de connexion</string>
+    <string name="onboarding_connection_body">Vous pouvez utiliser l’un ou l’autre à tout moment.</string>
+    <string name="onboarding_connection_usb">Câble USB</string>
+    <string name="onboarding_connection_usb_desc">Branchez la tablette au PC avec un câble USB et acceptez la demande sur la tablette. Si Android demande quelle application doit ouvrir l’accessoire, choisissez ezdisplay.</string>
+    <string name="onboarding_connection_wifi">Wi-Fi</string>
+    <string name="onboarding_connection_wifi_desc">Associez-les une seule fois avec un code PIN et la tablette retrouvera le PC toute seule ensuite. Les deux doivent être sur le même réseau.</string>
+    <string name="onboarding_pen_title">Choisissez le bouton du stylet</string>
+    <string name="onboarding_pen_body">Choisissez ce que fait le bouton de votre stylet.</string>
+    <string name="onboarding_pen_later">Vous pourrez le modifier plus tard dans les réglages.</string>
+    <string name="onboarding_display_title">Ménagez votre écran</string>
+    <string name="onboarding_display_body">Gardez un écran ménagé pendant les longues sessions.</string>
+    <string name="onboarding_display_explain">Après %1$s sans toucher l’écran, la luminosité passe à %2$d%% et de petits écrans, tablettes et stylets le traversent. Après %3$s ainsi, l’écran devient complètement noir.</string>
+    <string name="onboarding_display_explain_never">Après %1$s sans toucher l’écran, la luminosité passe à %2$d%% et de petits écrans, tablettes et stylets le traversent. L’écran ne devient jamais complètement noir.</string>
+    <string name="onboarding_display_gesture">Balayez vers le bas depuis le bord supérieur pendant la connexion pour ouvrir les réglages de saisie.</string>
+    <string name="onboarding_done_title">Tout est prêt</string>
+    <string name="onboarding_done_body">Connectez votre tablette au PC et commencez à dessiner. Vous pouvez rouvrir ce guide depuis les réglages.</string>
 </resources>

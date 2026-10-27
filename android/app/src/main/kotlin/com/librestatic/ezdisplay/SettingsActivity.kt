@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.librestatic.ezdisplay.onboarding.OnboardingActivity
 import com.librestatic.ezdisplay.settings.SettingsScreen
 import com.librestatic.ezdisplay.settings.SettingsStore
 import com.librestatic.ezdisplay.settings.SettingsTheme
@@ -27,7 +28,7 @@ class SettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        store = SettingsStore.create(this)
+        store = SettingsStore.create(this, onPreviewScreensaver = ::previewScreensaver, onReplayOnboarding = ::replayOnboarding)
         discovery = HostDiscovery(this) { store.setDiscovered(it) }
         if (savedInstanceState == null) handlePairIntent(intent)
         setContent { SettingsTheme { SettingsScreen(store) } }
@@ -37,6 +38,17 @@ class SettingsActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handlePairIntent(intent)
+    }
+
+    /** Shows the screensaver once (ignored when nothing handles the action). */
+    private fun previewScreensaver() {
+        runCatching {
+            startActivity(Intent("com.librestatic.ezdisplay.action.PREVIEW_SCREENSAVER").setPackage(packageName))
+        }
+    }
+
+    private fun replayOnboarding() {
+        startActivity(Intent(this, OnboardingActivity::class.java).putExtra(OnboardingActivity.EXTRA_REPLAY, true))
     }
 
     private fun handlePairIntent(intent: Intent) {

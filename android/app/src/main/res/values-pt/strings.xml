@@ -154,4 +154,66 @@
         <item quantity="many">%1$d hosts pareados</item>
         <item quantity="other">%1$d hosts pareados</item>
     </plurals>
+    <!-- Display and screensaver -->
+    <string name="section_display">Tela</string>
+    <string name="screensaver_off">Protetor desativado</string>
+    <string name="screensaver_title">Protetor de tela</string>
+    <string name="screensaver_detected">Tela detectada: %1$s</string>
+    <string name="panel_oled">OLED</string>
+    <string name="panel_lcd">LCD</string>
+    <string name="panel_unknown">Desconhecida</string>
+    <string name="screensaver_idle_title">Iniciar após</string>
+    <string name="screensaver_brightness_title">Brilho do protetor</string>
+    <string name="screensaver_blank_title">Ficar totalmente preto após</string>
+    <string name="screensaver_blank_never">Nunca</string>
+    <string name="screensaver_speed_title">Velocidade das formas</string>
+    <string name="screensaver_speed_slow">Lenta</string>
+    <string name="screensaver_speed_fast">Rápida</string>
+    <string name="screensaver_motion_title">Movimento</string>
+    <string name="screensaver_motion_drift">Atravessar a tela</string>
+    <string name="screensaver_motion_bounce">Quicar nas bordas</string>
+    <string name="settings_percent">%1$d%%</string>
+    <string name="screensaver_preview_button">Visualizar protetor</string>
+    <string name="onboarding_replay_title">Rever os primeiros passos</string>
+    <string name="onboarding_replay_desc">Veja o guia de início novamente</string>
+    <plurals name="settings_minutes">
+        <item quantity="one">%1$d minuto</item>
+        <item quantity="many">%1$d minutos</item>
+        <item quantity="other">%1$d minutos</item>
+    </plurals>
+    <string name="session_disconnect">Desconectar</string>
+    <!-- Getting started -->
+    <string name="onboarding_skip">Pular</string>
+    <string name="onboarding_back">Voltar</string>
+    <string name="onboarding_next">Avançar</string>
+    <string name="onboarding_get_started">Começar</string>
+    <string name="onboarding_connect">Conectar</string>
+    <string name="onboarding_step_of">Etapa %1$d de %2$d</string>
+    <string name="onboarding_welcome_title">Seu tablet, uma tela para desenhar</string>
+    <string name="onboarding_welcome_body">O ezdisplay transforma seu tablet em uma tela com caneta para o seu PC: um segundo monitor de verdade com caneta sensível à pressão. A configuração leva um minuto.</string>
+    <string name="onboarding_host_title">Instale o app do PC</string>
+    <string name="onboarding_host_body">O tablet conversa com um pequeno app no seu computador. Ele funciona no Linux e no Windows.</string>
+    <string name="onboarding_host_linux_title">Linux</string>
+    <string name="onboarding_host_linux_desc">KDE Plasma 6, GNOME, Sway ou Hyprland no Wayland. Instale o pacote da sua distro (Arch, Debian, Ubuntu) ou execute o AppImage.</string>
+    <string name="onboarding_host_windows_title">Windows</string>
+    <string name="onboarding_host_windows_desc">Execute o instalador. Ele configura o driver de tela virtual para você.</string>
+    <string name="onboarding_host_download">Baixar</string>
+    <string name="onboarding_host_run">Depois abra o ezdisplay pelo menu de aplicativos ou execute isto em um terminal:</string>
+    <string name="onboarding_host_copy">Copiar comando</string>
+    <string name="onboarding_connection_title">Escolha como conectar</string>
+    <string name="onboarding_connection_body">Você pode usar qualquer uma das duas quando quiser.</string>
+    <string name="onboarding_connection_usb">Cabo USB</string>
+    <string name="onboarding_connection_usb_desc">Conecte o tablet ao PC com um cabo USB e aceite o aviso no tablet. Se o Android perguntar qual app deve abrir o acessório, escolha o ezdisplay.</string>
+    <string name="onboarding_connection_wifi">Wi-Fi</string>
+    <string name="onboarding_connection_wifi_desc">Pareie uma única vez com um PIN e, da próxima vez, o tablet encontra o PC sozinho. Os dois precisam estar na mesma rede.</string>
+    <string name="onboarding_pen_title">Escolha o botão da caneta</string>
+    <string name="onboarding_pen_body">Escolha o que o botão da sua caneta faz.</string>
+    <string name="onboarding_pen_later">Você pode mudar isso depois nas configurações.</string>
+    <string name="onboarding_display_title">Cuide da sua tela</string>
+    <string name="onboarding_display_body">Deixe as sessões longas mais gentis com a tela.</string>
+    <string name="onboarding_display_explain">Depois de %1$s sem toque, a tela escurece para %2$d%% e pequenos monitores, tablets e canetas a atravessam. Depois de %3$s assim, ela fica totalmente preta.</string>
+    <string name="onboarding_display_explain_never">Depois de %1$s sem toque, a tela escurece para %2$d%% e pequenos monitores, tablets e canetas a atravessam. Ela nunca fica totalmente preta.</string>
+    <string name="onboarding_display_gesture">Deslize para baixo a partir da borda superior enquanto estiver conectado para abrir as configurações de entrada.</string>
+    <string name="onboarding_done_title">Tudo pronto</string>
+    <string name="onboarding_done_body">Conecte o tablet ao PC e comece a desenhar. Você pode abrir este guia de novo nas configurações.</string>
 </resources>

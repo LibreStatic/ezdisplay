@@ -56,7 +56,7 @@ import com.librestatic.ezdisplay.InputPrefs
 import com.librestatic.ezdisplay.R
 
 /** Settings sections; AirActions only exists while its card is shown (and is always last). */
-enum class SettingsSection { Pen, Zoom, Touch, Connection, AirActions }
+enum class SettingsSection { Pen, Zoom, Touch, Connection, Display, AirActions }
 
 private fun airCardShown(state: SettingsState) =
     state.airActions == AirActions.On || state.airActions == AirActions.Unknown
@@ -181,6 +181,8 @@ private fun PhoneMain(state: SettingsState, actions: SettingsActions, onOpenEdit
             AirActionsCard(state.airActions, Modifier.padding(top = profileGap(2)))
             SectionTitle(stringResource(R.string.section_connection))
             ConnectionContent(state, actions)
+            SectionTitle(stringResource(R.string.section_display))
+            DisplayContent(state, actions)
         }
     }
 }
@@ -229,7 +231,7 @@ private fun ListDetailLayout(
 ) {
     val colors = MaterialTheme.colorScheme
     val sections = buildList {
-        add(SettingsSection.Pen); add(SettingsSection.Zoom); add(SettingsSection.Touch); add(SettingsSection.Connection)
+        add(SettingsSection.Pen); add(SettingsSection.Zoom); add(SettingsSection.Touch); add(SettingsSection.Connection); add(SettingsSection.Display)
         if (airCardShown(state)) add(SettingsSection.AirActions)
     }
     val current = selected.takeIf { it in sections } ?: SettingsSection.Pen
@@ -289,6 +291,7 @@ private fun ListDetailLayout(
                     SettingsSection.Zoom -> ZoomGroup(state, actions)
                     SettingsSection.Touch -> PalmRow(state.palmRejection, actions::setPalmRejection)
                     SettingsSection.Connection -> ConnectionContent(state, actions)
+                    SettingsSection.Display -> DisplayContent(state, actions)
                     SettingsSection.AirActions -> AirActionsCard(state.airActions)
                 }
             }
@@ -301,6 +304,7 @@ private fun sectionTitle(s: SettingsSection) = when (s) {
     SettingsSection.Zoom -> R.string.section_zoom
     SettingsSection.Touch -> R.string.settings_palm_title
     SettingsSection.Connection -> R.string.section_connection
+    SettingsSection.Display -> R.string.section_display
     SettingsSection.AirActions -> R.string.section_air_actions
 }
 
@@ -309,6 +313,7 @@ private fun sectionIcon(s: SettingsSection) = when (s) {
     SettingsSection.Zoom -> R.drawable.ic_zoom_in
     SettingsSection.Touch -> R.drawable.ic_back_hand
     SettingsSection.Connection -> R.drawable.ic_wifi
+    SettingsSection.Display -> R.drawable.ic_bedtime
     SettingsSection.AirActions -> R.drawable.ic_info
 }
 
@@ -318,6 +323,7 @@ private fun sectionValue(s: SettingsSection, state: SettingsState): String = whe
     SettingsSection.Zoom -> stringResource(R.string.settings_zoom_summary, formatZoom(state.zoomFactor), state.doubleClickMs)
     SettingsSection.Touch -> stringResource(if (state.palmRejection) R.string.settings_on else R.string.settings_off)
     SettingsSection.Connection -> connectionSummary(state)
+    SettingsSection.Display -> displaySummary(state)
     SettingsSection.AirActions -> stringResource(R.string.section_air_actions_value)
 }
 
@@ -398,11 +404,17 @@ private fun WideLayout(
                 .padding(start = 36.dp, end = 36.dp, top = 20.dp)
                 .endOfPage(),
         ) {
-            Text(
-                stringResource(R.string.settings_screen_title),
-                Modifier.padding(bottom = 12.dp),
-                style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.ExtraBold,
-            )
+            var displaySheet by rememberSaveable { mutableStateOf(false) }
+            // The Display section sits behind a button on the title row, so the page gains no height.
+            Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.settings_screen_title),
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.ExtraBold,
+                )
+                DisplaySheetButton(state, { displaySheet = true })
+            }
+            if (displaySheet) DisplaySheet(state, actions) { displaySheet = false }
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 val sideBySide = maxWidth >= TwoColumnPageWidth
                 Column(Modifier.fillMaxWidth()) {
