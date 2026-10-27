@@ -11,7 +11,7 @@ use crate::wifi;
 use ezd_client_core::now_us;
 use ezd_input::{InputConfig, InputEngine, ViewTransform};
 use ezd_link::identity::parse_fingerprint;
-use ezd_proto::{Key, Message};
+use ezd_proto::{AudioVolume, Key, Message};
 use jni::EnvUnowned;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JByteArray, JClass, JFloatArray, JIntArray, JLongArray, JObject, JString};
@@ -40,6 +40,8 @@ static INPUT: Mutex<InputState> = Mutex::new(InputState {
 });
 /// Last hardware keyboard state from Kotlin; a new session starts with it.
 static KEYBOARD_ATTACHED: AtomicBool = AtomicBool::new(false);
+/// The tablet's media volume as last reported by Kotlin; sent to the host with each new session.
+static LOCAL_VOLUME: Mutex<Option<AudioVolume>> = Mutex::new(None);
 static LAST_INPUT_ERR_S: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
@@ -131,6 +133,10 @@ fn start_session(window: Option<SendWindow>, target: Target, caps: crate::caps::
     log::info!("start {target:?} surface={}", window.is_some());
     let s = Session::start(window, target, caps);
     s.set_keyboard_attached(KEYBOARD_ATTACHED.load(Ordering::Relaxed));
+    let volume = *LOCAL_VOLUME.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(v) = volume {
+        s.set_audio_volume(v);
+    }
     *guard = Some(s);
 }
 
@@ -528,6 +534,55 @@ pub extern "system" fn set_keyboard_attached<'local>(
             s.set_keyboard_attached(attached);
         }
         Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `external fun setLocalVolume(volume: Float, muted: Boolean)`: the tablet's media volume,
+/// perceptual 0..1. Stored also while there is no session; the host gets it once it announces
+/// audio, and every later change right away. A no-op for the host without an audio session.
+/// Kotlin must not report a volume it just applied from the host (it does the echo suppression).
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
+pub extern "system" fn set_local_volume<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    volume: jni::sys::jfloat,
+    muted: jni::sys::jboolean,
+) {
+    env.with_env(|_env| -> jni::errors::Result<()> {
+        let v = AudioVolume {
+            volume: if volume.is_nan() {
+                0.0
+            } else {
+                volume.clamp(0.0, 1.0)
+            },
+            muted,
+        };
+        *LOCAL_VOLUME.lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
+        if let Some(s) = session().as_ref() {
+            s.set_audio_volume(v);
+        }
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `external fun pollHostVolume(): FloatArray` = `[seq, volume, muted(0/1)]`: the latest volume
+/// the host sent in this session. `seq` grows with every message and is 0 while there is none.
+/// It is exact in a float up to 2^24 messages, far more than a session sees.
+#[jni::jni_mangle("com.librestatic.ezdisplay.NativeBridge")]
+pub extern "system" fn poll_host_volume<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) -> JFloatArray<'local> {
+    env.with_env(|env| -> jni::errors::Result<JFloatArray<'local>> {
+        let v: [f32; 3] = match session().as_ref().and_then(|s| s.host_audio_volume()) {
+            Some((seq, a)) => [seq as f32, a.volume, f32::from(u8::from(a.muted))],
+            None => [0.0; 3],
+        };
+        let arr = env.new_float_array(v.len())?;
+        arr.set_region(env, 0, &v)?;
+        Ok(arr)
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }

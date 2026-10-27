@@ -505,8 +505,9 @@ pub(crate) async fn stream_session(
     finish_session(inner, cfg, link, transport, source, stop_rx).await
 }
 
-/// Runs a session with an existing source and reports its end. True when the peer opened with
-/// something other than its handshake: a client still in a session with an earlier host process.
+/// Runs a session with an existing source and reports its end. True when the client is in a
+/// stale session: it opened with something other than its handshake (still in a session with an
+/// earlier host process), or sent a new `Hello` mid-session (its app restarted on the same link).
 pub(crate) async fn finish_session(
     inner: &Inner,
     cfg: &ServiceConfig,
@@ -521,7 +522,11 @@ pub(crate) async fn finish_session(
         Ok(s) => tracing::debug!(end = ?s.end, "session returned"),
         Err(e) => tracing::debug!("session failed: {e}"),
     }
-    let stale = matches!(result, Err(ezd_host_core::SessionError::Unexpected { .. }));
+    let stale = match &result {
+        Err(ezd_host_core::SessionError::Unexpected { .. }) => true,
+        Ok(s) => s.end == ezd_host_core::EndReason::ClientRestarted,
+        Err(_) => false,
+    };
     inner.emit(HostEvent::SessionEnded(result.map_err(|e| e.to_string())));
     stale
 }

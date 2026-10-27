@@ -31,9 +31,9 @@ use crate::source::{
 use crate::time::now_us;
 use ezd_link::{Link, MuxClosed, MuxError, MuxOptions, MuxReceiver, MuxSender, VideoCredit};
 use ezd_proto::{
-    AudioCodec, AudioConfig, AudioPacket, AudioStream, Bye, ClientAudio, ClientCaps, ClientHdr,
-    ClientOptions, ClientStats, ClockSync, Codec, DEFAULT_CHUNK_LEN, DynamicRange, Hello,
-    HostAudio, HostCaps, InputStatus, Message, Ping, Pong, Prefs, ProtoError, Reject, Role,
+    AudioCodec, AudioConfig, AudioPacket, AudioStream, AudioVolume, Bye, ClientAudio, ClientCaps,
+    ClientHdr, ClientOptions, ClientStats, ClockSync, Codec, DEFAULT_CHUNK_LEN, DynamicRange,
+    Hello, HostAudio, HostCaps, InputStatus, Message, Ping, Pong, Prefs, ProtoError, Reject, Role,
     SampleFormat, StreamColor, StreamConfig, VideoFrame, negotiate_audio, negotiate_hdr,
 };
 use std::sync::Arc;
@@ -161,6 +161,9 @@ pub enum EndReason {
     SourceStopped,
     /// [`SessionOptions::shutdown`] was set; the client was sent `Bye`.
     HostShutdown,
+    /// The client sent a new `Hello`: its app was restarted and opened the link again. An
+    /// accessory link never reports the app closing it, so this is how its end shows.
+    ClientRestarted,
 }
 
 /// Result of a finished session.
@@ -416,13 +419,17 @@ pub async fn run_host_session_with(
     // Audio thread: its failure ends the audio only.
     let mut audio_join: Option<std::thread::JoinHandle<()>> = None;
     let audio_stream = audio.as_ref().map(|a| a.stream.clone());
+    // Volumes of the client, forwarded to the audio thread (which owns the source).
+    let mut volume_tx: Option<std::sync::mpsc::Sender<AudioVolume>> = None;
     if let (Some(a), Some(src)) = (audio, audio_source) {
         let (shared, tx) = (shared.clone(), tx.clone());
+        let (vtx, vrx) = std::sync::mpsc::channel();
+        volume_tx = Some(vtx);
         let poll = opts.poll_interval;
         audio_join = Some(std::thread::Builder::new().name("ezd-audio".into()).spawn(
             move || {
                 let mut src = src;
-                match audio_loop(src.as_mut(), a.encoder, &a.stream, &tx, &shared, poll) {
+                match audio_loop(src.as_mut(), a.encoder, &a.stream, &tx, &shared, poll, &vrx) {
                     Ok(()) => {}
                     Err(e) => tracing::warn!("audio stopped, video goes on: {e}"),
                 }
@@ -547,8 +554,15 @@ pub async fn run_host_session_with(
                         let _ = t.send(InputCmd::Keyboard(k.attached));
                     }
                 }
+                Ok(Some(Message::AudioVolume(v))) => {
+                    tracing::debug!(volume = v.volume, muted = v.muted, "client volume");
+                    if let Some(t) = &volume_tx {
+                        let _ = t.send(v);
+                    }
+                }
                 Ok(Some(Message::Bye(b))) => break EndReason::ClientBye(b.reason),
                 Ok(Some(Message::Reject(r))) => break EndReason::ClientBye(r.reason),
+                Ok(Some(Message::Hello(_))) => break EndReason::ClientRestarted,
                 Ok(Some(other)) => tracing::debug!(?other, "ignoring message"),
                 Ok(None) => break EndReason::ClientEof,
                 Err(e) => break EndReason::LinkError(e.to_string()),
@@ -1047,13 +1061,28 @@ fn audio_loop(
     tx: &MuxSender,
     sh: &VideoShared,
     poll: Duration,
+    volumes: &std::sync::mpsc::Receiver<AudioVolume>,
 ) -> Result<(), SourceError> {
     source.start(stream.channels)?;
+    // The last volume applied from or sent to the client: a change equal to it is an echo.
+    let mut last_volume: Option<AudioVolume> = None;
     let frame_len = stream.frame_samples as usize * stream.channels as usize;
     let frame_us = stream.frame_samples as u64 * 1_000_000 / stream.sample_rate.max(1) as u64;
     let mut pending: Vec<f32> = Vec::with_capacity(frame_len * 2);
     let mut next_pts = 0u64;
     while !sh.stop.load(Ordering::Acquire) {
+        while let Ok(v) = volumes.try_recv() {
+            last_volume = Some(v);
+            source.set_volume(v);
+        }
+        if let Some(v) = source.take_volume_change()
+            && !last_volume.is_some_and(|l| l.is_same(&v))
+        {
+            last_volume = Some(v);
+            if tx.send_control(Message::AudioVolume(v)).is_err() {
+                return Ok(());
+            }
+        }
         let Some(block) = source.next_samples(poll)? else {
             continue;
         };
@@ -1294,6 +1323,44 @@ mod tests {
                 ProtoError::VersionMismatch { .. }
             ))
         ));
+    }
+
+    #[tokio::test]
+    async fn a_new_hello_ends_the_session_as_a_restart() {
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let src = ScriptedSource::new(Duration::from_millis(5), 3000);
+        let mut host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(src),
+            Prefs::default(),
+            fast_opts(),
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(DEFAULT_CHUNK_LEN);
+        tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "c")))
+            .unwrap();
+        tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        tx.send_control(Message::ClientAudio(ClientAudio::none()))
+            .unwrap();
+        while !matches!(recv(&mut rx).await, Message::StreamConfig(_)) {}
+        tx.send_control(Message::ConfigAck).unwrap();
+        // The app restarts and opens the same link again.
+        tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "c")))
+            .unwrap();
+        let s = timeout(Duration::from_secs(5), async {
+            let mut open = true;
+            loop {
+                tokio::select! {
+                    r = &mut host => break r.unwrap().unwrap(),
+                    // Keep reading so the host is never blocked on a full link.
+                    m = rx.recv(), if open => open = matches!(m, Ok(Some(_))),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(s.end, EndReason::ClientRestarted);
     }
 
     #[tokio::test]
@@ -1795,6 +1862,84 @@ mod tests {
             Message::AudioConfig(c) => Some(c.clone()),
             _ => None,
         })
+    }
+
+    #[tokio::test]
+    async fn volume_is_synced_both_ways_without_echoes() {
+        let backend = ScriptedAudioBackend::new();
+        let volume = backend.volume.clone();
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(ScriptedSource::new(Duration::from_millis(5), 3000)),
+            Prefs::default(),
+            SessionOptions {
+                audio: Some(Arc::new(backend)),
+                ..fast_opts()
+            },
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(DEFAULT_CHUNK_LEN);
+        tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "client")))
+            .unwrap();
+        tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        tx.send_control(Message::ClientAudio(pcm_client())).unwrap();
+        loop {
+            if matches!(recv(&mut rx).await, Message::StreamConfig(_)) {
+                break;
+            }
+        }
+        tx.send_control(Message::ConfigAck).unwrap();
+
+        // Client to host: applied once to the source, not sent back.
+        let from_client = AudioVolume {
+            volume: 0.4,
+            muted: false,
+        };
+        tx.send_control(Message::AudioVolume(from_client)).unwrap();
+        // Host to client: a change at the host's control.
+        let from_host = AudioVolume {
+            volume: 0.8,
+            muted: true,
+        };
+        let mut received = Vec::new();
+        let start = Instant::now();
+        let mut set_local = false;
+        while start.elapsed() < Duration::from_secs(5) {
+            if volume.applied().len() == 1 && !set_local {
+                set_local = true;
+                volume.set_local(from_host);
+            }
+            match recv(&mut rx).await {
+                Message::AudioVolume(v) => received.push(v),
+                Message::VideoFrame(v) => {
+                    tx.send_control(Message::FrameAck(ezd_proto::FrameAck {
+                        frame_id: v.frame_id,
+                        received_us: now_us(),
+                    }))
+                    .unwrap();
+                }
+                _ => {}
+            }
+            if !received.is_empty() && start.elapsed() > Duration::from_millis(300) {
+                break;
+            }
+        }
+        assert_eq!(volume.applied(), vec![from_client]);
+        // Only the host's own change comes back; the client's value was not echoed.
+        assert_eq!(received, vec![from_host]);
+        // The client's echo of the host value is applied but nothing more is sent.
+        tx.send_control(Message::AudioVolume(from_host)).unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(volume.applied(), vec![from_client, from_host]);
+        tx.send_control(Message::Bye(Bye { reason: "t".into() }))
+            .unwrap();
+        timeout(Duration::from_secs(5), host)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

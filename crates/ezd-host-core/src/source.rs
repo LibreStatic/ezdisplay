@@ -2,8 +2,8 @@
 
 use ezd_link::{MuxClosed, MuxSender};
 use ezd_proto::{
-    Codec, CursorShape, CursorState, DynamicRange, EncoderCaps, Mastering, StreamColor,
-    StreamConfig,
+    AudioVolume, Codec, CursorShape, CursorState, DynamicRange, EncoderCaps, Mastering,
+    StreamColor, StreamConfig,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -225,6 +225,18 @@ pub trait AudioSource: Send {
 
     /// Stops capture and releases resources. Also called if `start` failed.
     fn stop(&mut self);
+
+    /// The output volume if it changed since the last call (the user moved a slider on this
+    /// host), which the session forwards to the client. Polled by the audio thread on every
+    /// iteration, so it must not block. Default: no volume control. The session drops values
+    /// that merely echo the one it applied through [`set_volume`](Self::set_volume).
+    fn take_volume_change(&mut self) -> Option<AudioVolume> {
+        None
+    }
+
+    /// Applies the volume of the client. The captured samples stay at full level; this only
+    /// moves the host's own control. Default: ignored.
+    fn set_volume(&mut self, _volume: AudioVolume) {}
 }
 
 /// An Opus encoder for one audio stream (48 kHz, the negotiated channel count, 10 ms frames).

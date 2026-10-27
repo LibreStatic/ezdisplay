@@ -3,8 +3,8 @@
 use crate::percentile;
 use ezd_link::MuxSender;
 use ezd_proto::{
-    ClientKeyboard, ClientOptions, ClientStats, ClockSync, CursorShape, CursorState, InputStatus,
-    Message, StreamColor,
+    AudioVolume, ClientKeyboard, ClientOptions, ClientStats, ClockSync, CursorShape, CursorState,
+    InputStatus, Message, StreamColor,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,6 +81,36 @@ pub(crate) struct Inner {
     /// Set while connected to a host that understands input.
     input_tx: Mutex<Option<MuxSender>>,
     keyboard: Mutex<KeyboardState>,
+    volume: Mutex<VolumeState>,
+}
+
+/// Audio volume sync state (`AudioVolume`, protocol 0.7).
+#[derive(Default)]
+struct VolumeState {
+    /// Latest local volume set by the application (survives reconnects).
+    local: Option<AudioVolume>,
+    /// Set while connected to a host with an audio stream.
+    tx: Option<MuxSender>,
+    /// What the host was last told in this connection.
+    sent: Option<AudioVolume>,
+    /// Latest volume received from the host in this connection, with a sequence number that
+    /// grows with every message (also across connections).
+    host: Option<(u64, AudioVolume)>,
+    host_seq: u64,
+}
+
+impl VolumeState {
+    fn send_if_changed(&mut self) {
+        let (Some(tx), Some(v)) = (&self.tx, self.local) else {
+            return;
+        };
+        if self.sent.is_some_and(|s| s.is_same(&v)) {
+            return;
+        }
+        if tx.send_control(Message::AudioVolume(v)).is_ok() {
+            self.sent = Some(v);
+        }
+    }
 }
 
 /// Hardware keyboard state reported by the application.
@@ -145,6 +175,7 @@ impl ClientHandle {
             snapshot: Mutex::new(ClientSnapshot::default()),
             input_tx: Mutex::new(None),
             keyboard: Mutex::new(KeyboardState::default()),
+            volume: Mutex::new(VolumeState::default()),
         }))
     }
 
@@ -286,6 +317,41 @@ impl ClientHandle {
         k.send_if_changed();
     }
 
+    /// Reports the local audio volume to the host (`AudioVolume`, protocol 0.7).
+    ///
+    /// The latest value is kept, also while not connected, and sent as soon as the host has
+    /// announced an audio stream (so the PC starts at this volume). While connected, a value
+    /// within [`AudioVolume::EPSILON`] of the last one sent is not sent again. Applying a host
+    /// volume locally and then reporting the result back is for the caller to avoid. Callable
+    /// from any thread; never blocks.
+    pub fn set_audio_volume(&self, volume: AudioVolume) {
+        let mut v = lock(&self.0.volume);
+        v.local = Some(volume);
+        v.send_if_changed();
+    }
+
+    /// The latest volume the host sent in this connection and its sequence number (it grows with
+    /// every message, so a caller can tell a new one from the one it already applied).
+    pub fn host_audio_volume(&self) -> Option<(u64, AudioVolume)> {
+        lock(&self.0.volume).host
+    }
+
+    /// Sets (or clears) the link used for `AudioVolume` and, when set, sends the current local
+    /// volume. Also forgets the host volume of the previous connection.
+    pub(crate) fn set_audio_volume_sender(&self, tx: Option<MuxSender>) {
+        let mut v = lock(&self.0.volume);
+        v.tx = tx;
+        v.sent = None;
+        v.host = None;
+        v.send_if_changed();
+    }
+
+    pub(crate) fn store_host_audio_volume(&self, volume: AudioVolume) {
+        let mut v = lock(&self.0.volume);
+        v.host_seq += 1;
+        v.host = Some((v.host_seq, volume));
+    }
+
     pub(crate) fn set_input_sender(&self, tx: Option<MuxSender>) {
         *lock(&self.0.input_tx) = tx;
     }
@@ -407,6 +473,50 @@ mod tests {
         assert!(h.send_input(&key()));
         assert!(h.send_input(&pen));
         assert_eq!(h.snapshot().inputs_sent, 3);
+    }
+
+    #[tokio::test]
+    async fn volume_is_kept_until_connected_and_sent_only_on_change() {
+        let vol = |volume| AudioVolume {
+            volume,
+            muted: false,
+        };
+        let h = ClientHandle::new();
+        h.set_audio_volume(vol(0.3)); // not connected: stored only
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let (tx, _task) = ezd_link::mux::spawn_mux(Box::new(a), MuxOptions::default());
+        h.set_audio_volume_sender(Some(tx));
+        h.set_audio_volume(vol(0.302)); // within the epsilon
+        h.set_audio_volume(vol(0.6));
+        h.set_audio_volume_sender(None);
+        h.set_audio_volume(vol(0.9)); // disconnected again
+        let mut rx = ezd_link::mux::MuxReceiver::new(Box::new(b));
+        let mut got = Vec::new();
+        while let Ok(Ok(Some(m))) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await
+        {
+            if let Message::AudioVolume(v) = m {
+                got.push(v.volume);
+            }
+        }
+        assert_eq!(got, vec![0.3, 0.6]);
+    }
+
+    #[test]
+    fn host_volume_has_a_growing_sequence_and_is_cleared_on_connect() {
+        let h = ClientHandle::new();
+        assert_eq!(h.host_audio_volume(), None);
+        let v = AudioVolume {
+            volume: 0.5,
+            muted: true,
+        };
+        h.store_host_audio_volume(v);
+        h.store_host_audio_volume(v);
+        assert_eq!(h.host_audio_volume(), Some((2, v)));
+        h.set_audio_volume_sender(None);
+        assert_eq!(h.host_audio_volume(), None);
+        h.store_host_audio_volume(v);
+        assert_eq!(h.host_audio_volume().map(|(s, _)| s), Some(3));
     }
 
     async fn read_keyboard_messages(

@@ -13,8 +13,8 @@ use ezd_client_core::{
 use ezd_link::{BlockingOptions, Link};
 use ezd_proto::pair::Fingerprint;
 use ezd_proto::{
-    AudioCodec, AudioConfig, AudioPacket, ClientAudio, CursorShape, SampleFormat, StreamColor,
-    StreamConfig, VideoFrame,
+    AudioCodec, AudioConfig, AudioPacket, AudioVolume, ClientAudio, CursorShape, SampleFormat,
+    StreamColor, StreamConfig, VideoFrame,
 };
 use std::fs::File;
 use std::io::{Read, Write};
@@ -347,6 +347,17 @@ impl Session {
     /// Reports the hardware keyboard state to the host (kept for the whole session).
     pub fn set_keyboard_attached(&self, attached: bool) {
         self.handle.set_keyboard_attached(attached);
+    }
+
+    /// Reports the local audio volume to the host (kept for the session; sent once the host
+    /// has announced audio).
+    pub fn set_audio_volume(&self, volume: AudioVolume) {
+        self.handle.set_audio_volume(volume);
+    }
+
+    /// Latest volume of the host with its sequence number.
+    pub fn host_audio_volume(&self) -> Option<(u64, AudioVolume)> {
+        self.handle.host_audio_volume()
     }
 
     /// Latest cursor state.

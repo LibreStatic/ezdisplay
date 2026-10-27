@@ -3,8 +3,8 @@
 use crate::{ClientHandle, now_us};
 use ezd_link::{Link, MuxError, MuxReceiver, MuxSender};
 use ezd_proto::{
-    AudioConfig, AudioPacket, Bye, ClientAudio, ClientCaps, ClientHdr, CursorShape, CursorState,
-    FrameAck, Hello, Message, Ping, Pong, Role, StreamColor, StreamConfig, VideoFrame,
+    AudioConfig, AudioPacket, AudioVolume, Bye, ClientAudio, ClientCaps, ClientHdr, CursorShape,
+    CursorState, FrameAck, Hello, Message, Ping, Pong, Role, StreamColor, StreamConfig, VideoFrame,
 };
 use std::time::Duration;
 use tokio::time::{MissedTickBehavior, interval, timeout};
@@ -46,6 +46,10 @@ pub trait ClientHandler: Send {
     ///
     /// [`on_stream_config`]: ClientHandler::on_stream_config
     fn on_audio_config(&mut self, _cfg: &AudioConfig) {}
+
+    /// The host's volume changed (protocol 0.7, `AudioVolume`). The latest one is also kept in
+    /// [`ClientHandle::host_audio_volume`]. Apply it without reporting it back.
+    fn on_audio_volume(&mut self, _volume: AudioVolume) {}
 
     /// An audio packet. Hand it to the audio thread without blocking; packets only arrive
     /// when [`on_audio_config`](Self::on_audio_config) announced a stream.
@@ -305,6 +309,12 @@ pub async fn run_client<H: ClientHandler>(
     if hello.supports_input() {
         handle.set_input_sender(Some(tx.clone()));
     }
+    if hello.supports_audio()
+        && my_minor_supports_audio
+        && audio.as_ref().is_some_and(|a| a.stream.is_some())
+    {
+        handle.set_audio_volume_sender(Some(tx.clone()));
+    }
     if hello.supports_keyboard() && my_minor_supports_keyboard {
         handle.set_keyboard_sender(Some(tx.clone()));
     }
@@ -373,6 +383,7 @@ pub async fn run_client<H: ClientHandler>(
 
     handle.set_input_sender(None);
     handle.set_keyboard_sender(None);
+    handle.set_audio_volume_sender(None);
     let outcome = ClientOutcome {
         stream,
         color,
@@ -452,6 +463,11 @@ fn on_message<H: ClientHandler>(
         }
         Message::AudioPacket(p) => {
             handler.on_audio_packet(p);
+            Ok(None)
+        }
+        Message::AudioVolume(v) => {
+            handle.store_host_audio_volume(v);
+            handler.on_audio_volume(v);
             Ok(None)
         }
         Message::InputStatus(st) => {

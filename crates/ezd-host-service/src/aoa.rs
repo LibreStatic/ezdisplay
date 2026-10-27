@@ -435,8 +435,9 @@ async fn start_session(
     });
     if stream_session(inner, cfg, link, Transport::Aoa, stop_rx).await {
         // The app is still in a session with an earlier host process and cannot tell that it
-        // ended (an accessory never reports the host closing it). A reset makes it see the cable
-        // go away; the device then comes back in its normal mode and is switched again.
+        // ended (an accessory never reports the host closing it), or it restarted mid-session.
+        // A reset makes it see the cable go away; the device then comes back in its normal mode
+        // and is switched again.
         tracing::info!(
             "{} is still in an old session: resetting it",
             acc.describe()

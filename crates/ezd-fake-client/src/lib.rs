@@ -207,6 +207,8 @@ pub struct ClientReport {
     pub audio_packets: u64,
     /// Audio payload bytes received.
     pub audio_bytes: u64,
+    /// `AudioVolume` messages received from the host.
+    pub audio_volumes: u64,
 }
 
 impl ClientReport {
@@ -386,6 +388,10 @@ impl ClientHandler for Handler {
         self.report.audio = cfg.stream.clone();
     }
 
+    fn on_audio_volume(&mut self, _volume: ezd_proto::AudioVolume) {
+        self.report.audio_volumes += 1;
+    }
+
     fn on_audio_packet(&mut self, pkt: AudioPacket) {
         self.report.audio_packets += 1;
         self.report.audio_bytes += pkt.data.len() as u64;
@@ -535,6 +541,7 @@ pub async fn run_fake_client(
             audio: None,
             audio_packets: 0,
             audio_bytes: 0,
+            audio_volumes: 0,
         },
         all_decode: Vec::new(),
         all_e2e: Vec::new(),

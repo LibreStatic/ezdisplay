@@ -7,8 +7,8 @@ use crate::source::{
 };
 use crate::time::now_us;
 use ezd_proto::{
-    Codec, CursorShape, CursorState, EncoderCaps, InputStatus, Key, PenSample, PointerButton,
-    Scroll, StreamConfig, TouchFrame,
+    AudioVolume, Codec, CursorShape, CursorState, EncoderCaps, InputStatus, Key, PenSample,
+    PointerButton, Scroll, StreamConfig, TouchFrame,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -175,6 +175,33 @@ pub struct ScriptedAudioBackend {
     pub fail_opus: bool,
     /// Samples per channel in each block (default 700).
     pub block_samples: usize,
+    /// The volume control shared by every source this backend creates.
+    pub volume: ScriptedVolume,
+}
+
+/// The volume control of the scripted sources, shared with the test.
+///
+/// Like a real mixer it reports a change for every value it is given, including the ones set
+/// through `set_volume` (the session must not send those back).
+#[derive(Debug, Clone, Default)]
+pub struct ScriptedVolume(Arc<Mutex<VolumeState>>);
+
+#[derive(Debug, Default)]
+struct VolumeState {
+    applied: Vec<AudioVolume>,
+    pending: Option<AudioVolume>,
+}
+
+impl ScriptedVolume {
+    /// Pretends the user moved the host's volume control.
+    pub fn set_local(&self, v: AudioVolume) {
+        self.0.lock().unwrap().pending = Some(v);
+    }
+
+    /// Every value the session applied with `set_volume`, in order.
+    pub fn applied(&self) -> Vec<AudioVolume> {
+        self.0.lock().unwrap().applied.clone()
+    }
 }
 
 impl ScriptedAudioBackend {
@@ -186,6 +213,7 @@ impl ScriptedAudioBackend {
             opus: true,
             fail_opus: false,
             block_samples: 700,
+            volume: ScriptedVolume::default(),
         }
     }
 
@@ -209,6 +237,7 @@ impl AudioBackend for ScriptedAudioBackend {
                 n: 0,
                 block_samples: self.block_samples,
                 fail_start: self.fail_start,
+                volume: self.volume.clone(),
             }) as Box<dyn AudioSource>
         })
     }
@@ -230,6 +259,7 @@ struct ScriptedAudio {
     n: u64,
     block_samples: usize,
     fail_start: bool,
+    volume: ScriptedVolume,
 }
 
 impl AudioSource for ScriptedAudio {
@@ -254,6 +284,14 @@ impl AudioSource for ScriptedAudio {
         }))
     }
     fn stop(&mut self) {}
+    fn take_volume_change(&mut self) -> Option<AudioVolume> {
+        self.volume.0.lock().unwrap().pending.take()
+    }
+    fn set_volume(&mut self, v: AudioVolume) {
+        let mut st = self.volume.0.lock().unwrap();
+        st.applied.push(v);
+        st.pending = Some(v);
+    }
 }
 
 struct ScriptedOpus {

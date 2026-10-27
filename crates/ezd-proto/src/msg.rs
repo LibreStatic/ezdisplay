@@ -718,6 +718,31 @@ pub struct AudioConfig {
     pub stream: Option<AudioStream>,
 }
 
+/// Volume of the audio output (Control/20, both directions, protocol 0.7), sent only when both
+/// sides speak minor >= [`MINOR_AUDIO`](crate::MINOR_AUDIO) and the session has audio.
+///
+/// The client sends its current value right after it receives a non-off [`AudioConfig`]; after
+/// that, whichever side changes its volume sends the new one. A receiver applies it without
+/// sending it back.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AudioVolume {
+    /// Perceptual volume, 0.0 (silent) to 1.0 (full), what a volume slider shows.
+    pub volume: f32,
+    /// Muted, independent of `volume`.
+    pub muted: bool,
+}
+
+impl AudioVolume {
+    /// Two volumes closer than this (with the same mute flag) count as equal when suppressing
+    /// echoes: the round trip through a linear mixer or an integer step loses a little.
+    pub const EPSILON: f32 = 0.005;
+
+    /// True when `other` is the same volume for echo suppression.
+    pub fn is_same(&self, other: &AudioVolume) -> bool {
+        self.muted == other.muted && (self.volume - other.volume).abs() < Self::EPSILON
+    }
+}
+
 /// One audio packet (host to client, Audio/1, protocol 0.7).
 ///
 /// `data` is exactly one frame: `frame_samples * channels` interleaved samples for PCM, one Opus
@@ -812,7 +837,7 @@ impl Default for StreamColor {
 
 /// Any message of protocol 0.x (0.2 added `FrameAck`, 0.3 the input messages,
 /// `InputStatus` and `ClientOptions`, 0.5 `ClientHdr` and `StreamColor`, 0.6 `ClientKeyboard`,
-/// 0.7 audio).
+/// 0.7 audio and `AudioVolume`).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
@@ -854,6 +879,8 @@ pub enum Message {
     ClientAudio(ClientAudio),
     /// Control/19 (0.7), host to client.
     AudioConfig(AudioConfig),
+    /// Control/20 (0.7), both directions.
+    AudioVolume(AudioVolume),
     /// Input/1 (0.3), client to host.
     Pen(PenSample),
     /// Input/2 (0.3), client to host.
@@ -912,6 +939,7 @@ impl Message {
             Message::ClientKeyboard(_) => 17,
             Message::ClientAudio(_) => 18,
             Message::AudioConfig(_) => 19,
+            Message::AudioVolume(_) => 20,
             Message::Pen(_) => 1,
             Message::Touch(_) => 2,
             Message::PointerButton(_) => 3,
@@ -951,6 +979,7 @@ pub fn encode_message(msg: &Message) -> Result<(Channel, u8, Vec<u8>)> {
         Message::ClientKeyboard(m) => enc(m)?,
         Message::ClientAudio(m) => enc(m)?,
         Message::AudioConfig(m) => enc(m)?,
+        Message::AudioVolume(m) => enc(m)?,
         Message::Pen(m) => enc(m)?,
         Message::Touch(m) => enc(m)?,
         Message::PointerButton(m) => enc(m)?,
@@ -1000,6 +1029,7 @@ pub fn decode_message(channel: u8, kind: u8, payload: &[u8]) -> Result<Option<Me
         (Channel::Control, 17) => Message::ClientKeyboard(dec(c, k, payload)?),
         (Channel::Control, 18) => Message::ClientAudio(dec(c, k, payload)?),
         (Channel::Control, 19) => Message::AudioConfig(dec(c, k, payload)?),
+        (Channel::Control, 20) => Message::AudioVolume(dec(c, k, payload)?),
         (Channel::Input, 1) => Message::Pen(dec(c, k, payload)?),
         (Channel::Input, 2) => Message::Touch(dec(c, k, payload)?),
         (Channel::Input, 3) => Message::PointerButton(dec(c, k, payload)?),
@@ -1135,6 +1165,10 @@ mod tests {
                     frame_samples: 480,
                     codec_config: b"OpusHead".to_vec(),
                 }),
+            }),
+            Message::AudioVolume(AudioVolume {
+                volume: 0.65,
+                muted: true,
             }),
             Message::Pen(PenSample {
                 t_us: 1 << 40,
@@ -1371,6 +1405,17 @@ mod tests {
         let none = Message::AudioConfig(AudioConfig { stream: None });
         let (ch, kind, p) = encode_message(&none).unwrap();
         assert_eq!(decode_message(ch as u8, kind, &p).unwrap(), Some(none));
+    }
+
+    #[test]
+    fn audio_volume_echo_comparison() {
+        let v = AudioVolume {
+            volume: 0.5,
+            muted: false,
+        };
+        assert!(v.is_same(&AudioVolume { volume: 0.503, ..v }));
+        assert!(!v.is_same(&AudioVolume { volume: 0.51, ..v }));
+        assert!(!v.is_same(&AudioVolume { muted: true, ..v }));
     }
 
     #[test]

@@ -59,6 +59,7 @@ flowchart LR
 | Control | 17 | `ClientKeyboard` | client to host | postcard (0.6) |
 | Control | 18 | `ClientAudio` | client to host | postcard (0.7) |
 | Control | 19 | `AudioConfig` | host to client | postcard (0.7) |
+| Control | 20 | `AudioVolume` | both directions | postcard (0.7) |
 | Input | 1 | `Pen` (`PenSample`) | client to host | postcard (0.3) |
 | Input | 2 | `Touch` (`TouchFrame`) | client to host | postcard (0.3) |
 | Input | 3 | `PointerButton` | client to host | postcard (0.3) |
@@ -117,7 +118,7 @@ per push) and yields complete messages.
 
 `Hello` carries `proto_major` and `proto_minor` (currently 0 and 7; 0.2 added `FrameAck`, 0.3
 the input messages, `InputStatus` and `ClientOptions`, 0.4 the `Key` message, 0.5 `ClientHdr` and
-`StreamColor` for HDR10, 0.6 `ClientKeyboard`, 0.7 `ClientAudio`, `AudioConfig` and the Audio channel for
+`StreamColor` for HDR10, 0.6 `ClientKeyboard`, 0.7 `ClientAudio`, `AudioConfig`, `AudioVolume` and the Audio channel for
 PC audio; the Wi-Fi transport is below the framed protocol and needs no minor bump). A different major version is fatal: the
 receiver answers `Reject` and closes. Minor versions only add new `(channel,
 kind)` pairs, so peers with different minors interoperate. `Hello::supports_input()` is true
@@ -305,6 +306,10 @@ sequenceDiagram
   end
   opt host minor ≥ 6
     C->>H: ClientKeyboard(attached), again whenever it changes
+  end
+  opt both minor ≥ 7 and AudioConfig carried a stream
+    C->>H: AudioVolume(volume, muted), first right after AudioConfig, then on every change
+    H->>C: AudioVolume(volume, muted), on every change of the PC volume
   end
   par alongside video
     H->>C: CursorShape (once per shape_id), CursorState (latest wins)
@@ -513,6 +518,17 @@ while audio is captured. `pts_us` is the host monotonic time of the packet's fir
 is exactly `frame_samples * channels` interleaved samples for PCM (`frame_samples * channels * 2`
 or `* 4` bytes) and one Opus packet for Opus. Audio is not acknowledged; audio packets carry no
 credit. If audio capture fails the host stops sending packets and the video session goes on.
+
+Volume: `AudioVolume { volume: f32, muted: bool }` (Control/20) is sent in both directions, only
+when both peers speak minor 7 and the session has audio. `volume` is perceptual, 0.0 to 1.0 (what a
+volume slider shows; a host whose mixer is linear converts with a cube root), `muted` is separate.
+It is a control value, not a gain applied to the stream: the host sends the audio at full level and
+the client maps the value onto its own hardware volume. Right after the client receives an
+`AudioConfig` with a stream it sends its current value, which the host applies to its output
+(so the PC starts at the client's volume). After that, whichever side changes its volume sends the
+new value. A receiver applies a received value without sending it back (it remembers the value
+and ignores a local change within 0.005 of it with the same `muted`). A host without volume
+control never sends it and ignores the client's.
 
 Negotiation (`negotiate_audio`, mode `Auto` / `Pcm` / `Opus` / `Off`): audio is off when the mode
 is `Off`, the client is disabled or has no channels, or the host has no capture source. PCM needs
