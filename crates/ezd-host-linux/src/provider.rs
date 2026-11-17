@@ -72,8 +72,9 @@ pub trait VirtualOutputProvider: Send {
         None
     }
 
-    /// Whether the desktop is locked and refuses capture.
-    fn screen_locked(&self) -> bool {
+    /// Whether the desktop is locked and refuses capture. A desktop that reports the lock a
+    /// moment after it closes the capture waits up to `wait` for it; the others answer at once.
+    fn screen_locked(&self, _wait: std::time::Duration) -> bool {
         false
     }
 }

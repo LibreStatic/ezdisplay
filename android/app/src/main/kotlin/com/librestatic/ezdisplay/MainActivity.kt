@@ -650,7 +650,8 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         bufH = 0
         fitSurface()
         frameRateSet = 0
-        setStatus(
+        // A retry while the host is locked keeps the locked message up.
+        if (HostLock.showsProgress(hostLocked)) setStatus(
             when (route) {
                 Route.ACCESSORY -> getString(R.string.status_usb_connecting)
                 Route.WIFI -> getString(R.string.status_wifi_connecting, hostLabel(choice!!))
@@ -968,6 +969,8 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             // The host is fine, only its screen is locked: retry at a fixed, slow pace and leave the
             // Wi-Fi record and the backoff alone.
             setStatus(message)
+            // The retry goes over the same route: without this a Wi-Fi session would retry on loopback.
+            tryWifiNext = wasWifi
             scheduleConnect(LOCKED_RETRY_MS)
             return
         }

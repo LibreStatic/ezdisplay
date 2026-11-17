@@ -80,18 +80,18 @@ fn hdr_mismatch(expected: bool, actual: bool) -> Option<&'static str> {
 }
 
 /// The error for a capture that failed: [`SourceError::ScreenLocked`] when the desktop is locked,
-/// which closes the stream. The stream can close a moment before the screen saver reports
-/// active, so a negative answer is checked once more. Only called on the error path.
+/// which closes the stream. The stream can close before the desktop reports the lock, so the
+/// provider may wait for it. Only called on the error path.
 fn capture_error(provider: &dyn VirtualOutputProvider, e: String) -> SourceError {
-    if provider.screen_locked() {
-        return SourceError::ScreenLocked;
+    if provider.screen_locked(LOCK_SETTLE) {
+        SourceError::ScreenLocked
+    } else {
+        SourceError::msg(e)
     }
-    std::thread::sleep(Duration::from_millis(300));
-    if provider.screen_locked() {
-        return SourceError::ScreenLocked;
-    }
-    SourceError::msg(e)
 }
+
+/// How long a failed capture waits for the desktop to report that it is locked.
+const LOCK_SETTLE: Duration = Duration::from_secs(3);
 
 /// Linux capture + encode source, generic over the compositor's output provider.
 pub struct LinuxSource {

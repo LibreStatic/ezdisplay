@@ -30,6 +30,8 @@ const STREAM_IFACE: &str = "org.gnome.Mutter.ScreenCast.Stream";
 const CURSOR_METADATA: u32 = 2;
 const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+/// How often the lock state is asked again while waiting for it.
+const LOCK_POLL: Duration = Duration::from_millis(150);
 
 /// Provider for Mutter.
 #[derive(Default)]
@@ -135,10 +137,6 @@ fn log_locked() {
 impl GnomeProvider {
     fn open_mutter(&mut self) -> Result<OpenedOutput, SourceError> {
         let conn = map_zbus("connect", Connection::session())?;
-        if screen_locked(&conn) {
-            log_locked();
-            return Err(SourceError::ScreenLocked);
-        }
         let before = gnome_dc::get_state(&conn).ok();
         let sc = map_zbus("proxy", Proxy::new(&conn, SERVICE, ROOT, SERVICE))?;
         let path: OwnedObjectPath = map_open(
@@ -227,6 +225,11 @@ impl VirtualOutputProvider for GnomeProvider {
 
     fn open(&mut self, req: &OutputRequest) -> Result<OpenedOutput, SourceError> {
         self.watch = None;
+        // Both paths are refused while the screen is locked: say so before asking for a session.
+        if self.screen_locked(Duration::ZERO) {
+            log_locked();
+            return Err(SourceError::ScreenLocked);
+        }
         if req.kind == SourceKind::Virtual && backend::probe_bus().mutter {
             self.open_mutter()
         } else {
@@ -237,10 +240,25 @@ impl VirtualOutputProvider for GnomeProvider {
         }
     }
 
-    fn screen_locked(&self) -> bool {
-        match &self.watch {
-            Some((conn, _)) => screen_locked(conn),
-            None => Connection::session().is_ok_and(|c| screen_locked(&c)),
+    fn screen_locked(&self, wait: Duration) -> bool {
+        let conn = match &self.watch {
+            Some((conn, _)) => conn.clone(),
+            None => match Connection::session() {
+                Ok(conn) => conn,
+                Err(_) => return false,
+            },
+        };
+        // GNOME Shell inhibits capture when the lock screen starts to appear and reports the
+        // screen saver active only after its animation, so a negative answer is asked again.
+        let deadline = Instant::now() + wait;
+        loop {
+            if screen_locked(&conn) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(LOCK_POLL);
         }
     }
 
