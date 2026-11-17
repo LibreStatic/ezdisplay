@@ -199,6 +199,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
     private var sampling = false
     private var samplePending = false // a sample was asked for while a copy was under way
     private var settleSample = false // the last poll saw new frames: sample once more when they stop
+    private var needReference = true // the change detector was reset: the first streaming poll samples
     private var rebaseSample = false // the next sample becomes the reference (the screensaver just started)
     private var samplingFailureLogged = false
     private var hostCursorInside = false
@@ -444,6 +445,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         shift.onHover(false, now)
         if (shift.setConfig(PixelShiftPrefs.read(this), now)) applyShift()
         changeDetector.reset()
+        needReference = true
         applyInputConfig()
         updateDiscovery()
         checkAccessory()
@@ -665,6 +667,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         samplePending = false
         settleSample = false
         changeDetector.reset()
+        needReference = true
         rebaseSample = false
         lastInputNote = ""
         keysHintShown = false
@@ -928,8 +931,12 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             // A received frame is decoded and shown a little later, so the poll after the last new frame samples
             // once more: otherwise a single large update would be measured on the picture before it.
             val grew = idle.onFramesReceived(j.optLong("frames_received"), now)
-            if (grew || settleSample) sampleScreen()
-            settleSample = grew
+            // Without a reference the first update would become it instead of being measured against the
+            // picture before it, so the first streaming poll samples too (and settles like a new frame).
+            val first = needReference && idleConfig.enabled
+            needReference = false
+            if (grew || settleSample || first) sampleScreen()
+            settleSample = grew || first
         } else {
             settleSample = false
         }
