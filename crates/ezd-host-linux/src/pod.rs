@@ -287,6 +287,11 @@ pub fn fixated_format(f: &ParsedFormat, modifier: u64) -> Option<Vec<u8>> {
         (FORMAT_VIDEO_SIZE, 0, Val::Rect(w, h)),
         (FORMAT_VIDEO_FRAMERATE, 0, Val::Frac(n, d)),
     ];
+    // Without it the producer falls back to its own default rate, and Mutter gives the virtual
+    // monitor that refresh rate.
+    if let Some((n, d)) = f.max_framerate {
+        props.push((FORMAT_VIDEO_MAX_FRAMERATE, 0, Val::Frac(n, d)));
+    }
     // Keep the colorimetry the producer stated.
     for (key, v) in [
         (FORMAT_VIDEO_COLOR_MATRIX, f.color_matrix),
@@ -322,6 +327,8 @@ pub struct ParsedFormat {
     pub size: Option<(u32, u32)>,
     /// Frame rate (num, denom).
     pub framerate: Option<(u32, u32)>,
+    /// Highest frame rate (num, denom).
+    pub max_framerate: Option<(u32, u32)>,
     /// Modifier values present (the default/fixed value first).
     pub modifiers: Option<Vec<u64>>,
     /// True if the modifier property carries `DONT_FIXATE` (the format still has to be fixated).
@@ -402,6 +409,9 @@ pub fn parse_format(b: &[u8]) -> Option<ParsedFormat> {
                 (FORMAT_VIDEO_FORMAT, Some(Scalar::Id(f))) => out.format = Some(f),
                 (FORMAT_VIDEO_SIZE, Some(Scalar::Pair(w, h))) => out.size = Some((w, h)),
                 (FORMAT_VIDEO_FRAMERATE, Some(Scalar::Pair(n, d))) => out.framerate = Some((n, d)),
+                (FORMAT_VIDEO_MAX_FRAMERATE, Some(Scalar::Pair(n, d))) => {
+                    out.max_framerate = Some((n, d))
+                }
                 (FORMAT_VIDEO_COLOR_MATRIX, Some(Scalar::Id(v))) => out.color_matrix = Some(v),
                 (FORMAT_VIDEO_TRANSFER_FUNCTION, Some(Scalar::Id(v))) => {
                     out.transfer_function = Some(v)
@@ -574,6 +584,7 @@ mod tests {
             format: Some(8),
             size: Some((2560, 1600)),
             framerate: Some((0, 1)),
+            max_framerate: Some((120, 1)),
             modifiers: Some(vec![0, 2]),
             modifier_dont_fixate: true,
             ..ParsedFormat::default()
@@ -581,6 +592,8 @@ mod tests {
         let bytes = fixated_format(&parsed, 2).unwrap();
         assert!(pipewire::spa::pod::Pod::from_bytes(&bytes).is_some());
         let back = parse_format(&bytes).unwrap();
+        // The rate the first round agreed on, not the producer's default.
+        assert_eq!(back.max_framerate, Some((120, 1)));
         assert_eq!(back.modifiers, Some(vec![2]));
         assert!(!back.modifier_dont_fixate);
         assert_eq!(back.size, Some((2560, 1600)));
