@@ -13,6 +13,9 @@ use std::time::Duration;
 /// implementations.
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
+    /// The desktop is locked and refuses screen capture until it is unlocked.
+    #[error("the screen is locked")]
+    ScreenLocked,
     /// Free-form failure description.
     #[error("{0}")]
     Msg(String),

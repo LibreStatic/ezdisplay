@@ -97,12 +97,52 @@ fn map_zbus<T>(what: &str, r: zbus::Result<T>) -> Result<T, SourceError> {
     r.map_err(|e| SourceError::msg(format!("Mutter ScreenCast {what}: {e}")))
 }
 
+/// Whether Mutter's refusal text says the session was inhibited (the lock screen is up).
+fn is_inhibited(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("inhibited")
+}
+
+/// Whether GNOME Shell's screen shield is active, which is exactly when it inhibits capture.
+/// Any error counts as not locked.
+fn screen_locked(conn: &Connection) -> bool {
+    Proxy::new(
+        conn,
+        "org.gnome.ScreenSaver",
+        "/org/gnome/ScreenSaver",
+        "org.gnome.ScreenSaver",
+    )
+    .and_then(|p| p.call::<_, _, bool>("GetActive", &()))
+    .unwrap_or(false)
+}
+
+/// Like [`map_zbus`] for the calls that open a session: a refusal while the screen is locked
+/// becomes [`SourceError::ScreenLocked`].
+fn map_open<T>(conn: &Connection, what: &str, r: zbus::Result<T>) -> Result<T, SourceError> {
+    r.map_err(|e| {
+        if is_inhibited(&e.to_string()) || screen_locked(conn) {
+            log_locked();
+            SourceError::ScreenLocked
+        } else {
+            SourceError::msg(format!("Mutter ScreenCast {what}: {e}"))
+        }
+    })
+}
+
+fn log_locked() {
+    tracing::info!("the screen is locked: Mutter refuses screen casts until it is unlocked");
+}
+
 impl GnomeProvider {
     fn open_mutter(&mut self) -> Result<OpenedOutput, SourceError> {
         let conn = map_zbus("connect", Connection::session())?;
+        if screen_locked(&conn) {
+            log_locked();
+            return Err(SourceError::ScreenLocked);
+        }
         let before = gnome_dc::get_state(&conn).ok();
         let sc = map_zbus("proxy", Proxy::new(&conn, SERVICE, ROOT, SERVICE))?;
-        let path: OwnedObjectPath = map_zbus(
+        let path: OwnedObjectPath = map_open(
+            &conn,
             "CreateSession",
             sc.call("CreateSession", &(HashMap::<&str, Value>::new(),)),
         )?;
@@ -117,7 +157,8 @@ impl GnomeProvider {
             conn: conn.clone(),
             connector: self.connector.clone(),
         };
-        let stream_path: OwnedObjectPath = map_zbus(
+        let stream_path: OwnedObjectPath = map_open(
+            &conn,
             "RecordVirtual",
             session.call("RecordVirtual", &(record_virtual_args(),)),
         )?;
@@ -139,7 +180,7 @@ impl GnomeProvider {
                 }
             })
             .map_err(|e| SourceError::msg(format!("cannot start the signal thread: {e}")))?;
-        map_zbus("Start", session.call::<_, _, ()>("Start", &()))?;
+        map_open(&conn, "Start", session.call::<_, _, ()>("Start", &()))?;
         let node = rx.recv_timeout(STREAM_TIMEOUT).map_err(|_| {
             SourceError::msg("Mutter did not report a PipeWire node for the virtual monitor")
         })?;
@@ -193,6 +234,13 @@ impl VirtualOutputProvider for GnomeProvider {
                 "using the ScreenCast portal (no Mutter ScreenCast service, or a monitor was asked for)"
             );
             self.open_portal(req)
+        }
+    }
+
+    fn screen_locked(&self) -> bool {
+        match &self.watch {
+            Some((conn, _)) => screen_locked(conn),
+            None => Connection::session().is_ok_and(|c| screen_locked(&c)),
         }
     }
 
@@ -284,6 +332,13 @@ mod tests {
     use crate::source::LinuxSource;
     use ezd_host_core::{CursorSink, PlatformOptions, VideoSource};
     use ezd_proto::{Codec, StreamConfig};
+
+    #[test]
+    fn inhibited_refusals_are_recognised() {
+        assert!(is_inhibited("Session creation inhibited"));
+        assert!(is_inhibited("org.freedesktop.DBus.Error.Failed: INHIBITED"));
+        assert!(!is_inhibited("Mutter ScreenCast Start: no such object"));
+    }
 
     #[test]
     fn record_virtual_requests_cursor_metadata_on_a_platform_monitor() {

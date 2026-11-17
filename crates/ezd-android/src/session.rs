@@ -495,14 +495,21 @@ fn run(
         match run_client(link, cfg, &handle, &mut handler).await {
             Ok(o) => {
                 tracing::info!("session ended: {:?}", o.end);
-                let detail = match o.end {
-                    ClientEnd::Stopped => "stopped".to_string(),
-                    ClientEnd::HostBye(r) => format!("host: {r}"),
-                    ClientEnd::HostEof => "host closed the connection".to_string(),
-                    ClientEnd::TimedOut => "timed out".to_string(),
-                    ClientEnd::HostSilent => "host stopped responding".to_string(),
-                };
-                shared.set_phase(Phase::Ended, detail);
+                match o.end {
+                    ClientEnd::HostBye(r) if r == ezd_proto::BYE_SCREEN_LOCKED => {
+                        shared.set_ended_code("host: screen-locked", "screen_locked");
+                    }
+                    end => {
+                        let detail = match end {
+                            ClientEnd::Stopped => "stopped".to_string(),
+                            ClientEnd::HostBye(r) => format!("host: {r}"),
+                            ClientEnd::HostEof => "host closed the connection".to_string(),
+                            ClientEnd::TimedOut => "timed out".to_string(),
+                            ClientEnd::HostSilent => "host stopped responding".to_string(),
+                        };
+                        shared.set_phase(Phase::Ended, detail);
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!("session failed: {e}");

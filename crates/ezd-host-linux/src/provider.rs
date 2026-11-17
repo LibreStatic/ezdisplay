@@ -71,6 +71,11 @@ pub trait VirtualOutputProvider: Send {
     fn settle(&mut self, _negotiated: (u32, u32)) -> Option<OutputInfo> {
         None
     }
+
+    /// Whether the desktop is locked and refuses capture.
+    fn screen_locked(&self) -> bool {
+        false
+    }
 }
 
 /// Refresh rate as compositor mode strings take it (`60`, `59.94`): whole hertz without a

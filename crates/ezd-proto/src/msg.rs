@@ -275,6 +275,10 @@ pub struct Reject {
     pub reason: String,
 }
 
+/// Well-known [`Bye::reason`]: the host's desktop is locked and cannot be captured until it is
+/// unlocked. A client should say so and retry slowly.
+pub const BYE_SCREEN_LOCKED: &str = "screen-locked";
+
 /// Orderly shutdown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bye {

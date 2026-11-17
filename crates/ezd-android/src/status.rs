@@ -86,6 +86,20 @@ impl Shared {
         });
     }
 
+    /// Ends with `detail` and a stable `code` for Kotlin. A failure is sticky, as in
+    /// [`set_phase`](Self::set_phase).
+    pub fn set_ended_code(&self, detail: impl Into<String>, code: &'static str) {
+        let detail = detail.into();
+        self.with(|s| {
+            if s.phase == Phase::Failed {
+                return;
+            }
+            s.phase = Phase::Ended;
+            s.detail = detail;
+            s.code = Some(code);
+        });
+    }
+
     /// Records the negotiated stream.
     pub fn set_stream(&self, stream: StreamConfig) {
         self.with(|s| {
@@ -345,6 +359,21 @@ mod tests {
         sh.set_phase(Phase::Connecting, "x");
         let j: serde_json::Value = serde_json::from_str(&sh.to_json(&snap)).unwrap();
         assert!(j["code"].is_null());
+    }
+
+    #[test]
+    fn an_ended_code_is_reported_and_a_failure_stays_sticky() {
+        let sh = Shared::default();
+        let snap = ClientSnapshot::default();
+        sh.set_ended_code("host: screen-locked", "screen_locked");
+        let j: serde_json::Value = serde_json::from_str(&sh.to_json(&snap)).unwrap();
+        assert_eq!(
+            (j["phase"].as_str(), j["code"].as_str()),
+            (Some("ended"), Some("screen_locked"))
+        );
+        sh.set_phase(Phase::Failed, "boom");
+        sh.set_ended_code("host: screen-locked", "screen_locked");
+        assert_eq!(sh.phase(), Phase::Failed);
     }
 
     #[test]
