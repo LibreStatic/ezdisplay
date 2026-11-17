@@ -204,6 +204,11 @@
     <string name="screensaver_brightness_title">Luminosité de l\'économiseur</string>
     <string name="screensaver_blank_title">Passer au noir complet après</string>
     <string name="screensaver_blank_never">Jamais</string>
+    <string name="screensaver_wake_title">Seuil de réveil</string>
+    <string name="screensaver_wake_desc">L\'écran se réveille lorsque cette part de l\'image change. Lorsque le curseur du PC entre sur l\'écran de la tablette, il se réveille toujours.</string>
+    <string name="pixel_shift_title">Décalage des pixels</string>
+    <string name="pixel_shift_desc">Décale l\'image d\'un pixel de temps en temps afin que les éléments fixes n\'usent pas l\'écran. Elle ne bouge jamais pendant que vous dessinez ou touchez l\'écran.</string>
+    <string name="pixel_shift_amount_title">Distance de décalage</string>
     <string name="screensaver_speed_title">Vitesse des formes</string>
     <string name="screensaver_speed_slow">Lente</string>
     <string name="screensaver_speed_fast">Rapide</string>
@@ -218,6 +223,11 @@
         <item quantity="one">%1$d minute</item>
         <item quantity="many">%1$d minutes</item>
         <item quantity="other">%1$d minutes</item>
+    </plurals>
+    <plurals name="settings_pixels">
+        <item quantity="one">%1$d pixel</item>
+        <item quantity="many">%1$d pixels</item>
+        <item quantity="other">%1$d pixels</item>
     </plurals>
     <string name="session_disconnect">Déconnecter</string>
     <!-- Getting started -->

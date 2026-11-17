@@ -363,6 +363,36 @@ class SettingsStoreTest {
         assertEquals(120, s.screensaverBlankMin)
     }
 
+    @Test fun screensaverWakeThresholdDefaultsWritesAndClamps() {
+        assertEquals(50, s.screensaverWakePct)
+        store.setScreensaverWakePct(75)
+        assertEquals(75, prefs.getInt(InputPrefs.SCREENSAVER_WAKE_PCT, 0))
+        assertEquals(75, s.screensaverWakePct)
+        store.setScreensaverWakePct(0)
+        assertEquals(5, s.screensaverWakePct)
+        store.setScreensaverWakePct(999)
+        assertEquals(100, s.screensaverWakePct)
+        assertEquals(35, roundWakePct(33f))
+    }
+
+    @Test fun pixelShiftDefaultsWritesAndClamps() {
+        assertFalse(s.pixelShiftEnabled)
+        assertEquals(4, s.pixelShiftPx)
+        store.setPixelShiftEnabled(true)
+        store.setPixelShiftPx(6)
+        assertTrue(prefs.getBoolean(InputPrefs.PIXEL_SHIFT_ENABLED, false))
+        assertEquals(6, prefs.getInt(InputPrefs.PIXEL_SHIFT_PX, 0))
+        assertTrue(s.pixelShiftEnabled)
+        assertEquals(6, s.pixelShiftPx)
+        store.setPixelShiftPx(0)
+        assertEquals(1, s.pixelShiftPx)
+        store.setPixelShiftPx(99)
+        assertEquals(8, s.pixelShiftPx)
+        assertEquals(8, prefs.getInt(InputPrefs.PIXEL_SHIFT_PX, 0))
+        assertEquals(3, roundShiftPx(3.4f))
+        assertFalse(InputPrefs.toJson(context).contains("pixel_shift"))
+    }
+
     @Test fun screensaverSpeedAndMotionDefaultsWriteAndClamp() {
         assertEquals(4, s.screensaverSpeed)
         assertEquals(ScreensaverMotionMode.Drift, s.screensaverMotion)

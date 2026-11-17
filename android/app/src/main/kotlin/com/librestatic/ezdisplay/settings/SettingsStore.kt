@@ -15,10 +15,12 @@ import com.librestatic.ezdisplay.InputPrefs.KeyCombo
 import com.librestatic.ezdisplay.R
 import com.librestatic.ezdisplay.display.PanelDetector
 import com.librestatic.ezdisplay.display.PanelType
+import com.librestatic.ezdisplay.display.PixelShiftPrefs
 import com.librestatic.ezdisplay.screensaver.ScreensaverMotionMode
 import com.librestatic.ezdisplay.screensaver.ScreensaverPrefs
 import com.librestatic.ezdisplay.screensaver.normalizeBlankMin
 import com.librestatic.ezdisplay.screensaver.normalizeBrightnessPct
+import com.librestatic.ezdisplay.screensaver.normalizeWakePct
 import com.librestatic.ezdisplay.screensaver.normalizeIdleMin
 import com.librestatic.ezdisplay.screensaver.normalizeSpeed
 import com.librestatic.ezdisplay.wifi.DiscoveredHost
@@ -154,6 +156,12 @@ data class SettingsState(
     val screensaverSpeed: Int = InputPrefs.SCREENSAVER_SPEED_DEFAULT,
     /** How the shapes travel: across the screen or bouncing off the edges. */
     val screensaverMotion: ScreensaverMotionMode = ScreensaverMotionMode.Drift,
+    /** Percent of the screen that must change before new content wakes the screensaver (5..100, step 5). */
+    val screensaverWakePct: Int = InputPrefs.SCREENSAVER_WAKE_DEFAULT,
+    /** Moves the picture by a pixel now and then in input pauses (burn-in protection). */
+    val pixelShiftEnabled: Boolean = false,
+    /** Largest pixel shift from the centre (1..8). */
+    val pixelShiftPx: Int = InputPrefs.DEFAULT_PIXEL_SHIFT_PX,
     val airActions: AirActions = AirActions.NotSamsung,
     /** Play the PC's audio on this device. */
     val audioEnabled: Boolean = true,
@@ -234,6 +242,10 @@ fun roundBrightnessPct(raw: Float): Int = normalizeBrightnessPct(raw.roundToInt(
 
 fun roundSpeed(raw: Float): Int = normalizeSpeed(raw.roundToInt())
 
+fun roundWakePct(raw: Float): Int = normalizeWakePct(raw.roundToInt())
+
+fun roundShiftPx(raw: Float): Int = PixelShiftPrefs.normalizePx(raw.roundToInt())
+
 /** Reads the Samsung S Pen "Air actions" system setting. */
 fun readAirActions(context: Context): AirActions {
     if (!Build.MANUFACTURER.equals("samsung", ignoreCase = true)) return AirActions.NotSamsung
@@ -271,6 +283,14 @@ interface SettingsActions {
     fun setScreensaverSpeed(level: Int)
 
     fun setScreensaverMotion(mode: ScreensaverMotionMode)
+
+    /** Share of the screen that must change to wake the screensaver, 5..100 in steps of 5. */
+    fun setScreensaverWakePct(pct: Int)
+
+    fun setPixelShiftEnabled(on: Boolean)
+
+    /** Largest pixel shift, 1..8. */
+    fun setPixelShiftPx(px: Int)
 
     /** Shows the screensaver once, as it would appear when idle. */
     fun previewScreensaver() {}
@@ -333,6 +353,11 @@ class SettingsStore(
             prefs.getInt(InputPrefs.SCREENSAVER_SPEED, InputPrefs.SCREENSAVER_SPEED_DEFAULT),
         ),
         screensaverMotion = ScreensaverMotionMode.fromKey(prefs.getString(InputPrefs.SCREENSAVER_MOTION, null)),
+        screensaverWakePct = normalizeWakePct(
+            prefs.getInt(InputPrefs.SCREENSAVER_WAKE_PCT, InputPrefs.SCREENSAVER_WAKE_DEFAULT),
+        ),
+        pixelShiftEnabled = PixelShiftPrefs.enabled(prefs, panelType),
+        pixelShiftPx = PixelShiftPrefs.radiusPx(prefs),
         airActions = airActions,
         audioEnabled = prefs.getBoolean(AUDIO_ENABLED, true),
         wifiEnabled = prefs.getBoolean(WIFI_ENABLED, false),
@@ -426,9 +451,26 @@ class SettingsStore(
         _state.value = _state.value.copy(screensaverSpeed = v)
     }
 
+    override fun setScreensaverWakePct(pct: Int) {
+        val v = normalizeWakePct(pct)
+        prefs.edit { putInt(InputPrefs.SCREENSAVER_WAKE_PCT, v) }
+        _state.value = _state.value.copy(screensaverWakePct = v)
+    }
+
     override fun setScreensaverMotion(mode: ScreensaverMotionMode) {
         prefs.edit { putString(InputPrefs.SCREENSAVER_MOTION, mode.key) }
         _state.value = _state.value.copy(screensaverMotion = mode)
+    }
+
+    override fun setPixelShiftEnabled(on: Boolean) {
+        prefs.edit { putBoolean(InputPrefs.PIXEL_SHIFT_ENABLED, on) }
+        _state.value = _state.value.copy(pixelShiftEnabled = on)
+    }
+
+    override fun setPixelShiftPx(px: Int) {
+        val v = PixelShiftPrefs.normalizePx(px)
+        prefs.edit { putInt(InputPrefs.PIXEL_SHIFT_PX, v) }
+        _state.value = _state.value.copy(pixelShiftPx = v)
     }
 
     override fun previewScreensaver() = onPreviewScreensaver()

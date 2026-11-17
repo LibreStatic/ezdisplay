@@ -59,13 +59,14 @@ private fun panelName(type: PanelType): String = stringResource(
 fun DisplayContent(state: SettingsState, actions: SettingsActions, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            ScreensaverSwitchRow(state, actions, segmentShape(0, 7))
-            IdleSlider(state, actions, segmentShape(1, 7))
-            BrightnessSlider(state, actions, segmentShape(2, 7))
-            BlankSlider(state, actions, segmentShape(3, 7))
-            SpeedSlider(state, actions, segmentShape(4, 7))
-            MotionRow(state, actions, segmentShape(5, 7))
-            Surface(shape = segmentShape(6, 7), color = MaterialTheme.colorScheme.surfaceBright, modifier = Modifier.fillMaxWidth()) {
+            ScreensaverSwitchRow(state, actions, segmentShape(0, 8))
+            IdleSlider(state, actions, segmentShape(1, 8))
+            WakeSlider(state, actions, segmentShape(2, 8))
+            BrightnessSlider(state, actions, segmentShape(3, 8))
+            BlankSlider(state, actions, segmentShape(4, 8))
+            SpeedSlider(state, actions, segmentShape(5, 8))
+            MotionRow(state, actions, segmentShape(6, 8))
+            Surface(shape = segmentShape(7, 8), color = MaterialTheme.colorScheme.surfaceBright, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Box(Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(20.dp)).testTag("screensaver_preview_box")) {
                         ScreensaverContent(
@@ -76,6 +77,10 @@ fun DisplayContent(state: SettingsState, actions: SettingsActions, modifier: Mod
                     PreviewButton(actions)
                 }
             }
+        }
+        Column(Modifier.fillMaxWidth().padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            PixelShiftSwitchRow(state, actions, segmentShape(0, 2))
+            ShiftSlider(state, actions, segmentShape(1, 2))
         }
         ReplayRow(actions, Modifier.padding(top = 12.dp))
     }
@@ -162,6 +167,70 @@ private fun ScreensaverSwitchRow(state: SettingsState, actions: SettingsActions,
 }
 
 @Composable
+private fun PixelShiftSwitchRow(state: SettingsState, actions: SettingsActions, shape: androidx.compose.ui.graphics.Shape) {
+    val colors = MaterialTheme.colorScheme
+    val on = state.pixelShiftEnabled
+    Surface(
+        checked = on,
+        onCheckedChange = actions::setPixelShiftEnabled,
+        shape = shape,
+        color = colors.surfaceBright,
+        modifier = Modifier.fillMaxWidth().semantics { role = Role.Switch }.testTag("pixel_shift_row"),
+    ) {
+        Row(
+            Modifier.heightIn(min = DisplayRowMinHeight).padding(DisplayRowPadding),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Symbol(R.drawable.ic_tune, tint = colors.secondary)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.pixel_shift_title),
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    stringResource(R.string.pixel_shift_desc),
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = on,
+                onCheckedChange = null,
+                thumbContent = if (on) {
+                    { Symbol(R.drawable.ic_check, size = 16.dp) }
+                } else {
+                    null
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ShiftSlider(
+    state: SettingsState,
+    actions: SettingsActions,
+    shape: androidx.compose.ui.graphics.Shape,
+) {
+    val min = InputPrefs.MIN_PIXEL_SHIFT_PX
+    val max = InputPrefs.MAX_PIXEL_SHIFT_PX
+    ValueSliderRow(
+        icon = R.drawable.ic_tune,
+        title = stringResource(R.string.pixel_shift_amount_title),
+        value = state.pixelShiftPx.toFloat(),
+        valueText = pluralStringResource(R.plurals.settings_pixels, state.pixelShiftPx, state.pixelShiftPx),
+        range = min.toFloat()..max.toFloat(),
+        steps = max - min - 1,
+        minText = pluralStringResource(R.plurals.settings_pixels, min, min),
+        maxText = pluralStringResource(R.plurals.settings_pixels, max, max),
+        enabled = state.pixelShiftEnabled,
+        tag = "pixel_shift_slider",
+        shape = shape,
+        onChange = { actions.setPixelShiftPx(roundShiftPx(it)) },
+    )
+}
+
+@Composable
 private fun IdleSlider(
     state: SettingsState,
     actions: SettingsActions,
@@ -182,6 +251,31 @@ private fun IdleSlider(
         tag = "screensaver_idle_slider",
         shape = shape,
         onChange = { actions.setScreensaverIdleMin(roundIdleMin(it)) },
+    )
+}
+
+@Composable
+private fun WakeSlider(
+    state: SettingsState,
+    actions: SettingsActions,
+    shape: androidx.compose.ui.graphics.Shape,
+) {
+    val min = InputPrefs.SCREENSAVER_WAKE_MIN_VALUE
+    val max = InputPrefs.SCREENSAVER_WAKE_MAX_VALUE
+    ValueSliderRow(
+        icon = R.drawable.ic_timer,
+        title = stringResource(R.string.screensaver_wake_title),
+        value = state.screensaverWakePct.toFloat(),
+        valueText = stringResource(R.string.settings_percent, state.screensaverWakePct),
+        range = min.toFloat()..max.toFloat(),
+        steps = (max - min) / InputPrefs.SCREENSAVER_WAKE_STEP - 1,
+        minText = stringResource(R.string.settings_percent, min),
+        maxText = stringResource(R.string.settings_percent, max),
+        enabled = state.screensaverEnabled,
+        tag = "screensaver_wake_slider",
+        shape = shape,
+        supporting = stringResource(R.string.screensaver_wake_desc),
+        onChange = { actions.setScreensaverWakePct(roundWakePct(it)) },
     )
 }
 
@@ -350,6 +444,7 @@ private fun ValueSliderRow(
     enabled: Boolean,
     tag: String,
     shape: androidx.compose.ui.graphics.Shape,
+    supporting: String? = null,
     onChange: (Float) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -379,6 +474,12 @@ private fun ValueSliderRow(
                 val style = MaterialTheme.typography.labelSmall
                 Text(minText, style = style, color = colors.onSurfaceVariant)
                 Text(maxText, style = style, color = colors.onSurfaceVariant)
+            }
+            if (supporting != null) {
+                Text(
+                    supporting, Modifier.padding(top = 8.dp),
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
+                )
             }
         }
     }

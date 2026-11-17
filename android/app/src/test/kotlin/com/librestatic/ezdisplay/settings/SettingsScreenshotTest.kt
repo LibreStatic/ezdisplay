@@ -52,7 +52,10 @@ class SettingsScreenshotTest {
         override fun setScreensaverBrightnessPct(pct: Int) {}
         override fun setScreensaverBlankMin(min: Int) {}
         override fun setScreensaverSpeed(level: Int) {}
+        override fun setScreensaverWakePct(pct: Int) {}
         override fun setScreensaverMotion(mode: ScreensaverMotionMode) {}
+        override fun setPixelShiftEnabled(on: Boolean) {}
+        override fun setPixelShiftPx(px: Int) {}
         override fun setAudioEnabled(on: Boolean) {}
         override fun setVideoCodec(codec: String) {}
         override fun setStreamQuality(quality: String) {}
@@ -205,6 +208,14 @@ class SettingsScreenshotTest {
         rule.onNodeWithTag("screensaver_row").performScrollTo()
         rule.waitForIdle()
         capture("phone_display_dark")
+    }
+
+    @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp-night")
+    fun phone_pixel_shift_dark() {
+        show(displayState.copy(pixelShiftEnabled = true, pixelShiftPx = 4))
+        rule.onNodeWithTag("replay_onboarding").performScrollTo()
+        rule.waitForIdle()
+        capture("phone_pixel_shift_dark")
     }
 
     @Test @Config(sdk = [36], qualifiers = "w841dp-h701dp-night")
