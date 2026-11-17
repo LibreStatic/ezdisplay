@@ -404,12 +404,16 @@ mod tests {
         static BUSY: AtomicBool = AtomicBool::new(false);
         static STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let (release, held) = mpsc::channel::<()>();
+        let (running, started) = mpsc::channel::<()>();
         let stuck = move || {
             STARTED.fetch_add(1, Ordering::SeqCst);
+            let _ = running.send(());
             let _ = held.recv();
             true
         };
         assert_eq!(bounded(&BUSY, Duration::from_millis(20), stuck), None);
+        // The worker may be scheduled late: wait until it runs before counting.
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
         // While the first call is unanswered, further probes start no worker.
         for _ in 0..5 {
             let probe = || {
