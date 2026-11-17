@@ -199,7 +199,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
     private var sampling = false
     private var samplePending = false // a sample was asked for while a copy was under way
     private var settleSample = false // the last poll saw new frames: sample once more when they stop
-    private var needReference = true // the change detector was reset: the first streaming poll samples
+    private var needReference = true // the change detector was reset: streaming polls sample until one copy works
     private var rebaseSample = false // the next sample becomes the reference (the screensaver just started)
     private var samplingFailureLogged = false
     private var hostCursorInside = false
@@ -845,6 +845,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             return
         }
         if (!started || !sessionActive) return
+        needReference = false
         sampleBitmap.getPixels(samplePixels, 0, SAMPLE_W, 0, 0, SAMPLE_W, SAMPLE_H)
         if (rebaseSample) {
             rebaseSample = false
@@ -932,9 +933,9 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             // once more: otherwise a single large update would be measured on the picture before it.
             val grew = idle.onFramesReceived(j.optLong("frames_received"), now)
             // Without a reference the first update would become it instead of being measured against the
-            // picture before it, so the first streaming poll samples too (and settles like a new frame).
+            // picture before it, so streaming polls sample until one copy succeeds (and then settle like a new
+            // frame). `onScreenSample` clears the flag, so a failed copy is tried again on the next poll.
             val first = needReference && idleConfig.enabled
-            needReference = false
             if (grew || settleSample || first) sampleScreen()
             settleSample = grew || first
         } else {

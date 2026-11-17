@@ -38,8 +38,9 @@ Repository-wide rules (languages and localization, naming) are in the root `AGEN
   Kotlin motion model: Drift or Bounce, speed level 1..10 at 10 dp/s each, rare steps with reduced motion) and
   `ScreensaverPrefs`. `IdleTracker` rules: new frames are not activity; `MainActivity` samples the stream surface with
   `PixelCopy` (96x54) on each frame increase, and once more on the stats poll after the last increase because a frame
-  is counted before it is decoded and shown (a request made during a copy runs when the copy ends), plus on the
-  first streaming poll after the detector is reset so that there is a reference before the first update, and
+  is counted before it is decoded and shown (a request made during a copy runs when the copy ends), plus on
+  every streaming poll after the detector is reset until one copy succeeds, so that there is a reference before the
+  first update, and
   `ScreenChangeDetector` (pure Kotlin, tolerance 24/255 per channel,
   reference = screen at the last content activity) gives the changed fraction, which wakes only at `wakePct` (setting
   "wake threshold", default 50, 5..100 step 5). A PC cursor appearing or moving inside the tablet screen always wakes
