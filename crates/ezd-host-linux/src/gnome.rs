@@ -120,8 +120,9 @@ fn screen_locked(conn: &Connection) -> bool {
 }
 
 /// [`screen_locked`] on `conn` (or a new session connection) with a bound on the whole probe:
-/// a shell that does not answer in time counts as not locked, so the caller is never held up.
-fn probe_locked(conn: Option<Connection>) -> bool {
+/// `None` when the shell does not answer within `limit`, so the caller is never held up. The
+/// worker of an unanswered probe lives until the call returns; callers stop probing after one.
+fn probe_locked(conn: Option<Connection>, limit: Duration) -> Option<bool> {
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("lock-probe".into())
@@ -132,14 +133,17 @@ fn probe_locked(conn: Option<Connection>) -> bool {
             };
             let _ = tx.send(locked);
         });
-    spawned.is_ok() && rx.recv_timeout(LOCK_PROBE_TIMEOUT).unwrap_or(false)
+    spawned.ok()?;
+    rx.recv_timeout(limit).ok()
 }
 
 /// Like [`map_zbus`] for the calls that open a session: a refusal while the screen is locked
 /// becomes [`SourceError::ScreenLocked`].
 fn map_open<T>(conn: &Connection, what: &str, r: zbus::Result<T>) -> Result<T, SourceError> {
     r.map_err(|e| {
-        if is_inhibited(&e.to_string()) || probe_locked(Some(conn.clone())) {
+        if is_inhibited(&e.to_string())
+            || probe_locked(Some(conn.clone()), LOCK_PROBE_TIMEOUT) == Some(true)
+        {
             log_locked();
             SourceError::ScreenLocked
         } else {
@@ -264,13 +268,24 @@ impl VirtualOutputProvider for GnomeProvider {
         // screen saver active only after its animation, so a negative answer is asked again.
         let deadline = Instant::now() + wait;
         loop {
-            if probe_locked(conn.clone()) {
-                return true;
+            // The first probe gets its full limit; later ones only the time that is left.
+            let left = deadline.saturating_duration_since(Instant::now());
+            let limit = if wait.is_zero() {
+                LOCK_PROBE_TIMEOUT
+            } else {
+                left.min(LOCK_PROBE_TIMEOUT)
+            };
+            match probe_locked(conn.clone(), limit) {
+                Some(true) => return true,
+                // An unanswered probe: do not stack more of them behind it.
+                None => return false,
+                Some(false) => {}
             }
-            if Instant::now() >= deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
                 return false;
             }
-            std::thread::sleep(LOCK_POLL);
+            std::thread::sleep(LOCK_POLL.min(left));
         }
     }
 
