@@ -11,7 +11,7 @@ use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::OwnedValue;
 
 pub const SERVICE: &str = "org.gnome.Mutter.DisplayConfig";
-const PATH: &str = "/org/gnome/Mutter/DisplayConfig";
+pub const PATH: &str = "/org/gnome/Mutter/DisplayConfig";
 
 /// Property bags (`a{sv}`) of the reply, readable for boolean flags from D-Bus and from JSON.
 pub trait Props {
@@ -72,7 +72,15 @@ pub struct Monitor {
     pub modes: Vec<Mode>,
 }
 
+/// EDID product of the monitors Mutter creates for `RecordVirtual`.
+pub const VIRTUAL_PRODUCT: &str = "Virtual remote monitor";
+
 impl Monitor {
+    /// Whether Mutter created this monitor for a `RecordVirtual` stream.
+    pub fn is_virtual(&self) -> bool {
+        self.product == VIRTUAL_PRODUCT
+    }
+
     /// The current mode, if the monitor is on.
     pub fn current_mode(&self) -> Option<&Mode> {
         self.modes.iter().find(|m| m.current)
@@ -165,11 +173,12 @@ impl DisplayState {
             .find(|l| l.monitors.iter().any(|m| m == connector))
     }
 
-    /// The monitor present here but not in `before`.
+    /// The virtual monitor present here but not in `before`. A physical monitor plugged in at
+    /// the same moment is not it.
     pub fn new_monitor(&self, before: &DisplayState) -> Option<&Monitor> {
         self.monitors
             .iter()
-            .find(|m| before.monitor(&m.connector).is_none())
+            .find(|m| m.is_virtual() && before.monitor(&m.connector).is_none())
     }
 
     /// The monitors in the shape the pointer mapper reads (`kscreen` outputs). The scale is 1
@@ -276,6 +285,12 @@ mod tests {
         assert_eq!(new.connector, "Meta-1");
         assert_eq!(new.product, "Virtual remote monitor");
         assert!(before.new_monitor(&before).is_none());
+        // A new monitor that is not a virtual one, such as one plugged in meanwhile.
+        let other = DisplayState {
+            monitors: before.monitors[1..].to_vec(),
+            ..before.clone()
+        };
+        assert!(before.new_monitor(&other).is_none());
     }
 
     #[test]
