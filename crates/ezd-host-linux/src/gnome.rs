@@ -2,9 +2,9 @@
 //! (`RecordVirtual`), captured from the user's PipeWire daemon. Without that service on the bus
 //! (or to capture an existing monitor) it falls back to the ScreenCast portal.
 //!
-//! Mutter sizes a virtual monitor from the PipeWire format negotiation (the size range the
-//! capture offers, `pw.rs`), so there is no mode to set: [`VirtualOutputProvider::settle`]
-//! reads the result back from `DisplayConfig`.
+//! Mutter sizes a virtual monitor from the PipeWire format negotiation, so there is no mode to
+//! set: the capture offers exactly the wanted size and rate (`fixed_mode`, `pw.rs`) and
+//! [`VirtualOutputProvider::settle`] reads the result back from `DisplayConfig`.
 
 use crate::backend;
 use crate::gnome_dc::{self, DisplayState};
@@ -134,6 +134,8 @@ impl GnomeProvider {
             frames: FrameSource::PipeWire {
                 fd: None,
                 target: Target::Node(node),
+                // Mutter creates the virtual monitor with the negotiated size and rate.
+                fixed_mode: true,
             },
             info: None,
             guard: Box::new(guard),
@@ -151,6 +153,7 @@ impl GnomeProvider {
         let frames = FrameSource::PipeWire {
             fd: portal.fd.take(),
             target: Target::Node(portal.node_id),
+            fixed_mode: false,
         };
         Ok(OpenedOutput {
             frames,
@@ -293,9 +296,10 @@ mod tests {
             .name
             .clone();
         let cfg = StreamConfig {
-            width: 1280,
-            height: 720,
-            refresh_mhz: 60_000,
+            // Not Mutter's own default (1280x720 at 60 Hz): the mode must come from the offer.
+            width: 1600,
+            height: 900,
+            refresh_mhz: 120_000,
             codec: Codec::H264,
             bitrate_kbps: 8000,
             encoder_name: enc,
@@ -303,7 +307,10 @@ mod tests {
         src.start(&cfg, CursorSink::null()).expect("start");
         let out = src.output().expect("output info");
         eprintln!("output: {out:?}");
-        assert_eq!((out.mode.width, out.mode.height), (1280, 720));
+        assert_eq!(
+            (out.mode.width, out.mode.height, out.mode.refresh_mhz),
+            (1600, 900, 120_000)
+        );
         // Input mapping: the gsettings keys name the new monitor, then go back to the default.
         {
             use crate::gnome_input::{GnomeDesktop, get_args, tablet_schema, touch_schema};

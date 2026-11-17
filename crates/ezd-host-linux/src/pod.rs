@@ -240,8 +240,9 @@ pub struct VideoFormatProps {
     pub size: Val,
     /// Frame rate.
     pub framerate: Val,
-    /// Highest frame rate we want (the compositor caps its delivery to it).
-    pub max_fps: u32,
+    /// Highest frame rate we want (the compositor caps its delivery to it): a range, or a fixed
+    /// rate for a producer that takes its own default from a range.
+    pub max_framerate: Val,
 }
 
 /// One `EnumFormat` for `fmt`. For DMA-BUF formats the modifier property is mandatory and
@@ -266,11 +267,7 @@ pub fn enum_format(param_id: u32, fmt: &VideoFormatProps) -> Vec<u8> {
     }
     props.push((FORMAT_VIDEO_SIZE, 0, fmt.size.clone()));
     props.push((FORMAT_VIDEO_FRAMERATE, 0, fmt.framerate.clone()));
-    props.push((
-        FORMAT_VIDEO_MAX_FRAMERATE,
-        0,
-        Val::RangeFrac((fmt.max_fps, 1), (1, 1), (fmt.max_fps.max(240), 1)),
-    ));
+    props.push((FORMAT_VIDEO_MAX_FRAMERATE, 0, fmt.max_framerate.clone()));
     object(OBJ_FORMAT, param_id, &props)
 }
 
@@ -517,7 +514,7 @@ mod tests {
             modifiers: mods,
             size: Val::RangeRect((1920, 1080), (1, 1), (8192, 8192)),
             framerate: Val::RangeFrac((0, 1), (0, 1), (240, 1)),
-            max_fps: 120,
+            max_framerate: Val::RangeFrac((120, 1), (1, 1), (240, 1)),
         }
     }
 

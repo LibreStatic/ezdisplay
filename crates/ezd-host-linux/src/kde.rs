@@ -68,6 +68,7 @@ impl VirtualOutputProvider for KdeProvider {
         let frames = FrameSource::PipeWire {
             fd: portal.fd.take(),
             target: Target::Node(portal.node_id),
+            fixed_mode: false,
         };
         Ok(OpenedOutput {
             frames,

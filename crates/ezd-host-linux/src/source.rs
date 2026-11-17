@@ -360,12 +360,17 @@ impl VideoSource for LinuxSource {
         self.output = opened.info;
 
         let capture = match opened.frames {
-            FrameSource::PipeWire { fd, target } => {
+            FrameSource::PipeWire {
+                fd,
+                target,
+                fixed_mode,
+            } => {
                 let params = PwParams {
                     width: cfg.width,
                     height: cfg.height,
                     fps: cfg.refresh_mhz.div_ceil(1000),
                     dmabuf_modifiers: self.dmabuf_modifiers(&plan),
+                    fixed_mode,
                 };
                 Capture::Pw(PwCapture::start(fd, target, params, cursor).map_err(SourceError::msg)?)
             }
