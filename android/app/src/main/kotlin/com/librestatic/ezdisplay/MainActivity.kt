@@ -200,6 +200,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
     private var samplePending = false // a sample was asked for while a copy was under way
     private var settleSample = false // the last poll saw new frames: sample once more when they stop
     private var needReference = true // the change detector was reset: streaming polls sample until one copy works
+    private var sampleEpoch = 0 // bumped with each detector reset: a copy asked for before it is dropped
     private var rebaseSample = false // the next sample becomes the reference (the screensaver just started)
     private var samplingFailureLogged = false
     private var hostCursorInside = false
@@ -445,6 +446,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         shift.onHover(false, now)
         if (shift.setConfig(PixelShiftPrefs.read(this), now)) applyShift()
         changeDetector.reset()
+        sampleEpoch++
         needReference = true
         applyInputConfig()
         updateDiscovery()
@@ -667,6 +669,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         samplePending = false
         settleSample = false
         changeDetector.reset()
+        sampleEpoch++
         needReference = true
         rebaseSample = false
         lastInputNote = ""
@@ -823,10 +826,12 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             return
         }
         sampling = true
+        val epoch = sampleEpoch
         try {
             PixelCopy.request(surfaceView, sampleBitmap, { result ->
                 sampling = false
-                onScreenSample(result)
+                // A copy from before the reset shows the previous session or the screen before a pause.
+                if (epoch == sampleEpoch) onScreenSample(result) else samplePending = true
                 if (samplePending) {
                     samplePending = false
                     sampleScreen()
