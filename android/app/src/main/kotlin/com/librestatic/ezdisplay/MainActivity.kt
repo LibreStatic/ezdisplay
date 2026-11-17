@@ -197,6 +197,8 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
     private val sampleBitmap = Bitmap.createBitmap(SAMPLE_W, SAMPLE_H, Bitmap.Config.ARGB_8888)
     private val samplePixels = IntArray(SAMPLE_W * SAMPLE_H)
     private var sampling = false
+    private var samplePending = false // a sample was asked for while a copy was under way
+    private var settleSample = false // the last poll saw new frames: sample once more when they stop
     private var rebaseSample = false // the next sample becomes the reference (the screensaver just started)
     private var samplingFailureLogged = false
     private var hostCursorInside = false
@@ -660,6 +662,8 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         applyInputConfig()
         wasStreaming = false
         idle.resetFrames()
+        samplePending = false
+        settleSample = false
         changeDetector.reset()
         rebaseSample = false
         lastInputNote = ""
@@ -809,30 +813,44 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
      * changed to count as activity. Failures only mean that content does not wake the screen.
      */
     private fun sampleScreen() {
-        if (sampling || !sessionActive || !surfaceView.holder.surface.isValid) return
+        if (!sessionActive || !surfaceView.holder.surface.isValid) return
+        if (sampling) {
+            // The copy under way may predate the newest frame: sample once more when it ends.
+            samplePending = true
+            return
+        }
         sampling = true
         try {
             PixelCopy.request(surfaceView, sampleBitmap, { result ->
                 sampling = false
-                if (result != PixelCopy.SUCCESS) {
-                    logSamplingFailure("PixelCopy result $result")
-                    return@request
+                onScreenSample(result)
+                if (samplePending) {
+                    samplePending = false
+                    sampleScreen()
                 }
-                if (!started || !sessionActive) return@request
-                sampleBitmap.getPixels(samplePixels, 0, SAMPLE_W, 0, 0, SAMPLE_W, SAMPLE_H)
-                if (rebaseSample) {
-                    rebaseSample = false
-                    changeDetector.accept(samplePixels)
-                    return@request
-                }
-                val fraction = changeDetector.changedFraction(samplePixels) ?: return@request
-                if (idle.onScreenChange(fraction, SystemClock.uptimeMillis())) changeDetector.accept(samplePixels)
-                applyIdle()
             }, handler)
         } catch (e: IllegalArgumentException) {
             sampling = false
+            samplePending = false
             logSamplingFailure("PixelCopy failed: ${e.message}")
         }
+    }
+
+    private fun onScreenSample(result: Int) {
+        if (result != PixelCopy.SUCCESS) {
+            logSamplingFailure("PixelCopy result $result")
+            return
+        }
+        if (!started || !sessionActive) return
+        sampleBitmap.getPixels(samplePixels, 0, SAMPLE_W, 0, 0, SAMPLE_W, SAMPLE_H)
+        if (rebaseSample) {
+            rebaseSample = false
+            changeDetector.accept(samplePixels)
+            return
+        }
+        val fraction = changeDetector.changedFraction(samplePixels) ?: return
+        if (idle.onScreenChange(fraction, SystemClock.uptimeMillis())) changeDetector.accept(samplePixels)
+        applyIdle()
     }
 
     private fun logSamplingFailure(msg: String) {
@@ -906,7 +924,15 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             Log.w(TAG, "bad stats", e)
             return
         }
-        if (j.optString("phase") == "streaming" && idle.onFramesReceived(j.optLong("frames_received"), now)) sampleScreen()
+        if (j.optString("phase") == "streaming") {
+            // A received frame is decoded and shown a little later, so the poll after the last new frame samples
+            // once more: otherwise a single large update would be measured on the picture before it.
+            val grew = idle.onFramesReceived(j.optLong("frames_received"), now)
+            if (grew || settleSample) sampleScreen()
+            settleSample = grew
+        } else {
+            settleSample = false
+        }
         val bw = j.optInt("buffer_width")
         val bh = j.optInt("buffer_height")
         if (bw > 0 && bh > 0 && (bw != bufW || bh != bufH)) {

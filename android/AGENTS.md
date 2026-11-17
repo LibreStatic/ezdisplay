@@ -37,7 +37,9 @@ Repository-wide rules (languages and localization, naming) are in the root `AGEN
   `ScreensaverGlyphs`: monitor, tablet, stylus, brush, palette, mouse; not `ShapeBackdrop`), `ScreensaverMotion` (pure
   Kotlin motion model: Drift or Bounce, speed level 1..10 at 10 dp/s each, rare steps with reduced motion) and
   `ScreensaverPrefs`. `IdleTracker` rules: new frames are not activity; `MainActivity` samples the stream surface with
-  `PixelCopy` (96x54) on each frame increase and `ScreenChangeDetector` (pure Kotlin, tolerance 24/255 per channel,
+  `PixelCopy` (96x54) on each frame increase, and once more on the stats poll after the last increase because a frame
+  is counted before it is decoded and shown (a request made during a copy runs when the copy ends), and
+  `ScreenChangeDetector` (pure Kotlin, tolerance 24/255 per channel,
   reference = screen at the last content activity) gives the changed fraction, which wakes only at `wakePct` (setting
   "wake threshold", default 50, 5..100 step 5). A PC cursor appearing or moving inside the tablet screen always wakes
   Saver and Blank (`onHostCursor`); content never wakes Blank; local input is unchanged. The screensaver prefs live in the `input` file but are never part of `InputPrefs.toJson`.
