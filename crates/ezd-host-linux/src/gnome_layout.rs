@@ -14,8 +14,6 @@ use std::path::{Path, PathBuf};
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::Value;
 
-/// EDID product of the monitors Mutter creates for `RecordVirtual`.
-const VIRTUAL_PRODUCT: &str = "Virtual remote monitor";
 const FILE: &str = "gnome-layouts.json";
 /// `ApplyMonitorsConfig` method: apply without writing `monitors.xml`.
 const METHOD_TEMPORARY: u32 = 1;
@@ -51,21 +49,21 @@ type ApplyMonitor = (String, String, HashMap<String, Value<'static>>);
 /// A logical monitor of `ApplyMonitorsConfig`: `(iiduba(ssa{sv}))`.
 pub type ApplyLogical = (i32, i32, f64, u32, bool, Vec<ApplyMonitor>);
 
-fn is_virtual(m: &gnome_dc::Monitor) -> bool {
-    m.product == VIRTUAL_PRODUCT
-}
-
 /// Identifies the situation a layout belongs to: the mode of the virtual monitor, the layout
-/// mode and the physical monitors that are connected. `None` when `virtual_connector` is not the
-/// only virtual monitor, or is off.
+/// mode and the physical monitors that are connected. `None` when `virtual_connector` is not a
+/// virtual monitor (a physical one plugged in at the same moment), not the only one, or is off.
 pub fn key(state: &DisplayState, virtual_connector: &str) -> Option<String> {
-    let mode = state.monitor(virtual_connector)?.current_mode()?;
+    let monitor = state.monitor(virtual_connector)?;
+    if !monitor.is_virtual() {
+        return None;
+    }
+    let mode = monitor.current_mode()?;
     let mut physical = Vec::new();
     for m in &state.monitors {
         if m.connector == virtual_connector {
             continue;
         }
-        if is_virtual(m) {
+        if m.is_virtual() {
             return None;
         }
         physical.push(format!(
@@ -113,8 +111,8 @@ pub fn capture(state: &DisplayState, virtual_connector: &str) -> Option<SavedLay
 }
 
 /// The `ApplyMonitorsConfig` argument that restores `saved` in `state`. `None` when there is
-/// nothing to do or the layout no longer fits: a monitor or mode is gone, or the user has since
-/// turned a physical monitor on or off or changed its scale or rotation (their newer choice wins).
+/// nothing to do or the layout no longer fits: a monitor is gone, or the user has since turned a
+/// physical monitor on or off or changed its mode, scale or rotation (their newer choice wins).
 pub fn plan(
     saved: &SavedLayout,
     state: &DisplayState,
@@ -151,12 +149,11 @@ pub fn plan(
             let (connector, mode_id) = match &m.connector {
                 None => (virtual_connector.to_string(), virtual_mode.clone()),
                 Some(c) => {
-                    let monitor = state.monitor(c)?;
-                    if !monitor.modes.iter().any(|mode| mode.id == m.mode_id) {
-                        return None;
-                    }
                     let now = state.logical_of(c)?;
-                    if now.scale != l.scale || now.transform != l.transform {
+                    if state.monitor(c)?.current_mode()?.id != m.mode_id
+                        || now.scale != l.scale
+                        || now.transform != l.transform
+                    {
                         return None;
                     }
                     (c.clone(), m.mode_id.clone())
@@ -239,7 +236,10 @@ pub fn store(path: &Path, key: &str, layout: &SavedLayout) -> std::io::Result<()
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, format!("{:#}\n", Json::Object(all)))
+    // Written aside and renamed: a failed write must not truncate the layouts already saved.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, format!("{:#}\n", Json::Object(all)))?;
+    std::fs::rename(&tmp, path)
 }
 
 /// Saves the current layout around `virtual_connector`. Called while the monitor still exists.
@@ -338,9 +338,11 @@ mod tests {
         assert_ne!(key(&a, "Meta-1"), key(&other, "Meta-1"));
         // Two virtual monitors: which layout belongs to which is unknown.
         let mut two = a.clone();
-        two.monitors[0].product = VIRTUAL_PRODUCT.into();
+        two.monitors[0].product = gnome_dc::VIRTUAL_PRODUCT.into();
         assert_eq!(key(&two, "Meta-1"), None);
         assert_eq!(key(&a, "Meta-9"), None);
+        // Not a virtual monitor.
+        assert_eq!(key(&a, "Meta-0"), None);
     }
 
     #[test]
@@ -377,10 +379,10 @@ mod tests {
         let saved_off = capture(&off, "Meta-1").unwrap();
         assert_eq!(plan(&saved_off, &pair(), "Meta-1"), None);
 
-        // The mode the physical monitor had is gone.
-        let mut no_mode = pair();
-        no_mode.monitors[0].modes.clear();
-        assert_eq!(plan(&saved, &no_mode, "Meta-1"), None);
+        // The user changed the mode of the physical monitor since.
+        let mut other_mode = pair();
+        other_mode.monitors[0].modes[0].id = "1280x720@60.000".into();
+        assert_eq!(plan(&saved, &other_mode, "Meta-1"), None);
     }
 
     #[test]
@@ -395,6 +397,7 @@ mod tests {
         assert_eq!(load(&path, "a"), Some(a));
         assert_eq!(load(&path, "b"), Some(b));
         assert_eq!(load(&path, "c"), None);
+        assert!(!path.with_extension("json.tmp").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
