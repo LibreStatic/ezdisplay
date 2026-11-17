@@ -650,12 +650,13 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         bufH = 0
         fitSurface()
         frameRateSet = 0
-        // A retry while the host is locked keeps the locked message up.
-        if (HostLock.showsProgress(hostLocked)) setStatus(
-            when (route) {
-                Route.ACCESSORY -> getString(R.string.status_usb_connecting)
-                Route.WIFI -> getString(R.string.status_wifi_connecting, hostLabel(choice!!))
-                Route.TCP -> getString(R.string.status_waiting, "$HOST:$PORT")
+        // A retry while the host is locked keeps the locked message up (and puts it back after a failed start).
+        setStatus(
+            when {
+                !HostLock.showsProgress(hostLocked) -> getString(R.string.status_host_locked)
+                route == Route.ACCESSORY -> getString(R.string.status_usb_connecting)
+                route == Route.WIFI -> getString(R.string.status_wifi_connecting, hostLabel(choice!!))
+                else -> getString(R.string.status_waiting, "$HOST:$PORT")
             },
         )
     }
@@ -932,6 +933,8 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         telemetryView.visibility = if (telemetryOn) View.VISIBLE else View.GONE
         if (telemetryOn) showTelemetry(j)
         hostLacksKeys = !j.isNull("input_caps") && (j.optInt("input_caps") and 8) == 0
+        // Input notices wait until the host is unlocked: the locked message stays up.
+        if (!HostLock.showsProgress(hostLocked)) return
         val note = if (j.isNull("input_note")) "" else j.optString("input_note")
         if (note != lastInputNote) {
             lastInputNote = note

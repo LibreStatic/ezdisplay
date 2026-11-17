@@ -32,6 +32,8 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the lock state is asked again while waiting for it.
 const LOCK_POLL: Duration = Duration::from_millis(150);
+/// How long one lock probe may take, connection included.
+const LOCK_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Provider for Mutter.
 #[derive(Default)]
@@ -117,11 +119,27 @@ fn screen_locked(conn: &Connection) -> bool {
     .unwrap_or(false)
 }
 
+/// [`screen_locked`] on `conn` (or a new session connection) with a bound on the whole probe:
+/// a shell that does not answer in time counts as not locked, so the caller is never held up.
+fn probe_locked(conn: Option<Connection>) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("lock-probe".into())
+        .spawn(move || {
+            let locked = match conn {
+                Some(conn) => screen_locked(&conn),
+                None => Connection::session().is_ok_and(|c| screen_locked(&c)),
+            };
+            let _ = tx.send(locked);
+        });
+    spawned.is_ok() && rx.recv_timeout(LOCK_PROBE_TIMEOUT).unwrap_or(false)
+}
+
 /// Like [`map_zbus`] for the calls that open a session: a refusal while the screen is locked
 /// becomes [`SourceError::ScreenLocked`].
 fn map_open<T>(conn: &Connection, what: &str, r: zbus::Result<T>) -> Result<T, SourceError> {
     r.map_err(|e| {
-        if is_inhibited(&e.to_string()) || screen_locked(conn) {
+        if is_inhibited(&e.to_string()) || probe_locked(Some(conn.clone())) {
             log_locked();
             SourceError::ScreenLocked
         } else {
@@ -241,18 +259,12 @@ impl VirtualOutputProvider for GnomeProvider {
     }
 
     fn screen_locked(&self, wait: Duration) -> bool {
-        let conn = match &self.watch {
-            Some((conn, _)) => conn.clone(),
-            None => match Connection::session() {
-                Ok(conn) => conn,
-                Err(_) => return false,
-            },
-        };
+        let conn = self.watch.as_ref().map(|(conn, _)| conn.clone());
         // GNOME Shell inhibits capture when the lock screen starts to appear and reports the
         // screen saver active only after its animation, so a negative answer is asked again.
         let deadline = Instant::now() + wait;
         loop {
-            if screen_locked(&conn) {
+            if probe_locked(conn.clone()) {
                 return true;
             }
             if Instant::now() >= deadline {
