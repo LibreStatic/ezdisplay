@@ -17,6 +17,7 @@ use crate::provider::{FrameSource, OpenedOutput, OutputRequest, VirtualOutputPro
 use crate::pw::Target;
 use ezd_host_core::{DisplayMode, OutputInfo, SourceError};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use zbus::blocking::{Connection, Proxy};
@@ -119,22 +120,42 @@ fn screen_locked(conn: &Connection) -> bool {
     .unwrap_or(false)
 }
 
-/// [`screen_locked`] on `conn` (or a new session connection) with a bound on the whole probe:
-/// `None` when the shell does not answer within `limit`, so the caller is never held up. The
-/// worker of an unanswered probe lives until the call returns; callers stop probing after one.
-fn probe_locked(conn: Option<Connection>, limit: Duration) -> Option<bool> {
+/// Set while a lock probe has not returned yet, so unanswered probes never pile up.
+static LOCK_PROBE_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Runs `call` on a worker thread and waits up to `limit` for its answer. `None` when it does not
+/// answer in time, or when an earlier call guarded by `busy` is still unanswered: then no new
+/// worker is started, so at most one is ever outstanding per flag.
+fn bounded<T: Send + 'static>(
+    busy: &'static AtomicBool,
+    limit: Duration,
+    call: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    if busy.swap(true, Ordering::AcqRel) {
+        return None;
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("lock-probe".into())
         .spawn(move || {
-            let locked = match conn {
-                Some(conn) => screen_locked(&conn),
-                None => Connection::session().is_ok_and(|c| screen_locked(&c)),
-            };
-            let _ = tx.send(locked);
+            let answer = call();
+            busy.store(false, Ordering::Release);
+            let _ = tx.send(answer);
         });
-    spawned.ok()?;
+    if spawned.is_err() {
+        busy.store(false, Ordering::Release);
+        return None;
+    }
     rx.recv_timeout(limit).ok()
+}
+
+/// [`screen_locked`] on `conn` (or a new session connection) with a bound on the whole probe:
+/// `None` when the shell does not answer within `limit`, so the caller is never held up.
+fn probe_locked(conn: Option<Connection>, limit: Duration) -> Option<bool> {
+    bounded(&LOCK_PROBE_BUSY, limit, move || match conn {
+        Some(conn) => screen_locked(&conn),
+        None => Connection::session().is_ok_and(|c| screen_locked(&c)),
+    })
 }
 
 /// Like [`map_zbus`] for the calls that open a session: a refusal while the screen is locked
@@ -377,6 +398,36 @@ mod tests {
     use crate::source::LinuxSource;
     use ezd_host_core::{CursorSink, PlatformOptions, VideoSource};
     use ezd_proto::{Codec, StreamConfig};
+
+    #[test]
+    fn unanswered_probes_do_not_pile_up() {
+        static BUSY: AtomicBool = AtomicBool::new(false);
+        static STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let (release, held) = mpsc::channel::<()>();
+        let stuck = move || {
+            STARTED.fetch_add(1, Ordering::SeqCst);
+            let _ = held.recv();
+            true
+        };
+        assert_eq!(bounded(&BUSY, Duration::from_millis(20), stuck), None);
+        // While the first call is unanswered, further probes start no worker.
+        for _ in 0..5 {
+            let probe = || {
+                STARTED.fetch_add(1, Ordering::SeqCst);
+                true
+            };
+            assert_eq!(bounded(&BUSY, Duration::from_millis(20), probe), None);
+        }
+        assert_eq!(STARTED.load(Ordering::SeqCst), 1);
+
+        // Once it returns, probing works again.
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while BUSY.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(bounded(&BUSY, Duration::from_secs(5), || true), Some(true));
+    }
 
     #[test]
     fn inhibited_refusals_are_recognised() {
