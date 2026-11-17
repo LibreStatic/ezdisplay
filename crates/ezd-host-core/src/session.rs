@@ -930,7 +930,8 @@ async fn handshake(
         None
     };
     tx.send_control(Message::HostCaps(host_caps.clone()))?;
-    let merged = usable_prefs(&prefs.with_client(client_prefs.as_ref()), host_caps);
+    // Before merging: an encoder override makes `with_client` ignore the client's codec.
+    let merged = usable_prefs(prefs, host_caps).with_client(client_prefs.as_ref());
     let (cfg, range) = match negotiate_hdr(
         &caps,
         host_caps,
@@ -1314,6 +1315,14 @@ mod tests {
         );
         assert_eq!(usable_prefs(&forced("h264_nvenc"), &host).encoder, None);
         assert_eq!(usable_prefs(&Prefs::default(), &host), Prefs::default());
+        // Dropped before the client's preferences are merged, its codec choice still counts.
+        let client = ClientPrefs::new(Some(Codec::Hevc), QualityLevel::Normal);
+        assert_eq!(
+            usable_prefs(&forced("h264_nvenc"), &host)
+                .with_client(Some(&client))
+                .codec,
+            Some(Codec::Hevc)
+        );
     }
 
     #[tokio::test]
