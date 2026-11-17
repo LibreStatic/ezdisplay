@@ -11,7 +11,7 @@ use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::OwnedValue;
 
 pub const SERVICE: &str = "org.gnome.Mutter.DisplayConfig";
-const PATH: &str = "/org/gnome/Mutter/DisplayConfig";
+pub const PATH: &str = "/org/gnome/Mutter/DisplayConfig";
 
 /// Property bags (`a{sv}`) of the reply, readable for boolean flags from D-Bus and from JSON.
 pub trait Props {

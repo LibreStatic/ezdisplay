@@ -23,6 +23,7 @@ mod gbm_test;
 mod gnome;
 mod gnome_dc;
 mod gnome_input;
+mod gnome_layout;
 mod hyprland;
 mod input;
 mod kde;

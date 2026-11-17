@@ -5,15 +5,19 @@
 //! Mutter sizes a virtual monitor from the PipeWire format negotiation, so there is no mode to
 //! set: the capture offers exactly the wanted size and rate (`fixed_mode`, `pw.rs`) and
 //! [`VirtualOutputProvider::settle`] reads the result back from `DisplayConfig`.
+//!
+//! Mutter does not remember the layout of a virtual monitor either: `gnome_layout` saves it when
+//! the session ends and `settle` applies it again.
 
 use crate::backend;
 use crate::gnome_dc::{self, DisplayState};
+use crate::gnome_layout;
 use crate::portal::{PortalCapture, SourceKind};
 use crate::provider::{FrameSource, OpenedOutput, OutputRequest, VirtualOutputProvider};
 use crate::pw::Target;
 use ezd_host_core::{DisplayMode, OutputInfo, SourceError};
 use std::collections::HashMap;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, Value};
@@ -34,6 +38,9 @@ pub struct GnomeProvider {
     /// Mutter adds the virtual monitor to `DisplayConfig` only once the stream has connected, so
     /// it is looked for in `settle`.
     watch: Option<(Connection, Option<DisplayState>)>,
+    /// The connector of the virtual monitor, once `settle` has found it. Shared with the session
+    /// guard, which saves the layout around it.
+    connector: Arc<Mutex<Option<String>>>,
 }
 
 impl GnomeProvider {
@@ -46,10 +53,16 @@ impl GnomeProvider {
 /// A Mutter ScreenCast session; stopping it removes the virtual monitor.
 struct MutterSession {
     session: Proxy<'static>,
+    conn: Connection,
+    connector: Arc<Mutex<Option<String>>>,
 }
 
 impl Drop for MutterSession {
     fn drop(&mut self) {
+        // Before Stop, while the monitor is still in the layout.
+        if let Some(connector) = self.connector.lock().ok().and_then(|c| c.clone()) {
+            gnome_layout::remember(&self.conn, &connector);
+        }
         if let Err(e) = self.session.call::<_, _, ()>("Stop", &()) {
             tracing::debug!("stopping the Mutter ScreenCast session: {e}");
         }
@@ -98,8 +111,11 @@ impl GnomeProvider {
             Proxy::new(&conn, SERVICE, path, SESSION_IFACE),
         )?;
         // Stops the session on every early return below.
+        self.connector = Arc::default();
         let guard = MutterSession {
             session: session.clone(),
+            conn: conn.clone(),
+            connector: self.connector.clone(),
         };
         let stream_path: OwnedObjectPath = map_zbus(
             "RecordVirtual",
@@ -197,6 +213,14 @@ impl VirtualOutputProvider for GnomeProvider {
                 last = output_info(&state, &connector);
                 if size == Some(negotiated) {
                     tracing::info!("{connector} is {}x{}", negotiated.0, negotiated.1);
+                    if let Ok(mut shared) = self.connector.lock() {
+                        *shared = Some(connector.clone());
+                    }
+                    if gnome_layout::restore(conn, &state, &connector)
+                        && let Ok(state) = gnome_dc::get_state(conn)
+                    {
+                        last = output_info(&state, &connector).or(last);
+                    }
                     break;
                 }
             }
@@ -354,5 +378,33 @@ mod tests {
         eprintln!("frames: {}", frames.len());
         assert!(frames.len() >= 3, "got {} frames", frames.len());
         assert!(frames[0].keyframe && frames[0].codec_config.is_some());
+
+        // The layout is remembered: rotate the virtual monitor, reconnect, and it is rotated
+        // again instead of back in Mutter's default layout.
+        let conn = Connection::session().unwrap();
+        let transform = |name: &str| {
+            let state = gnome_dc::get_state(&conn).unwrap();
+            state.logical_of(name).map(|l| l.transform)
+        };
+        src.start(&cfg, CursorSink::null()).expect("second start");
+        let out = src.output().expect("output info");
+        assert_eq!(transform(&out.name), Some(0));
+        let state = gnome_dc::get_state(&conn).unwrap();
+        let mut rotated = gnome_layout::capture(&state, &out.name).unwrap();
+        for l in &mut rotated.logical {
+            if l.monitors[0].connector.is_none() {
+                l.transform = 1;
+            }
+        }
+        let plan = gnome_layout::plan(&rotated, &state, &out.name).unwrap();
+        gnome_layout::apply(&conn, state.serial, plan).expect("ApplyMonitorsConfig");
+        assert_eq!(transform(&out.name), Some(1));
+        src.stop();
+
+        src.start(&cfg, CursorSink::null()).expect("third start");
+        let out = src.output().expect("output info");
+        eprintln!("output after the reconnection: {out:?}");
+        assert_eq!(transform(&out.name), Some(1));
+        src.stop();
     }
 }
