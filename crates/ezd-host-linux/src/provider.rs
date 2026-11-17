@@ -71,6 +71,12 @@ pub trait VirtualOutputProvider: Send {
     fn settle(&mut self, _negotiated: (u32, u32)) -> Option<OutputInfo> {
         None
     }
+
+    /// Whether the desktop is locked and refuses capture. A desktop that reports the lock a
+    /// moment after it closes the capture waits up to `wait` for it; the others answer at once.
+    fn screen_locked(&self, _wait: std::time::Duration) -> bool {
+        false
+    }
 }
 
 /// Refresh rate as compositor mode strings take it (`60`, `59.94`): whole hertz without a

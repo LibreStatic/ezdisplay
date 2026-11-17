@@ -6,6 +6,7 @@
     <string name="status_connected">Connesso: %1$d×%2$d@%3$s %4$s %5$s</string>
     <string name="status_error">%1$s. Nuovo tentativo…</string>
     <string name="status_ended">Disconnesso (%1$s). In attesa dell\'host su %2$s…</string>
+    <string name="status_host_locked">Lo schermo del computer è bloccato. L\'immagine torna quando lo sblocchi.</string>
     <string name="status_bad_caps">Impossibile avviare: %1$s</string>
     <string name="telemetry">%1$s fps · %2$s Mbit/s\ndecodifica %3$s / %4$s ms (p50 / p95)\nend-to-end %5$s / %6$s ms (p50 / p95)\nRTT %7$s ms · scartati %8$d\n%9$s</string>
     <string name="status_input_note">Input: %1$s</string>

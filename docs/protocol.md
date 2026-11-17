@@ -367,6 +367,12 @@ Cursor messages may arrive any time after `StreamConfig`; a client must tolerate
 before its first video frame. Handshake messages are answered within a few seconds or the peer
 gives up (the host uses 10 s per step).
 
+`Bye.reason` is free text, except for one well-known value: `screen-locked`
+(`ezd_proto::BYE_SCREEN_LOCKED`). The host sends it when its desktop is locked and cannot be captured
+until it is unlocked (GNOME Shell closes every screen cast while the lock screen is shown). A client
+should say so and retry slowly instead of reconnecting at once; a client that does not know the value
+just shows the text.
+
 ### Negotiation (`ezd_proto::negotiate`)
 
 * Codec: H.264 unless the preferences ask for another codec and both sides support it

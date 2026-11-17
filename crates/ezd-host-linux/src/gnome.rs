@@ -17,6 +17,7 @@ use crate::provider::{FrameSource, OpenedOutput, OutputRequest, VirtualOutputPro
 use crate::pw::Target;
 use ezd_host_core::{DisplayMode, OutputInfo, SourceError};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use zbus::blocking::{Connection, Proxy};
@@ -30,6 +31,10 @@ const STREAM_IFACE: &str = "org.gnome.Mutter.ScreenCast.Stream";
 const CURSOR_METADATA: u32 = 2;
 const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+/// How often the lock state is asked again while waiting for it.
+const LOCK_POLL: Duration = Duration::from_millis(150);
+/// How long one lock probe may take, connection included.
+const LOCK_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Provider for Mutter.
 #[derive(Default)]
@@ -97,12 +102,88 @@ fn map_zbus<T>(what: &str, r: zbus::Result<T>) -> Result<T, SourceError> {
     r.map_err(|e| SourceError::msg(format!("Mutter ScreenCast {what}: {e}")))
 }
 
+/// Whether Mutter's refusal text says the session was inhibited (the lock screen is up).
+fn is_inhibited(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("inhibited")
+}
+
+/// Whether GNOME Shell's screen shield is active, which is exactly when it inhibits capture.
+/// Any error counts as not locked.
+fn screen_locked(conn: &Connection) -> bool {
+    Proxy::new(
+        conn,
+        "org.gnome.ScreenSaver",
+        "/org/gnome/ScreenSaver",
+        "org.gnome.ScreenSaver",
+    )
+    .and_then(|p| p.call::<_, _, bool>("GetActive", &()))
+    .unwrap_or(false)
+}
+
+/// Set while a lock probe has not returned yet, so unanswered probes never pile up.
+static LOCK_PROBE_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Runs `call` on a worker thread and waits up to `limit` for its answer. `None` when it does not
+/// answer in time, or when an earlier call guarded by `busy` is still unanswered: then no new
+/// worker is started, so at most one is ever outstanding per flag.
+fn bounded<T: Send + 'static>(
+    busy: &'static AtomicBool,
+    limit: Duration,
+    call: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    if busy.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("lock-probe".into())
+        .spawn(move || {
+            let answer = call();
+            busy.store(false, Ordering::Release);
+            let _ = tx.send(answer);
+        });
+    if spawned.is_err() {
+        busy.store(false, Ordering::Release);
+        return None;
+    }
+    rx.recv_timeout(limit).ok()
+}
+
+/// [`screen_locked`] on `conn` (or a new session connection) with a bound on the whole probe:
+/// `None` when the shell does not answer within `limit`, so the caller is never held up.
+fn probe_locked(conn: Option<Connection>, limit: Duration) -> Option<bool> {
+    bounded(&LOCK_PROBE_BUSY, limit, move || match conn {
+        Some(conn) => screen_locked(&conn),
+        None => Connection::session().is_ok_and(|c| screen_locked(&c)),
+    })
+}
+
+/// Like [`map_zbus`] for the calls that open a session: a refusal while the screen is locked
+/// becomes [`SourceError::ScreenLocked`].
+fn map_open<T>(conn: &Connection, what: &str, r: zbus::Result<T>) -> Result<T, SourceError> {
+    r.map_err(|e| {
+        if is_inhibited(&e.to_string())
+            || probe_locked(Some(conn.clone()), LOCK_PROBE_TIMEOUT) == Some(true)
+        {
+            log_locked();
+            SourceError::ScreenLocked
+        } else {
+            SourceError::msg(format!("Mutter ScreenCast {what}: {e}"))
+        }
+    })
+}
+
+fn log_locked() {
+    tracing::info!("the screen is locked: Mutter refuses screen casts until it is unlocked");
+}
+
 impl GnomeProvider {
     fn open_mutter(&mut self) -> Result<OpenedOutput, SourceError> {
         let conn = map_zbus("connect", Connection::session())?;
         let before = gnome_dc::get_state(&conn).ok();
         let sc = map_zbus("proxy", Proxy::new(&conn, SERVICE, ROOT, SERVICE))?;
-        let path: OwnedObjectPath = map_zbus(
+        let path: OwnedObjectPath = map_open(
+            &conn,
             "CreateSession",
             sc.call("CreateSession", &(HashMap::<&str, Value>::new(),)),
         )?;
@@ -117,7 +198,8 @@ impl GnomeProvider {
             conn: conn.clone(),
             connector: self.connector.clone(),
         };
-        let stream_path: OwnedObjectPath = map_zbus(
+        let stream_path: OwnedObjectPath = map_open(
+            &conn,
             "RecordVirtual",
             session.call("RecordVirtual", &(record_virtual_args(),)),
         )?;
@@ -139,7 +221,7 @@ impl GnomeProvider {
                 }
             })
             .map_err(|e| SourceError::msg(format!("cannot start the signal thread: {e}")))?;
-        map_zbus("Start", session.call::<_, _, ()>("Start", &()))?;
+        map_open(&conn, "Start", session.call::<_, _, ()>("Start", &()))?;
         let node = rx.recv_timeout(STREAM_TIMEOUT).map_err(|_| {
             SourceError::msg("Mutter did not report a PipeWire node for the virtual monitor")
         })?;
@@ -186,6 +268,11 @@ impl VirtualOutputProvider for GnomeProvider {
 
     fn open(&mut self, req: &OutputRequest) -> Result<OpenedOutput, SourceError> {
         self.watch = None;
+        // Both paths are refused while the screen is locked: say so before asking for a session.
+        if self.screen_locked(Duration::ZERO) {
+            log_locked();
+            return Err(SourceError::ScreenLocked);
+        }
         if req.kind == SourceKind::Virtual && backend::probe_bus().mutter {
             self.open_mutter()
         } else {
@@ -193,6 +280,33 @@ impl VirtualOutputProvider for GnomeProvider {
                 "using the ScreenCast portal (no Mutter ScreenCast service, or a monitor was asked for)"
             );
             self.open_portal(req)
+        }
+    }
+
+    fn screen_locked(&self, wait: Duration) -> bool {
+        let conn = self.watch.as_ref().map(|(conn, _)| conn.clone());
+        // GNOME Shell inhibits capture when the lock screen starts to appear and reports the
+        // screen saver active only after its animation, so a negative answer is asked again.
+        let deadline = Instant::now() + wait;
+        loop {
+            // The first probe gets its full limit; later ones only the time that is left.
+            let left = deadline.saturating_duration_since(Instant::now());
+            let limit = if wait.is_zero() {
+                LOCK_PROBE_TIMEOUT
+            } else {
+                left.min(LOCK_PROBE_TIMEOUT)
+            };
+            match probe_locked(conn.clone(), limit) {
+                Some(true) => return true,
+                // An unanswered probe: do not stack more of them behind it.
+                None => return false,
+                Some(false) => {}
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            std::thread::sleep(LOCK_POLL.min(left));
         }
     }
 
@@ -284,6 +398,47 @@ mod tests {
     use crate::source::LinuxSource;
     use ezd_host_core::{CursorSink, PlatformOptions, VideoSource};
     use ezd_proto::{Codec, StreamConfig};
+
+    #[test]
+    fn unanswered_probes_do_not_pile_up() {
+        static BUSY: AtomicBool = AtomicBool::new(false);
+        static STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let (release, held) = mpsc::channel::<()>();
+        let (running, started) = mpsc::channel::<()>();
+        let stuck = move || {
+            STARTED.fetch_add(1, Ordering::SeqCst);
+            let _ = running.send(());
+            let _ = held.recv();
+            true
+        };
+        assert_eq!(bounded(&BUSY, Duration::from_millis(20), stuck), None);
+        // The worker may be scheduled late: wait until it runs before counting.
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        // While the first call is unanswered, further probes start no worker.
+        for _ in 0..5 {
+            let probe = || {
+                STARTED.fetch_add(1, Ordering::SeqCst);
+                true
+            };
+            assert_eq!(bounded(&BUSY, Duration::from_millis(20), probe), None);
+        }
+        assert_eq!(STARTED.load(Ordering::SeqCst), 1);
+
+        // Once it returns, probing works again.
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while BUSY.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(bounded(&BUSY, Duration::from_secs(5), || true), Some(true));
+    }
+
+    #[test]
+    fn inhibited_refusals_are_recognised() {
+        assert!(is_inhibited("Session creation inhibited"));
+        assert!(is_inhibited("org.freedesktop.DBus.Error.Failed: INHIBITED"));
+        assert!(!is_inhibited("Mutter ScreenCast Start: no such object"));
+    }
 
     #[test]
     fn record_virtual_requests_cursor_metadata_on_a_platform_monitor() {

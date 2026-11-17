@@ -161,6 +161,9 @@ pub enum EndReason {
     SourceFailed(String),
     /// The video source stopped producing frames; the client was sent `Bye`.
     SourceStopped,
+    /// The desktop is locked and cannot be captured; the client was sent `Bye` with
+    /// [`ezd_proto::BYE_SCREEN_LOCKED`].
+    ScreenLocked,
     /// [`SessionOptions::shutdown`] was set; the client was sent `Bye`.
     HostShutdown,
     /// The client sent a new `Hello`: its app was restarted and opened the link again. An
@@ -628,6 +631,7 @@ pub async fn run_host_session_with(
                 video_done = true;
                 break match r {
                     Ok(Ok(())) => EndReason::SourceStopped,
+                    Ok(Err(SourceError::ScreenLocked)) => EndReason::ScreenLocked,
                     Ok(Err(e)) => EndReason::SourceFailed(e.to_string()),
                     Err(_) => EndReason::SourceFailed("video thread terminated unexpectedly".into()),
                 };
@@ -644,6 +648,11 @@ pub async fn run_host_session_with(
     match &end {
         EndReason::SourceFailed(r) => {
             let _ = tx.send_control(Message::Bye(Bye { reason: r.clone() }));
+        }
+        EndReason::ScreenLocked => {
+            let _ = tx.send_control(Message::Bye(Bye {
+                reason: ezd_proto::BYE_SCREEN_LOCKED.into(),
+            }));
         }
         EndReason::SourceStopped => {
             let _ = tx.send_control(Message::Bye(Bye {
@@ -2022,6 +2031,62 @@ mod tests {
             stopped.load(Ordering::Acquire),
             "the session returned before the source stopped"
         );
+    }
+
+    /// A source whose capture fails because the desktop got locked.
+    struct LockedSource(ScriptedSource);
+    impl VideoSource for LockedSource {
+        fn encoders(&self) -> Vec<ezd_proto::EncoderCaps> {
+            self.0.encoders()
+        }
+        fn start(&mut self, cfg: &StreamConfig, cursor: CursorSink) -> Result<(), SourceError> {
+            self.0.start(cfg, cursor)
+        }
+        fn next_frame(&mut self, _t: Duration) -> Result<Option<EncodedFrame>, SourceError> {
+            Err(SourceError::ScreenLocked)
+        }
+        fn request_keyframe(&mut self) {}
+        fn stop(&mut self) {
+            self.0.stop();
+        }
+    }
+
+    #[tokio::test]
+    async fn locked_screen_ends_session_with_the_well_known_bye() {
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let src = LockedSource(ScriptedSource::new(Duration::from_millis(5), 100));
+        let host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(src),
+            Prefs::default(),
+            fast_opts(),
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(1024);
+        tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "c")))
+            .unwrap();
+        tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        tx.send_control(Message::ClientAudio(ClientAudio::none()))
+            .unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+            .unwrap();
+        for _ in 0..4 {
+            recv(&mut rx).await;
+        }
+        tx.send_control(Message::ConfigAck).unwrap();
+        let bye = loop {
+            if let Message::Bye(b) = recv(&mut rx).await {
+                break b;
+            }
+        };
+        assert_eq!(bye.reason, ezd_proto::BYE_SCREEN_LOCKED);
+        let s = timeout(Duration::from_secs(5), host)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.end, EndReason::ScreenLocked);
     }
 
     #[tokio::test]

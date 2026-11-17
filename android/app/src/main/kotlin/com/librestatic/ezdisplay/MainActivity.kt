@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         const val LAST_WIFI_HOST = "wifi_last_host"
         const val BACKOFF_MIN_MS = 1000L
         const val BACKOFF_MAX_MS = 5000L
+        const val LOCKED_RETRY_MS = HostLock.RETRY_MS
         const val STATS_INTERVAL_MS = 250L
         const val STATUS_HIDE_MS = 3000L
         const val NOTE_SHOW_MS = 6000L
@@ -136,6 +137,9 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
     private var surfaceReady = false
     private var sessionActive = false // NativeBridge.start succeeded and was not stopped
     private var backoffMs = BACKOFF_MIN_MS
+
+    /** The host said its screen is locked: keep that message up and retry slowly until it streams again. */
+    private var hostLocked = false
     private var wasStreaming = false
     private var lastStatsPoll = 0L
     private var streamW = 0
@@ -488,6 +492,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         if (shouldSwitchToAccessory(true, sessionActive, activeAccessory)) {
             if (sessionActive) stopSession()
             backoffMs = BACKOFF_MIN_MS
+            hostLocked = false
             scheduleConnect(0)
         }
     }
@@ -502,6 +507,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         if (!activeAccessory) return
         stopSession()
         backoffMs = BACKOFF_MIN_MS
+        hostLocked = false
         tryWifiNext = false
         setStatus(getString(R.string.status_waiting, "$HOST:$PORT"))
         scheduleConnect(0)
@@ -530,6 +536,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         if (routedAway) return
         started = true
         backoffMs = BACKOFF_MIN_MS
+        hostLocked = false
         tryWifiNext = false
         setStatus(getString(R.string.status_waiting, "$HOST:$PORT"))
         Choreographer.getInstance().postFrameCallback(this)
@@ -643,11 +650,13 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         bufH = 0
         fitSurface()
         frameRateSet = 0
+        // A retry while the host is locked keeps the locked message up (and puts it back after a failed start).
         setStatus(
-            when (route) {
-                Route.ACCESSORY -> getString(R.string.status_usb_connecting)
-                Route.WIFI -> getString(R.string.status_wifi_connecting, hostLabel(choice!!))
-                Route.TCP -> getString(R.string.status_waiting, "$HOST:$PORT")
+            when {
+                !HostLock.showsProgress(hostLocked) -> getString(R.string.status_host_locked)
+                route == Route.ACCESSORY -> getString(R.string.status_usb_connecting)
+                route == Route.WIFI -> getString(R.string.status_wifi_connecting, hostLabel(choice!!))
+                else -> getString(R.string.status_waiting, "$HOST:$PORT")
             },
         )
     }
@@ -832,15 +841,19 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         val usb = activeAccessory
         if (j.optString("phase") != "streaming") hideOsd(false)
         val addr = if (wifiChoice != null) hostLabel(wifiChoice) else "$HOST:$PORT"
-        when (j.optString("phase")) {
-            "connecting" -> setStatus(
+        // The native layer reports "streaming" once the stream is negotiated, before the host opens its
+        // capture: while the host is locked that is not a stream yet, so the locked message stays up.
+        val phase = j.optString("phase")
+        val pending = hostLocked && phase == "streaming" && !HostLock.confirmsUnlock(j.optLong("frames_received"))
+        when (if (pending) "" else phase) {
+            "connecting" -> if (HostLock.showsProgress(hostLocked)) setStatus(
                 when {
                     usb -> getString(R.string.status_usb_connecting)
                     wifiChoice != null -> getString(R.string.status_wifi_connecting, addr)
                     else -> getString(R.string.status_waiting, addr)
                 },
             )
-            "handshaking" -> setStatus(
+            "handshaking" -> if (HostLock.showsProgress(hostLocked)) setStatus(
                 when {
                     usb -> getString(R.string.status_usb_handshake)
                     wifiChoice != null -> getString(R.string.status_wifi_handshake, addr)
@@ -861,6 +874,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
                 if (!wasStreaming) {
                     wasStreaming = true
                     pairingLost = null
+                    hostLocked = false
                     updateChrome()
                     backoffMs = BACKOFF_MIN_MS
                     streamW = j.optInt("width")
@@ -885,12 +899,22 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
                     statusView.visibility = View.GONE
                 }
             }
-            "ended" -> disconnected(
-                if (usb) getString(R.string.status_ended_usb, j.optString("detail"))
-                else getString(R.string.status_ended, j.optString("detail"), addr),
-                false,
-            )
+            "ended" -> {
+                val code = if (j.isNull("code")) null else j.optString("code")
+                if (HostLock.isLocked(code)) {
+                    hostLocked = true
+                    disconnected(getString(R.string.status_host_locked), false, locked = true)
+                } else {
+                    hostLocked = false
+                    disconnected(
+                        if (usb) getString(R.string.status_ended_usb, j.optString("detail"))
+                        else getString(R.string.status_ended, j.optString("detail"), addr),
+                        false,
+                    )
+                }
+            }
             "failed" -> {
+                hostLocked = false
                 // A Wi-Fi failure carries a stable code; the detail is English text for the log.
                 val code = if (j.isNull("code")) null else j.optString("code")
                 val message = if (code != null && activeWifi != null) {
@@ -909,6 +933,8 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         telemetryView.visibility = if (telemetryOn) View.VISIBLE else View.GONE
         if (telemetryOn) showTelemetry(j)
         hostLacksKeys = !j.isNull("input_caps") && (j.optInt("input_caps") and 8) == 0
+        // Input notices wait until the host is unlocked: the locked message stays up.
+        if (!HostLock.showsProgress(hostLocked)) return
         val note = if (j.isNull("input_note")) "" else j.optString("input_note")
         if (note != lastInputNote) {
             lastInputNote = note
@@ -936,12 +962,21 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         statusHideAt = SystemClock.uptimeMillis() + ms
     }
 
-    private fun disconnected(message: String, failed: Boolean) {
+    private fun disconnected(message: String, failed: Boolean, locked: Boolean = false) {
         Log.i(TAG, "disconnected: $message")
         val wasWifi = activeWifi != null
         // Any failure over Wi-Fi demotes that address, so the next attempt tries another candidate.
         if (failed) activeWifi?.let { wifiFailures.record(it.host.fingerprint, it.addr, SystemClock.elapsedRealtime()) }
         stopSession()
+        if (locked) {
+            // The host is fine, only its screen is locked: retry at a fixed, slow pace and leave the
+            // Wi-Fi record and the backoff alone.
+            setStatus(message)
+            // The retry goes over the same route: without this a Wi-Fi session would retry on loopback.
+            tryWifiNext = wasWifi
+            scheduleConnect(LOCKED_RETRY_MS)
+            return
+        }
         // Keep telling the user why Wi-Fi stopped until a host is paired again.
         if (wifiTarget() != null) pairingLost = null
         setStatus(message)
