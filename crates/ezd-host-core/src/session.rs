@@ -845,6 +845,24 @@ struct QualityPlan {
     wanted_codec: Option<Codec>,
 }
 
+/// `prefs` without an encoder override this host does not offer (a name from another platform or
+/// GPU vendor, or one whose probe failed): the encoder is then chosen automatically instead of
+/// rejecting every session with `NoCommonCodec`.
+fn usable_prefs(prefs: &Prefs, host: &HostCaps) -> Prefs {
+    let mut prefs = prefs.clone();
+    if let Some(name) = &prefs.encoder
+        && !host.encoders.iter().any(|e| &e.name == name)
+    {
+        tracing::warn!(
+            encoder = %name,
+            offered = ?host.encoders.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            "the forced encoder is not available on this host; choosing one automatically"
+        );
+        prefs.encoder = None;
+    }
+    prefs
+}
+
 async fn handshake(
     tx: &MuxSender,
     rx: &mut MuxReceiver,
@@ -912,7 +930,7 @@ async fn handshake(
         None
     };
     tx.send_control(Message::HostCaps(host_caps.clone()))?;
-    let merged = prefs.with_client(client_prefs.as_ref());
+    let merged = usable_prefs(&prefs.with_client(client_prefs.as_ref()), host_caps);
     let (cfg, range) = match negotiate_hdr(
         &caps,
         host_caps,
@@ -1277,6 +1295,58 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap()
+    }
+
+    #[test]
+    fn an_encoder_override_is_kept_only_when_the_host_offers_it() {
+        let host = HostCaps {
+            os: "t".into(),
+            gpu: "t".into(),
+            encoders: ScriptedSource::new(Duration::from_millis(5), 1).encoders(),
+        };
+        let forced = |name: &str| Prefs {
+            encoder: Some(name.into()),
+            ..Prefs::default()
+        };
+        assert_eq!(
+            usable_prefs(&forced("scripted"), &host).encoder.as_deref(),
+            Some("scripted")
+        );
+        assert_eq!(usable_prefs(&forced("h264_nvenc"), &host).encoder, None);
+        assert_eq!(usable_prefs(&Prefs::default(), &host), Prefs::default());
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_forced_encoder_falls_back_to_an_offered_one() {
+        let (host_link, client_link) = Link::duplex_pair(1 << 20);
+        let src = ScriptedSource::new(Duration::from_millis(5), 3000);
+        let _host = tokio::spawn(run_host_session_with(
+            host_link,
+            Box::new(src),
+            Prefs {
+                encoder: Some("h264_nvenc".into()),
+                ..Prefs::default()
+            },
+            fast_opts(),
+        ));
+        let (tx, mut rx, _t) = client_link.into_mux(DEFAULT_CHUNK_LEN);
+        tx.send_control(Message::Hello(Hello::new(Role::Client, "t", "client")))
+            .unwrap();
+        tx.send_control(Message::ClientCaps(caps())).unwrap();
+        tx.send_control(Message::ClientHdr(ClientHdr::none()))
+            .unwrap();
+        tx.send_control(Message::ClientAudio(ClientAudio::none()))
+            .unwrap();
+        tx.send_control(Message::ClientPrefs(ClientPrefs::auto()))
+            .unwrap();
+        let cfg = loop {
+            match recv(&mut rx).await {
+                Message::StreamConfig(c) => break c,
+                Message::Reject(r) => panic!("rejected: {r:?}"),
+                _ => {}
+            }
+        };
+        assert_eq!(cfg.encoder_name, "scripted");
     }
 
     #[tokio::test]
