@@ -49,6 +49,9 @@ pub struct PwParams {
     pub fps: u32,
     /// Modifiers we can import; `None` disables DMA-BUF.
     pub dmabuf_modifiers: Option<Vec<u64>>,
+    /// Offer exactly this size and frame rate instead of ranges around them (see
+    /// [`crate::provider::FrameSource::PipeWire`]).
+    pub fixed_mode: bool,
 }
 
 enum Cmd {
@@ -324,14 +327,24 @@ fn cursor_meta_size() -> u32 {
 }
 
 fn enum_formats(params: &PwParams, with_dmabuf: bool) -> Vec<Vec<u8>> {
-    let size = Val::RangeRect((params.width, params.height), (1, 1), (16384, 16384));
+    let fps = params.fps.max(1);
+    // A range leaves the choice to the default of one side, and which side wins depends on the
+    // PipeWire version: with 1.0, Mutter's own default (1280x720 at 60 Hz) wins over ours.
+    let (size, max_framerate) = if params.fixed_mode {
+        (Val::Rect(params.width, params.height), Val::Frac(fps, 1))
+    } else {
+        (
+            Val::RangeRect((params.width, params.height), (1, 1), (16384, 16384)),
+            Val::RangeFrac((fps, 1), (1, 1), (fps.max(240), 1)),
+        )
+    };
     let framerate = Val::RangeFrac((0, 1), (0, 1), (240, 1));
     let mk = |format: u32, modifiers: Option<Vec<u64>>| VideoFormatProps {
         format,
         modifiers,
         size: size.clone(),
         framerate: framerate.clone(),
-        max_fps: params.fps.max(1),
+        max_framerate: max_framerate.clone(),
     };
     let mut out = Vec::new();
     let dmabuf_mods = params.dmabuf_modifiers.as_ref().filter(|_| with_dmabuf);
@@ -886,6 +899,7 @@ mod tests {
             height: 1080,
             fps: 60,
             dmabuf_modifiers: Some(default_intel_modifiers()),
+            fixed_mode: false,
         };
         let n8 = OFFERED_FORMATS.len();
         let n = n8 + OFFERED_FORMATS_10.len();
@@ -904,12 +918,36 @@ mod tests {
     }
 
     #[test]
+    fn fixed_mode_offers_one_size_and_rate_instead_of_ranges() {
+        let ranged = PwParams {
+            width: 2960,
+            height: 1848,
+            fps: 120,
+            dmabuf_modifiers: None,
+            fixed_mode: false,
+        };
+        let fixed = PwParams {
+            fixed_mode: true,
+            ..ranged.clone()
+        };
+        let (a, b) = (enum_formats(&ranged, true), enum_formats(&fixed, true));
+        assert_eq!(a.len(), b.len());
+        for (r, f) in a.iter().zip(&b) {
+            // Both name the wanted size; only the ranged offer lets the producer pick another.
+            assert_eq!(pod::parse_format(r).unwrap().size, Some((2960, 1848)));
+            assert_eq!(pod::parse_format(f).unwrap().size, Some((2960, 1848)));
+            assert!(f.len() < r.len());
+        }
+    }
+
+    #[test]
     fn ten_bit_formats_come_after_every_8_bit_one() {
         let p = PwParams {
             width: 1920,
             height: 1080,
             fps: 60,
             dmabuf_modifiers: Some(default_intel_modifiers()),
+            fixed_mode: false,
         };
         let n8 = OFFERED_FORMATS.len();
         let got = offered(&enum_formats(&p, true));

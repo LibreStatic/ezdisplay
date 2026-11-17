@@ -30,7 +30,13 @@ pub struct OutputRequest {
 /// Where the frames of the opened output come from.
 pub enum FrameSource {
     /// A PipeWire node, on the remote behind `fd` or, without one, on the user's own daemon.
-    PipeWire { fd: Option<OwnedFd>, target: Target },
+    /// `fixed_mode`: the producer takes the size and refresh rate of the output from the format
+    /// negotiation (Mutter's virtual monitors), so the capture offers exactly the wanted mode.
+    PipeWire {
+        fd: Option<OwnedFd>,
+        target: Target,
+        fixed_mode: bool,
+    },
     /// A Wayland output captured directly over the compositor's capture protocols
     /// (`wl_capture.rs`); `output` is its `wl_output` name (`HEADLESS-2`, `ezdisplay-1`).
     Wayland { output: String },

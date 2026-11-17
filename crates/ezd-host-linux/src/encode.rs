@@ -1937,8 +1937,7 @@ fn export_dmabuf(
         }
         let layer = &d.layers[0];
         let mut planes = Vec::new();
-        for i in 0..layer.nb_planes as usize {
-            let p = &layer.planes[i];
+        for p in layer.planes.iter().take(layer.nb_planes as usize) {
             let o = &d.objects[p.object_index as usize];
             let fd = libc::fcntl(o.fd, libc::F_DUPFD_CLOEXEC, 0);
             if fd < 0 {
