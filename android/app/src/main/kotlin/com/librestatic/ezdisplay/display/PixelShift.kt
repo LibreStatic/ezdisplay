@@ -50,12 +50,17 @@ class PixelShift(config: PixelShiftConfig = PixelShiftConfig(), nowMs: Long = 0L
         lastPointerMs = nowMs
     }
 
-    /**
-     * Call for every hover or other generic pointer event; [hovering] is true while a pen stays in range. A mouse
-     * passes false, because it sends no exit when it stops: only its pause counts. Never changes the touch state.
-     */
+    /** Call for every hover event of a pen; [hovering] is true while it stays in range. Leaves the touch state alone. */
     fun onHover(hovering: Boolean, nowMs: Long) {
         this.hovering = hovering
+        lastPointerMs = nowMs
+    }
+
+    /**
+     * Call for pointer events that hold nothing: a mouse moving or scrolling sends no exit when it stops, so only
+     * its pause counts. Leaves the touch and pen hover states alone.
+     */
+    fun onActivity(nowMs: Long) {
         lastPointerMs = nowMs
     }
 

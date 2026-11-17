@@ -87,10 +87,24 @@ class PixelShiftTest {
         assertTrue(s.tick(10 * STEP + QUIET + STEP, covered = false))
     }
 
-    @Test fun aHoverThatIsNotAPenDoesNotReleaseAHeldTouch() {
+    @Test fun mouseActivityDoesNotReleaseAHoveringPen() {
+        val s = PixelShift(on())
+        s.onHover(true, 0)
+        s.onActivity(STEP)
+        assertFalse(s.tick(STEP + QUIET + 10_000, covered = false))
+    }
+
+    @Test fun mouseActivityOnlyDelaysTheStep() {
+        val s = PixelShift(on())
+        s.onActivity(STEP)
+        assertFalse(s.tick(STEP + QUIET - 1, covered = false))
+        assertTrue(s.tick(STEP + QUIET, covered = false))
+    }
+
+    @Test fun mouseActivityDoesNotReleaseAHeldTouch() {
         val s = PixelShift(on())
         s.onTouch(true, 0)
-        s.onHover(false, STEP)
+        s.onActivity(STEP)
         assertFalse(s.tick(STEP + QUIET + 10_000, covered = false))
         s.onTouch(false, 2 * STEP)
         assertTrue(s.tick(2 * STEP + QUIET, covered = false))

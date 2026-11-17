@@ -1186,7 +1186,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             // pause counts.
             val tool = ev.getToolType(0)
             val pen = tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER
-            shift.onHover(pen && !exit, SystemClock.uptimeMillis())
+            if (pen) shift.onHover(!exit, SystemClock.uptimeMillis()) else shift.onActivity(SystemClock.uptimeMillis())
             if (swallowHover) {
                 if (exit) swallowHover = false
                 return true
