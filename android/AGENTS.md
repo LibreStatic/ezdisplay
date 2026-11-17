@@ -44,7 +44,7 @@ Repository-wide rules (languages and localization, naming) are in the root `AGEN
 - `display/PixelShift.kt` is the burn-in protection for the stream (pure Kotlin, time passed in; `PixelShiftPrefs` next
   to it, on by default only for OLED, radius 1..8 px, default 4). The offset walks a serpentine over the
   (2r+1) x (2r+1) grid, one pixel per step, at most one step every 60 s, and only 3 s after the last pointer event with
-  no pointer down and no stylus hovering, or while the screensaver covers the picture. `MainActivity` translates
+  no pointer down and no pen hovering (either end; touch and hover are tracked apart), or while the screensaver covers the picture. `MainActivity` translates
   `shiftLayer` (the parent of `stage`, so the local zoom keeps `stage.translationX/Y` to itself) and `forward()`
   subtracts the offset from every position before `NativeBridge.inputEvent`; the native engine never sees the shift.
   The uncovered edge shows the black `root`. `PixelCopy` reads the surface buffer, so the shift is not a screen change.

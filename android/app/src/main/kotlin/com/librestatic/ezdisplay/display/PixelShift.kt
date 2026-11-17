@@ -23,7 +23,8 @@ class PixelShift(config: PixelShiftConfig = PixelShiftConfig(), nowMs: Long = 0L
     private var direction = 1
     private var lastStepMs = nowMs
     private var lastPointerMs = nowMs
-    private var pointerActive = false
+    private var touchDown = false
+    private var hovering = false
 
     var offsetX: Int = 0
         private set
@@ -43,9 +44,18 @@ class PixelShift(config: PixelShiftConfig = PixelShiftConfig(), nowMs: Long = 0L
         return restart(nowMs)
     }
 
-    /** Call for every local pointer event; [active] is true while a pointer is down or hovering. */
-    fun onPointer(active: Boolean, nowMs: Long) {
-        pointerActive = active
+    /** Call for every touch event (finger, pen or mouse button); [down] is true until the last pointer lifts. */
+    fun onTouch(down: Boolean, nowMs: Long) {
+        touchDown = down
+        lastPointerMs = nowMs
+    }
+
+    /**
+     * Call for every hover or other generic pointer event; [hovering] is true while a pen stays in range. A mouse
+     * passes false, because it sends no exit when it stops: only its pause counts. Never changes the touch state.
+     */
+    fun onHover(hovering: Boolean, nowMs: Long) {
+        this.hovering = hovering
         lastPointerMs = nowMs
     }
 
@@ -53,7 +63,7 @@ class PixelShift(config: PixelShiftConfig = PixelShiftConfig(), nowMs: Long = 0L
     fun tick(nowMs: Long, covered: Boolean): Boolean {
         if (!config.enabled) return false
         if (nowMs - lastStepMs < STEP_INTERVAL_MS) return false
-        val quiet = !pointerActive && nowMs - lastPointerMs >= QUIET_MS
+        val quiet = !touchDown && !hovering && nowMs - lastPointerMs >= QUIET_MS
         if (!covered && !quiet) return false
         lastStepMs = nowMs
         val last = side() * side() - 1

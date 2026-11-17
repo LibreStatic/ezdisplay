@@ -437,6 +437,9 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         saverMotion = idleConfig.motion
         idle.setConfig(idleConfig, now)
         idle.setArmed(true, now)
+        // A pointer that left while the activity was away sent no up or exit here.
+        shift.onTouch(false, now)
+        shift.onHover(false, now)
         if (shift.setConfig(PixelShiftPrefs.read(this), now)) applyShift()
         changeDetector.reset()
         applyInputConfig()
@@ -1095,7 +1098,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         if (routedAway) return super.dispatchTouchEvent(ev)
         val action = ev.actionMasked
         val ending = action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
-        shift.onPointer(!ending, SystemClock.uptimeMillis())
+        shift.onTouch(!ending, SystemClock.uptimeMillis())
         if (swallowTouch) {
             if (ending) swallowTouch = false
             return true
@@ -1179,9 +1182,11 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         if (routedAway) return super.dispatchGenericMotionEvent(ev)
         if (ev.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
             val exit = ev.actionMasked == MotionEvent.ACTION_HOVER_EXIT
-            // A hovering stylus holds the picture still; a resting mouse sends no exit, so only its pause counts.
-            val stylus = ev.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
-            shift.onPointer(stylus && !exit, SystemClock.uptimeMillis())
+            // A hovering pen (either end) holds the picture still; a resting mouse sends no exit, so only its
+            // pause counts.
+            val tool = ev.getToolType(0)
+            val pen = tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER
+            shift.onHover(pen && !exit, SystemClock.uptimeMillis())
             if (swallowHover) {
                 if (exit) swallowHover = false
                 return true

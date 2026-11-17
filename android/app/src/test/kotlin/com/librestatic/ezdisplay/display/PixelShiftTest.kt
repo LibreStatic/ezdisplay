@@ -63,23 +63,23 @@ class PixelShiftTest {
     @Test fun noStepBeforeTheIntervalOrWhileAPointerIsActive() {
         val s = PixelShift(on())
         assertFalse(s.tick(STEP - 1, covered = false))
-        s.onPointer(true, STEP)
+        s.onTouch(true, STEP)
         assertFalse(s.tick(STEP + QUIET + 10_000, covered = false))
         assertEquals(0 to 0, s.pos())
     }
 
     @Test fun noStepUntilTheQuietTimeAfterTheLastPointerEvent() {
         val s = PixelShift(on())
-        s.onPointer(false, STEP)
+        s.onTouch(false, STEP)
         assertFalse(s.tick(STEP + QUIET - 1, covered = false))
         assertTrue(s.tick(STEP + QUIET, covered = false))
     }
 
     @Test fun aPendingStepFiresOnceAndStepsDoNotAccumulate() {
         val s = PixelShift(on())
-        s.onPointer(true, 0)
+        s.onTouch(true, 0)
         assertFalse(s.tick(10 * STEP, covered = false))
-        s.onPointer(false, 10 * STEP)
+        s.onTouch(false, 10 * STEP)
         assertTrue(s.tick(10 * STEP + QUIET, covered = false))
         assertEquals(1, abs(s.offsetX) + abs(s.offsetY))
         // The next step is a full interval after the one just taken.
@@ -87,9 +87,30 @@ class PixelShiftTest {
         assertTrue(s.tick(10 * STEP + QUIET + STEP, covered = false))
     }
 
+    @Test fun aHoverThatIsNotAPenDoesNotReleaseAHeldTouch() {
+        val s = PixelShift(on())
+        s.onTouch(true, 0)
+        s.onHover(false, STEP)
+        assertFalse(s.tick(STEP + QUIET + 10_000, covered = false))
+        s.onTouch(false, 2 * STEP)
+        assertTrue(s.tick(2 * STEP + QUIET, covered = false))
+    }
+
+    @Test fun aHoveringPenHoldsThePictureUntilItLeaves() {
+        val s = PixelShift(on())
+        s.onHover(true, STEP)
+        assertFalse(s.tick(STEP + QUIET + 10_000, covered = false))
+        // A touch that ends while the pen is still in range does not release it either.
+        s.onTouch(true, 2 * STEP)
+        s.onTouch(false, 2 * STEP + 1)
+        assertFalse(s.tick(3 * STEP, covered = false))
+        s.onHover(false, 3 * STEP)
+        assertTrue(s.tick(3 * STEP + QUIET, covered = false))
+    }
+
     @Test fun coveredStepsDespiteRecentInput() {
         val s = PixelShift(on())
-        s.onPointer(true, STEP)
+        s.onTouch(true, STEP)
         assertTrue(s.tick(STEP, covered = true))
     }
 
