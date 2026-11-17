@@ -202,6 +202,11 @@
     <string name="screensaver_brightness_title">Screensaver brightness</string>
     <string name="screensaver_blank_title">Turn fully black after</string>
     <string name="screensaver_blank_never">Never</string>
+    <string name="screensaver_wake_title">Wake threshold</string>
+    <string name="screensaver_wake_desc">The screen wakes when this much of the picture changes. The PC cursor entering the tablet screen always wakes it.</string>
+    <string name="pixel_shift_title">Pixel shift</string>
+    <string name="pixel_shift_desc">Moves the picture by one pixel now and then so that fixed parts do not wear the screen. It never moves while you draw or touch.</string>
+    <string name="pixel_shift_amount_title">Shift distance</string>
     <string name="screensaver_speed_title">Shape speed</string>
     <string name="screensaver_speed_slow">Slow</string>
     <string name="screensaver_speed_fast">Fast</string>
@@ -215,6 +220,10 @@
     <plurals name="settings_minutes">
         <item quantity="one">%1$d minute</item>
         <item quantity="other">%1$d minutes</item>
+    </plurals>
+    <plurals name="settings_pixels">
+        <item quantity="one">%1$d pixel</item>
+        <item quantity="other">%1$d pixels</item>
     </plurals>
     <string name="session_disconnect">Disconnect</string>
     <!-- Getting started -->

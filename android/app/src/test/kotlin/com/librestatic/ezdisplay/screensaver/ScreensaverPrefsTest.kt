@@ -46,6 +46,19 @@ class ScreensaverPrefsTest {
         assertEquals(0, ScreensaverPrefs.read(prefs, PanelType.Lcd).blankMin)
     }
 
+    @Test fun wakeThresholdDefaultsClampsAndRoundsToTheStep() {
+        assertEquals(50, ScreensaverPrefs.read(prefs, PanelType.Oled).wakePct)
+        prefs.edit().putInt(InputPrefs.SCREENSAVER_WAKE_PCT, 0).commit()
+        assertEquals(5, ScreensaverPrefs.read(prefs, PanelType.Oled).wakePct)
+        prefs.edit().putInt(InputPrefs.SCREENSAVER_WAKE_PCT, 500).commit()
+        assertEquals(100, ScreensaverPrefs.read(prefs, PanelType.Oled).wakePct)
+        prefs.edit().putInt(InputPrefs.SCREENSAVER_WAKE_PCT, 42).commit()
+        assertEquals(40, ScreensaverPrefs.read(prefs, PanelType.Oled).wakePct)
+        assertEquals(45, normalizeWakePct(43))
+        assertEquals(5, normalizeWakePct(7))
+        assertEquals(10, normalizeWakePct(8))
+    }
+
     @Test fun blankSliderRounding() {
         assertEquals(0, roundBlankMin(0f))
         assertEquals(0, roundBlankMin(2f))

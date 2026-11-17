@@ -203,6 +203,11 @@
     <string name="screensaver_brightness_title">Luminosità del salvaschermo</string>
     <string name="screensaver_blank_title">Schermo nero dopo</string>
     <string name="screensaver_blank_never">Mai</string>
+    <string name="screensaver_wake_title">Soglia di risveglio</string>
+    <string name="screensaver_wake_desc">Lo schermo si risveglia quando cambia questa parte dell\'immagine. Se il cursore del PC entra nello schermo del tablet, si risveglia sempre.</string>
+    <string name="pixel_shift_title">Spostamento dei pixel</string>
+    <string name="pixel_shift_desc">Sposta l\'immagine di un pixel ogni tanto, così le parti fisse non consumano lo schermo. Non si muove mai mentre disegni o tocchi.</string>
+    <string name="pixel_shift_amount_title">Distanza di spostamento</string>
     <string name="screensaver_speed_title">Velocità delle forme</string>
     <string name="screensaver_speed_slow">Lenta</string>
     <string name="screensaver_speed_fast">Veloce</string>
@@ -217,6 +222,11 @@
         <item quantity="one">%1$d minuto</item>
         <item quantity="many">%1$d minuti</item>
         <item quantity="other">%1$d minuti</item>
+    </plurals>
+    <plurals name="settings_pixels">
+        <item quantity="one">%1$d pixel</item>
+        <item quantity="many">%1$d pixel</item>
+        <item quantity="other">%1$d pixel</item>
     </plurals>
     <string name="session_disconnect">Disconnetti</string>
     <!-- Getting started -->

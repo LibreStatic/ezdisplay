@@ -32,6 +32,9 @@ object InputPrefs {
     const val SCREENSAVER_BLANK_MIN = "screensaver_blank_min"
     const val SCREENSAVER_SPEED = "screensaver_speed"
     const val SCREENSAVER_MOTION = "screensaver_motion"
+    const val SCREENSAVER_WAKE_PCT = "screensaver_wake_pct"
+    const val PIXEL_SHIFT_ENABLED = "pixel_shift_enabled"
+    const val PIXEL_SHIFT_PX = "pixel_shift_px"
     const val PANEL_TYPE_DETECTED = "panel_type_detected"
 
     const val SCREENSAVER_IDLE_DEFAULT = 5
@@ -49,6 +52,15 @@ object InputPrefs {
     const val SCREENSAVER_SPEED_DEFAULT = 4
     const val SCREENSAVER_SPEED_MIN_VALUE = 1
     const val SCREENSAVER_SPEED_MAX_VALUE = 10
+    /** Share of the screen that must change before new content wakes the screensaver. */
+    const val SCREENSAVER_WAKE_DEFAULT = 50
+    const val SCREENSAVER_WAKE_MIN_VALUE = 5
+    const val SCREENSAVER_WAKE_MAX_VALUE = 100
+    const val SCREENSAVER_WAKE_STEP = 5
+    /** Largest distance the picture moves from its centre position, in pixels. */
+    const val DEFAULT_PIXEL_SHIFT_PX = 4
+    const val MIN_PIXEL_SHIFT_PX = 1
+    const val MAX_PIXEL_SHIFT_PX = 8
 
     const val MOD_CTRL = 1
     const val MOD_SHIFT = 2

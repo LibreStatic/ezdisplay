@@ -26,6 +26,7 @@ import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PixelCopy
 import android.view.PointerIcon
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -47,10 +48,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
+import com.librestatic.ezdisplay.display.PixelShift
+import com.librestatic.ezdisplay.display.PixelShiftPrefs
 import com.librestatic.ezdisplay.onboarding.OnboardingActivity
 import com.librestatic.ezdisplay.onboarding.OnboardingStore
 import com.librestatic.ezdisplay.screensaver.IdleState
 import com.librestatic.ezdisplay.screensaver.IdleTracker
+import com.librestatic.ezdisplay.screensaver.ScreenChangeDetector
 import com.librestatic.ezdisplay.screensaver.ScreensaverConfig
 import com.librestatic.ezdisplay.screensaver.ScreensaverController
 import com.librestatic.ezdisplay.screensaver.ScreensaverOverlay
@@ -100,6 +104,8 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         const val BACKOFF_MIN_MS = 1000L
         const val BACKOFF_MAX_MS = 5000L
         const val STATS_INTERVAL_MS = 250L
+        const val SAMPLE_W = 96
+        const val SAMPLE_H = 54
         const val STATUS_HIDE_MS = 3000L
         const val NOTE_SHOW_MS = 6000L
         const val AIR_HINT_SHOW_MS = 8000L
@@ -183,6 +189,19 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
     private lateinit var screensaver: ScreensaverController
     private var idleConfig = ScreensaverConfig(enabled = false, idleMin = 5, brightnessPct = 10, blankMin = 0)
     private val idle = IdleTracker(idleConfig)
+    private val changeDetector = ScreenChangeDetector()
+
+    // Burn-in protection: the whole stage moves by a few pixels; forward() takes the offset out of the input.
+    private lateinit var shiftLayer: FrameLayout
+    private val shift = PixelShift(nowMs = SystemClock.uptimeMillis())
+    private val sampleBitmap = Bitmap.createBitmap(SAMPLE_W, SAMPLE_H, Bitmap.Config.ARGB_8888)
+    private val samplePixels = IntArray(SAMPLE_W * SAMPLE_H)
+    private var sampling = false
+    private var rebaseSample = false // the next sample becomes the reference (the screensaver just started)
+    private var samplingFailureLogged = false
+    private var hostCursorInside = false
+    private var hostCursorX = 0L
+    private var hostCursorY = 0L
     private var saverSpeed by mutableStateOf(idleConfig.speed)
     private var saverMotion by mutableStateOf(idleConfig.motion)
     private var swallowTouch = false // the gesture that woke the screen, dropped until it ends
@@ -276,7 +295,10 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             pivotY = 0f
             addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitSurface() }
         }
-        root.addView(stage, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        // Pixel shift translates this layer, so the zoom keeps the stage's own translation to itself.
+        shiftLayer = FrameLayout(this)
+        root.addView(shiftLayer, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        shiftLayer.addView(stage, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         surfaceView = SurfaceView(this).also { it.holder.addCallback(this) }
         stage.addView(surfaceView, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
 
@@ -415,6 +437,8 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         saverMotion = idleConfig.motion
         idle.setConfig(idleConfig, now)
         idle.setArmed(true, now)
+        if (shift.setConfig(PixelShiftPrefs.read(this), now)) applyShift()
+        changeDetector.reset()
         applyInputConfig()
         updateDiscovery()
         checkAccessory()
@@ -633,6 +657,8 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         applyInputConfig()
         wasStreaming = false
         idle.resetFrames()
+        changeDetector.reset()
+        rebaseSample = false
         lastInputNote = ""
         keysHintShown = false
         hostLacksKeys = false
@@ -676,6 +702,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         activeWifi = null
         activeAccessory = false
         cursorVisible = false
+        hostCursorInside = false
         cursorView.visibility = View.GONE
         cursorSeq = 0
         cursorShapeId = -1
@@ -702,6 +729,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         idle.tick(SystemClock.uptimeMillis())
         applyIdle()
         if (!sessionActive) return
+        if (shift.tick(SystemClock.uptimeMillis(), screensaver.state != IdleState.Active)) applyShift()
         val view = NativeBridge.pollView()
         applyStage(view)
         NativeBridge.inputTick()
@@ -713,6 +741,11 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             volumeWatcher.checkLocal()
             updateStats(now)
         }
+    }
+
+    private fun applyShift() {
+        shiftLayer.translationX = shift.offsetX.toFloat()
+        shiftLayer.translationY = shift.offsetY.toFloat()
     }
 
     private fun applyStage(view: FloatArray) {
@@ -752,7 +785,57 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             cursorVisible = visible
             cursorView.visibility = if (visible) View.VISIBLE else View.GONE
         }
+        if (seq != 0L && visible) {
+            val x = c[1]
+            val y = c[2]
+            val inside = x in 0 until streamW.toLong() && y in 0 until streamH.toLong()
+            if (inside && (!hostCursorInside || x != hostCursorX || y != hostCursorY)) {
+                idle.onHostCursor(SystemClock.uptimeMillis())
+            }
+            hostCursorInside = inside
+            hostCursorX = x
+            hostCursorY = y
+        } else {
+            hostCursorInside = false
+        }
         cursorSeq = seq
+    }
+
+    /**
+     * Copies the streaming surface into a small bitmap and asks the idle tracker whether enough of the screen
+     * changed to count as activity. Failures only mean that content does not wake the screen.
+     */
+    private fun sampleScreen() {
+        if (sampling || !sessionActive || !surfaceView.holder.surface.isValid) return
+        sampling = true
+        try {
+            PixelCopy.request(surfaceView, sampleBitmap, { result ->
+                sampling = false
+                if (result != PixelCopy.SUCCESS) {
+                    logSamplingFailure("PixelCopy result $result")
+                    return@request
+                }
+                if (!started || !sessionActive) return@request
+                sampleBitmap.getPixels(samplePixels, 0, SAMPLE_W, 0, 0, SAMPLE_W, SAMPLE_H)
+                if (rebaseSample) {
+                    rebaseSample = false
+                    changeDetector.accept(samplePixels)
+                    return@request
+                }
+                val fraction = changeDetector.changedFraction(samplePixels) ?: return@request
+                if (idle.onScreenChange(fraction, SystemClock.uptimeMillis())) changeDetector.accept(samplePixels)
+                applyIdle()
+            }, handler)
+        } catch (e: IllegalArgumentException) {
+            sampling = false
+            logSamplingFailure("PixelCopy failed: ${e.message}")
+        }
+    }
+
+    private fun logSamplingFailure(msg: String) {
+        if (samplingFailureLogged) return
+        samplingFailureLogged = true
+        Log.w(TAG, "screen sampling unavailable: $msg")
     }
 
     private fun applyCursorSize() {
@@ -820,7 +903,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
             Log.w(TAG, "bad stats", e)
             return
         }
-        if (j.optString("phase") == "streaming") idle.onFramesReceived(j.optLong("frames_received"), now)
+        if (j.optString("phase") == "streaming" && idle.onFramesReceived(j.optLong("frames_received"), now)) sampleScreen()
         val bw = j.optInt("buffer_width")
         val bh = j.optInt("buffer_height")
         if (bw > 0 && bh > 0 && (bw != bufW || bh != bufH)) {
@@ -994,10 +1077,17 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
 
     // --- Input forwarding ---
 
-    /** Pushes the idle state to the screensaver; coming back from it asks the host for a fresh frame. */
+    /**
+     * Pushes the idle state to the screensaver; coming back from it asks the host for a fresh frame. When the
+     * screensaver starts, the picture it covers becomes the reference for the wake threshold.
+     */
     private fun applyIdle() {
         val before = screensaver.state
         screensaver.apply(idle.state, idleConfig)
+        if (before == IdleState.Active && idle.state == IdleState.Saver) {
+            rebaseSample = true
+            sampleScreen()
+        }
         if (before != IdleState.Active && idle.state == IdleState.Active && sessionActive) NativeBridge.requestKeyframe()
     }
 
@@ -1005,6 +1095,7 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         if (routedAway) return super.dispatchTouchEvent(ev)
         val action = ev.actionMasked
         val ending = action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
+        shift.onPointer(!ending, SystemClock.uptimeMillis())
         if (swallowTouch) {
             if (ending) swallowTouch = false
             return true
@@ -1088,6 +1179,9 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         if (routedAway) return super.dispatchGenericMotionEvent(ev)
         if (ev.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
             val exit = ev.actionMasked == MotionEvent.ACTION_HOVER_EXIT
+            // A hovering stylus holds the picture still; a resting mouse sends no exit, so only its pause counts.
+            val stylus = ev.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
+            shift.onPointer(stylus && !exit, SystemClock.uptimeMillis())
             if (swallowHover) {
                 if (exit) swallowHover = false
                 return true
@@ -1202,12 +1296,15 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         }
         floats[0] = ev.getAxisValue(MotionEvent.AXIS_VSCROLL)
         floats[1] = ev.getAxisValue(MotionEvent.AXIS_HSCROLL)
+        // The picture is drawn shifted (pixel shift), so positions go to the engine relative to the picture.
+        val shiftX = shift.offsetX.toFloat()
+        val shiftY = shift.offsetY.toFloat()
         var o = FLOAT_HEADER
         for (h in 0 until history) {
             times[h] = historicalTimeNanos(ev, h)
             for (p in 0 until n) {
-                floats[o] = ev.getHistoricalX(p, h)
-                floats[o + 1] = ev.getHistoricalY(p, h)
+                floats[o] = ev.getHistoricalX(p, h) - shiftX
+                floats[o + 1] = ev.getHistoricalY(p, h) - shiftY
                 floats[o + 2] = ev.getHistoricalPressure(p, h)
                 floats[o + 3] = ev.getHistoricalAxisValue(MotionEvent.AXIS_TILT, p, h)
                 floats[o + 4] = ev.getHistoricalAxisValue(MotionEvent.AXIS_ORIENTATION, p, h)
@@ -1216,8 +1313,8 @@ class MainActivity : ComponentActivity(), SurfaceHolder.Callback, Choreographer.
         }
         times[history] = timeNanos(ev)
         for (p in 0 until n) {
-            floats[o] = ev.getX(p)
-            floats[o + 1] = ev.getY(p)
+            floats[o] = ev.getX(p) - shiftX
+            floats[o + 1] = ev.getY(p) - shiftY
             floats[o + 2] = ev.getPressure(p)
             floats[o + 3] = ev.getAxisValue(MotionEvent.AXIS_TILT, p)
             floats[o + 4] = ev.getAxisValue(MotionEvent.AXIS_ORIENTATION, p)

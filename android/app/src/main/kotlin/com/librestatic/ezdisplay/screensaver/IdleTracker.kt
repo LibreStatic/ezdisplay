@@ -7,9 +7,12 @@ enum class IdleState { Active, Saver, Blank }
  * Decides when the screensaver starts and stops. Pure Kotlin: the caller passes the clock (milliseconds, any
  * monotonic base) so it can be tested with a fake one.
  *
- * - Active -> Saver after `idleMin` without local input and without new frames.
+ * - Active -> Saver after `idleMin` without activity. Activity is local input, a host cursor entering the tablet
+ *   screen, or new content: at least `wakePct` percent of the screen changed ([onScreenChange]). New frames alone
+ *   are not activity ([onFramesReceived] only says when to measure), so a blinking taskbar icon does not count.
  * - Saver -> Blank after `blankMin` in Saver (0 = never).
- * - In Saver a new frame or any local input goes back to Active; in Blank only local input does.
+ * - In Saver, local input, the host cursor or enough changed content goes back to Active. In Blank only local
+ *   input and the host cursor do; changed content is ignored.
  * - A disabled config or a disarmed tracker is always Active, with the timers reset.
  */
 class IdleTracker(config: ScreensaverConfig, nowMs: Long = 0) {
@@ -48,19 +51,37 @@ class IdleTracker(config: ScreensaverConfig, nowMs: Long = 0) {
         return woke
     }
 
-    /** [total] is the running count of received frames; only an increase counts as activity. */
-    fun onFramesReceived(total: Long, nowMs: Long) {
+    /**
+     * [total] is the running count of received frames. Returns true when it grew while the tracker runs and the
+     * screen is not Blank: the caller should then measure how much of the screen changed and call [onScreenChange].
+     * A new frame is not activity by itself.
+     */
+    fun onFramesReceived(total: Long, nowMs: Long): Boolean {
         val previous = lastFrames
         lastFrames = total
-        if (!running || previous < 0 || total <= previous) return
-        when (state) {
-            IdleState.Active -> lastActivityMs = nowMs
-            IdleState.Saver -> {
-                state = IdleState.Active
-                lastActivityMs = nowMs
-            }
-            IdleState.Blank -> Unit // only local input wakes a blank screen
-        }
+        return running && previous >= 0 && total > previous && state != IdleState.Blank
+    }
+
+    /**
+     * [fraction] (0..1) of the screen changed since the last content activity. Counts as activity when it reaches
+     * `wakePct`: Active restarts the idle timer, Saver goes back to Active, Blank ignores it. Returns true when it
+     * counted, so the caller makes the measured sample the new reference.
+     */
+    fun onScreenChange(fraction: Float, nowMs: Long): Boolean {
+        if (!running || state == IdleState.Blank || fraction * 100f + 1e-3f < config.wakePct) return false
+        state = IdleState.Active
+        lastActivityMs = nowMs
+        return true
+    }
+
+    /**
+     * The PC cursor appeared or moved inside the tablet screen: wakes Saver and Blank, whatever the threshold. Not
+     * local input, so nothing is swallowed.
+     */
+    fun onHostCursor(nowMs: Long) {
+        if (!running) return
+        state = IdleState.Active
+        lastActivityMs = nowMs
     }
 
     /** Forget the frame counter, e.g. when a new session starts and counts from zero. */

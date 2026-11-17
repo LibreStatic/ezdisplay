@@ -203,6 +203,11 @@
     <string name="screensaver_brightness_title">Brillo del protector</string>
     <string name="screensaver_blank_title">Poner todo en negro después de</string>
     <string name="screensaver_blank_never">Nunca</string>
+    <string name="screensaver_wake_title">Umbral de despertar</string>
+    <string name="screensaver_wake_desc">La pantalla se despierta cuando cambia esta parte de la imagen. Si el cursor de la PC entra en la pantalla de la tablet, siempre se despierta.</string>
+    <string name="pixel_shift_title">Desplazamiento de píxeles</string>
+    <string name="pixel_shift_desc">Mueve la imagen un píxel de vez en cuando para que las partes fijas no desgasten la pantalla. Nunca se mueve mientras dibujás o tocás.</string>
+    <string name="pixel_shift_amount_title">Distancia de desplazamiento</string>
     <string name="screensaver_speed_title">Velocidad de las formas</string>
     <string name="screensaver_speed_slow">Lenta</string>
     <string name="screensaver_speed_fast">Rápida</string>
@@ -217,6 +222,11 @@
         <item quantity="one">%1$d minuto</item>
         <item quantity="many">%1$d minutos</item>
         <item quantity="other">%1$d minutos</item>
+    </plurals>
+    <plurals name="settings_pixels">
+        <item quantity="one">%1$d píxel</item>
+        <item quantity="many">%1$d píxeles</item>
+        <item quantity="other">%1$d píxeles</item>
     </plurals>
     <string name="session_disconnect">Desconectar</string>
     <!-- Getting started -->

@@ -1,6 +1,8 @@
 package com.librestatic.ezdisplay.settings
 
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.onAllNodesWithText
@@ -24,8 +26,11 @@ class SettingsDisplayTest : SettingsUiTestBase() {
         tag("screensaver_idle_slider").assertExists()
         tag("screensaver_brightness_slider").assertExists()
         tag("screensaver_blank_slider").assertExists()
+        tag("screensaver_wake_slider").assertExists()
         if (previewBox) tag("screensaver_preview_box").assertExists() else tag("screensaver_preview_box").assertDoesNotExist()
         tag("screensaver_preview").assertExists()
+        tag("pixel_shift_row").assertExists()
+        tag("pixel_shift_slider").assertExists()
         tag("replay_onboarding").assertExists()
     }
 
@@ -60,12 +65,27 @@ class SettingsDisplayTest : SettingsUiTestBase() {
         tag("screensaver_idle_slider").performScrollTo().performSemanticsAction(SemanticsActions.SetProgress) { it(12f) }
         tag("screensaver_brightness_slider").performScrollTo().performSemanticsAction(SemanticsActions.SetProgress) { it(300f) }
         tag("screensaver_blank_slider").performScrollTo().performSemanticsAction(SemanticsActions.SetProgress) { it(47f) }
+        tag("screensaver_wake_slider").performScrollTo().performSemanticsAction(SemanticsActions.SetProgress) { it(62f) }
         rule.waitForIdle()
+        assertEquals(60, prefs.getInt(InputPrefs.SCREENSAVER_WAKE_PCT, 0))
         assertEquals(12, prefs.getInt(InputPrefs.SCREENSAVER_IDLE_MIN, 0))
         assertEquals(30, prefs.getInt(InputPrefs.SCREENSAVER_BRIGHTNESS_PCT, 0))
         assertEquals(45, prefs.getInt(InputPrefs.SCREENSAVER_BLANK_MIN, 0))
         // The value label and the slider's maximum label.
         assertEquals(2, rule.onAllNodesWithText("30%").fetchSemanticsNodes().size)
+    }
+
+    @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp")
+    fun pixelShiftSliderFollowsTheSwitchAndSaves() {
+        launch { putBoolean(InputPrefs.PIXEL_SHIFT_ENABLED, false) }
+        tag("pixel_shift_slider").performScrollTo().assertIsNotEnabled()
+        tag("pixel_shift_row").performClick()
+        assertTrue(prefs.getBoolean(InputPrefs.PIXEL_SHIFT_ENABLED, false))
+        tag("pixel_shift_slider").assertIsEnabled()
+        tag("pixel_shift_slider").performSemanticsAction(SemanticsActions.SetProgress) { it(6f) }
+        rule.waitForIdle()
+        assertEquals(6, prefs.getInt(InputPrefs.PIXEL_SHIFT_PX, 0))
+        rule.onNodeWithText(rule.activity.resources.getQuantityString(R.plurals.settings_pixels, 6, 6)).assertExists()
     }
 
     @Test @Config(sdk = [36], qualifiers = "w412dp-h915dp")

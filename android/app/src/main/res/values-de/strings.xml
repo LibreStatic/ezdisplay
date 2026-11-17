@@ -200,6 +200,11 @@
     <string name="screensaver_brightness_title">Helligkeit des Bildschirmschoners</string>
     <string name="screensaver_blank_title">Komplett schwarz nach</string>
     <string name="screensaver_blank_never">Nie</string>
+    <string name="screensaver_wake_title">Aufweck-Schwelle</string>
+    <string name="screensaver_wake_desc">Der Bildschirm wacht auf, wenn sich so viel vom Bild ändert. Wenn der PC-Cursor auf den Tablet-Bildschirm wechselt, wacht er immer auf.</string>
+    <string name="pixel_shift_title">Pixelverschiebung</string>
+    <string name="pixel_shift_desc">Verschiebt das Bild ab und zu um einen Pixel, damit feste Bildteile den Bildschirm nicht abnutzen. Es bewegt sich nie, während du zeichnest oder tippst.</string>
+    <string name="pixel_shift_amount_title">Verschiebungsdistanz</string>
     <string name="screensaver_speed_title">Geschwindigkeit der Formen</string>
     <string name="screensaver_speed_slow">Langsam</string>
     <string name="screensaver_speed_fast">Schnell</string>
@@ -213,6 +218,10 @@
     <plurals name="settings_minutes">
         <item quantity="one">%1$d Minute</item>
         <item quantity="other">%1$d Minuten</item>
+    </plurals>
+    <plurals name="settings_pixels">
+        <item quantity="one">%1$d Pixel</item>
+        <item quantity="other">%1$d Pixel</item>
     </plurals>
     <string name="session_disconnect">Trennen</string>
     <!-- Getting started -->

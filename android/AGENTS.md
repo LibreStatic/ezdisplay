@@ -19,7 +19,7 @@ Repository-wide rules (languages and localization, naming) are in the root `AGEN
     At 1691x978 dp the Wide page must not scroll (covered by `SettingsWideTest`); for that the Wide page shows Video
     (codec and quality) as one row that opens a dialog, like the Connection hosts.
   - `Sections.kt`: shared components. Colours and type come from `MaterialTheme` only.
-  - `DisplaySection.kt`: the Display section (screensaver switch, idle / brightness / blank-after / shape speed sliders,
+  - `DisplaySection.kt`: the Display section (screensaver switch, idle / wake threshold / brightness / blank-after / shape speed sliders,
     movement mode (cross the screen or bounce), preview, replay of the getting-started guide). The Wide page must stay
     free of scrolling, so it has no Display block: a `DisplaySheetButton` on the title row ("Screensaver · 5 minutes"
     or "Screensaver off") opens the full `DisplayContent` in a `ModalBottomSheet` (`DisplaySheet`).
@@ -36,7 +36,19 @@ Repository-wide rules (languages and localization, naming) are in the root `AGEN
   prefs; `screensaver/` holds `ScreensaverContent` (its own dim monochrome field of themed silhouettes from
   `ScreensaverGlyphs`: monitor, tablet, stylus, brush, palette, mouse; not `ShapeBackdrop`), `ScreensaverMotion` (pure
   Kotlin motion model: Drift or Bounce, speed level 1..10 at 10 dp/s each, rare steps with reduced motion) and
-  `ScreensaverPrefs`. The screensaver prefs live in the `input` file but are never part of `InputPrefs.toJson`.
+  `ScreensaverPrefs`. `IdleTracker` rules: new frames are not activity; `MainActivity` samples the stream surface with
+  `PixelCopy` (96x54) on each frame increase and `ScreenChangeDetector` (pure Kotlin, tolerance 24/255 per channel,
+  reference = screen at the last content activity) gives the changed fraction, which wakes only at `wakePct` (setting
+  "wake threshold", default 50, 5..100 step 5). A PC cursor appearing or moving inside the tablet screen always wakes
+  Saver and Blank (`onHostCursor`); content never wakes Blank; local input is unchanged. The screensaver prefs live in the `input` file but are never part of `InputPrefs.toJson`.
+- `display/PixelShift.kt` is the burn-in protection for the stream (pure Kotlin, time passed in; `PixelShiftPrefs` next
+  to it, on by default only for OLED, radius 1..8 px, default 4). The offset walks a serpentine over the
+  (2r+1) x (2r+1) grid, one pixel per step, at most one step every 60 s, and only 3 s after the last pointer event with
+  no pointer down and no stylus hovering, or while the screensaver covers the picture. `MainActivity` translates
+  `shiftLayer` (the parent of `stage`, so the local zoom keeps `stage.translationX/Y` to itself) and `forward()`
+  subtracts the offset from every position before `NativeBridge.inputEvent`; the native engine never sees the shift.
+  The uncovered edge shows the black `root`. `PixelCopy` reads the surface buffer, so the shift is not a screen change.
+  The switch and the distance slider are in `DisplaySection.kt`; the prefs are not part of `InputPrefs.toJson` either.
 
 ## Build and test
 - Set `ANDROID_HOME` when `local.properties` is missing.

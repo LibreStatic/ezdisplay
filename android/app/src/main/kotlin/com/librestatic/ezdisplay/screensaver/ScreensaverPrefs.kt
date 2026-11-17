@@ -15,6 +15,8 @@ data class ScreensaverConfig(
     val blankMin: Int,
     val speed: Int = InputPrefs.SCREENSAVER_SPEED_DEFAULT,
     val motion: ScreensaverMotionMode = ScreensaverMotionMode.Drift,
+    /** Percent of the screen that must change for new content to count as activity. */
+    val wakePct: Int = InputPrefs.SCREENSAVER_WAKE_DEFAULT,
 )
 
 /** Clamps a stored or typed value to the allowed ranges. */
@@ -26,6 +28,13 @@ fun normalizeBrightnessPct(v: Int): Int =
 
 fun normalizeSpeed(v: Int): Int =
     v.coerceIn(InputPrefs.SCREENSAVER_SPEED_MIN_VALUE, InputPrefs.SCREENSAVER_SPEED_MAX_VALUE)
+
+/** Clamps to 5..100 and rounds to the slider step. */
+fun normalizeWakePct(v: Int): Int {
+    val step = InputPrefs.SCREENSAVER_WAKE_STEP
+    val rounded = (v.toFloat() / step).roundToInt() * step
+    return rounded.coerceIn(InputPrefs.SCREENSAVER_WAKE_MIN_VALUE, InputPrefs.SCREENSAVER_WAKE_MAX_VALUE)
+}
 
 /** 0 (never) or 5..120; anything between 1 and 4 is raised to 5. */
 fun normalizeBlankMin(v: Int): Int =
@@ -57,6 +66,7 @@ object ScreensaverPrefs {
         blankMin = normalizeBlankMin(prefs.getInt(InputPrefs.SCREENSAVER_BLANK_MIN, InputPrefs.SCREENSAVER_BLANK_DEFAULT)),
         speed = normalizeSpeed(prefs.getInt(InputPrefs.SCREENSAVER_SPEED, InputPrefs.SCREENSAVER_SPEED_DEFAULT)),
         motion = ScreensaverMotionMode.fromKey(prefs.getString(InputPrefs.SCREENSAVER_MOTION, null)),
+        wakePct = normalizeWakePct(prefs.getInt(InputPrefs.SCREENSAVER_WAKE_PCT, InputPrefs.SCREENSAVER_WAKE_DEFAULT)),
     )
 
     /** Reads the config for the device, detecting (and caching) the panel type when needed. */
