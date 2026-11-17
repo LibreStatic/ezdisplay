@@ -113,14 +113,37 @@ pub fn capture(state: &DisplayState, virtual_connector: &str) -> Option<SavedLay
 }
 
 /// The `ApplyMonitorsConfig` argument that restores `saved` in `state`. `None` when there is
-/// nothing to do or the layout no longer fits: a monitor or mode is gone, or the user changed the
-/// scale or rotation of a physical monitor since (their newer choice wins).
+/// nothing to do or the layout no longer fits: a monitor or mode is gone, or the user has since
+/// turned a physical monitor on or off or changed its scale or rotation (their newer choice wins).
 pub fn plan(
     saved: &SavedLayout,
     state: &DisplayState,
     virtual_connector: &str,
 ) -> Option<Vec<ApplyLogical>> {
     let virtual_mode = state.monitor(virtual_connector)?.current_mode()?.id.clone();
+    // The same physical monitors are on now as when the layout was saved.
+    let enabled = |connectors: &mut dyn Iterator<Item = &String>| {
+        let mut v: Vec<String> = connectors.cloned().collect();
+        v.sort();
+        v
+    };
+    let saved_on = enabled(
+        &mut saved
+            .logical
+            .iter()
+            .flat_map(|l| &l.monitors)
+            .filter_map(|m| m.connector.as_ref()),
+    );
+    let now_on = enabled(
+        &mut state
+            .logical
+            .iter()
+            .flat_map(|l| &l.monitors)
+            .filter(|c| *c != virtual_connector),
+    );
+    if saved_on != now_on {
+        return None;
+    }
     let mut out = Vec::new();
     for l in &saved.logical {
         let mut monitors = Vec::new();
@@ -132,9 +155,8 @@ pub fn plan(
                     if !monitor.modes.iter().any(|mode| mode.id == m.mode_id) {
                         return None;
                     }
-                    if let Some(now) = state.logical_of(c)
-                        && (now.scale != l.scale || now.transform != l.transform)
-                    {
+                    let now = state.logical_of(c)?;
+                    if now.scale != l.scale || now.transform != l.transform {
                         return None;
                     }
                     (c.clone(), m.mode_id.clone())
@@ -346,6 +368,14 @@ mod tests {
         let mut rescaled = pair();
         rescaled.logical[0].scale = 1.5;
         assert_eq!(plan(&saved, &rescaled, "Meta-1"), None);
+
+        // The user turned the physical monitor off since: it is not switched back on.
+        let mut off = pair();
+        off.logical.remove(0);
+        assert_eq!(plan(&saved, &off, "Meta-1"), None);
+        // Or it was off when the layout was saved and is on now: it is not switched off.
+        let saved_off = capture(&off, "Meta-1").unwrap();
+        assert_eq!(plan(&saved_off, &pair(), "Meta-1"), None);
 
         // The mode the physical monitor had is gone.
         let mut no_mode = pair();
